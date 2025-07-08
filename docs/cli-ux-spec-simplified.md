@@ -1,11 +1,13 @@
 # Solana Validator Switch CLI - UX Specification
 
 ## Core Value Proposition (Refined)
+
 **"Professional-grade validator switching from your terminal with zero stored credentials"**
 
 ## Installation & First Run
 
 ### NPM Installation
+
 ```bash
 # Global installation
 npm install -g solana-validator-switch
@@ -26,6 +28,7 @@ svs switch
 ```
 
 ### Package Discovery Experience
+
 ```bash
 $ svs
 
@@ -50,10 +53,11 @@ Press ENTER to start setup or Ctrl+C to exit...
 ## Command Structure
 
 ### Core Commands
+
 ```bash
 # Setup and configuration
 svs setup                      # Initial setup wizard
-svs config                     # Edit configuration  
+svs config                     # Edit configuration
 svs config --list              # Show current config
 svs config --test              # Test all connections
 
@@ -77,6 +81,7 @@ svs version                    # Version information
 ## Security-First Setup Flow (3-Step Process)
 
 ### Step 1: Security Overview & SSH Key Setup
+
 ```bash
 $ svs setup
 
@@ -105,7 +110,7 @@ SECURITY MODEL:
   ~/.ssh/id_ed25519     (ED25519) ✅
   ~/.ssh/validator_key  (RSA, 2048 bits) ✅
 
-? Which SSH key would you like to use? 
+? Which SSH key would you like to use?
   > ~/.ssh/id_rsa
     ~/.ssh/id_ed25519
     ~/.ssh/validator_key
@@ -116,6 +121,7 @@ Press ENTER to continue or Ctrl+C to exit...
 ```
 
 ### Step 2: Node Configuration & Auto-Detection
+
 ```bash
 ┌─────────────────────────────────────────────────────────────┐
 │  ⚙️ Node Configuration - Step 2 of 3                       │
@@ -126,7 +132,7 @@ Press ENTER to continue or Ctrl+C to exit...
 PRIMARY NODE:
 ? Host/IP: 192.168.1.10
 ? SSH Port: 22
-? SSH User: solana  
+? SSH User: solana
 ? Label: prod-main
 
 🔍 Testing connection... ✅ Connected successfully!
@@ -134,8 +140,8 @@ PRIMARY NODE:
 🔍 Auto-detecting file paths...
 
 ✅ Found validator configuration:
-  Funded identity: /home/solana/validator-keypair.json
-  Unfunded identity: /home/solana/unfunded-keypair.json  
+  Funded identity: /home/solana/funded-validator-keypair.json
+  Unfunded identity: /home/solana/unfunded-keypair.json
   Ledger path: /home/solana/ledger
   Tower file: /home/solana/tower.bin
   Solana CLI: /home/solana/.local/share/solana/install/active_release/bin/solana
@@ -144,24 +150,24 @@ BACKUP NODE:
 ? Host/IP: 192.168.1.11
 ? SSH Port: 22
 ? SSH User: solana
-? Label: prod-backup  
+? Label: prod-backup
 
 🔍 Testing connection... ✅ Connected successfully!
 🔍 Detecting validator client... ⚡ Firedancer v0.103 detected
 🔍 Auto-detecting file paths...
 
 ✅ Found validator configuration:
-  Funded identity: /home/solana/validator-keypair.json
+  Funded identity: /home/solana/funded-validator-keypair.json
   Unfunded identity: /home/solana/unfunded-keypair.json
-  Ledger path: /home/solana/ledger  
+  Ledger path: /home/solana/ledger
   Tower file: /home/solana/tower.bin
   Solana CLI: /home/solana/.local/share/solana/install/active_release/bin/solana
 
 🌐 RPC ENDPOINT CONFIGURATION:
-? RPC Endpoint: 
+? RPC Endpoint:
   > Use Solana Mainnet Beta (https://api.mainnet-beta.solana.com)
     Use custom RPC endpoint
-    
+
 ? Custom RPC endpoint: [Skip - using default]
 
 ⚠️  NOTICE: Different validator clients detected (Agave vs Firedancer)
@@ -175,6 +181,7 @@ BACKUP NODE:
 ```
 
 ### Step 3: Connection Verification & Final Setup
+
 ```bash
 ┌─────────────────────────────────────────────────────────────┐
 │  🔒 Connection Verification - Step 3 of 3                  │
@@ -184,7 +191,7 @@ BACKUP NODE:
 
 SSH CONNECTION TESTS:
 ✅ Primary node SSH connection successful
-✅ Backup node SSH connection successful  
+✅ Backup node SSH connection successful
 ✅ SSH key authentication working
 ✅ Command execution permissions verified
 
@@ -195,7 +202,7 @@ RPC ENDPOINT TESTS:
 
 FILE SYSTEM ACCESS TESTS:
 ✅ Funded identity keypairs accessible on both nodes
-✅ Unfunded identity keypairs accessible on both nodes  
+✅ Unfunded identity keypairs accessible on both nodes
 ✅ Ledger directories readable on both nodes
 ✅ Tower files accessible on both nodes
 ✅ Solana CLI available on both nodes
@@ -222,6 +229,7 @@ Press ENTER to continue...
 ## Interactive CLI Context (After Setup)
 
 ### Main Dashboard - Always Active
+
 ```bash
 $ svs monitor
 
@@ -280,6 +288,7 @@ Command: _
 ```
 
 ### Interactive Command Processing
+
 ```bash
 Command: s
 
@@ -307,7 +316,7 @@ Command: c
     Test connections
     Back to dashboard
 
-Select option [1-6]: 
+Select option [1-6]:
 ```
 
 ```bash
@@ -335,6 +344,7 @@ Command: _
 ```
 
 ### Health Scoring System (Simplified)
+
 ```bash
 $ svs health
 
@@ -403,6 +413,7 @@ Command: _
 ## The Switch Experience (Simplified & Fast)
 
 ### Pre-Switch Check (Basic Version)
+
 ```bash
 $ svs switch
 
@@ -437,6 +448,7 @@ $ svs switch
 ```
 
 ### Switch Execution (Simplified Progress)
+
 ```bash
 ✅ Switch confirmed. Starting execution...
 
@@ -461,6 +473,7 @@ Press Ctrl+C for emergency stop
 ```
 
 ### Switch Completion (Simplified)
+
 ```bash
 $ svs status
 
@@ -496,15 +509,18 @@ Select [1-3]:
 ## Command Structure
 
 # Switch operations
-svs switch                     # Interactive switch with prompts
-svs switch --auto              # Auto-switch if conditions met
+
+svs switch # Interactive switch with prompts
+svs switch --auto # Auto-switch if conditions met
 
 # Information
-svs nodes                      # List configured nodes
-svs logs                       # View recent logs
-svs history                    # Switch history
-svs version                    # Version information
-```
+
+svs nodes # List configured nodes
+svs logs # View recent logs
+svs history # Switch history
+svs version # Version information
+
+````
 
 ### Configuration Management
 ```bash
@@ -530,9 +546,10 @@ Configuration file: ~/.solana-validator-switch/config.json
 svs config --edit       # Opens config in $EDITOR
 svs config --set monitoring.interval=5
 svs config --get nodes.primary.host
-```
+````
 
 ### Sample Configuration File (Updated)
+
 ```json
 {
   "version": "1.0.0",
@@ -544,7 +561,7 @@ svs config --get nodes.primary.host
       "user": "solana",
       "keyPath": "~/.ssh/id_rsa",
       "paths": {
-        "fundedIdentity": "/home/solana/validator-keypair.json",
+        "fundedIdentity": "/home/solana/funded-validator-keypair.json",
         "unfundedIdentity": "/home/solana/unfunded-keypair.json",
         "ledger": "/home/solana/ledger",
         "tower": "/home/solana/tower.bin"
@@ -557,7 +574,7 @@ svs config --get nodes.primary.host
       "user": "solana",
       "keyPath": "~/.ssh/id_rsa",
       "paths": {
-        "fundedIdentity": "/home/solana/validator-keypair.json",
+        "fundedIdentity": "/home/solana/funded-validator-keypair.json",
         "unfundedIdentity": "/home/solana/unfunded-keypair.json",
         "ledger": "/home/solana/ledger",
         "tower": "/home/solana/tower.bin"
@@ -588,6 +605,7 @@ svs config --get nodes.primary.host
 ## Error Handling & Recovery (Professional Grade)
 
 ### Connection Errors with Intelligent Diagnostics
+
 ```bash
 $ svs switch
 
@@ -668,6 +686,7 @@ $ svs switch
 ```
 
 ### Switch Failure Recovery with Smart Options
+
 ```bash
 $ svs switch
 
@@ -724,6 +743,7 @@ $ svs switch
 ## Configuration Management (Interactive Context)
 
 ### Configuration Main Menu
+
 ```bash
 $ svs config
 
@@ -766,10 +786,11 @@ Current Configuration:
     Reset to defaults
     Back to dashboard
 
-Select option [1-8]: 
+Select option [1-8]:
 ```
 
 ### Node Configuration (Interactive)
+
 ```bash
 $ svs config --edit
 
@@ -809,6 +830,7 @@ Command: _
 ```
 
 ### RPC Endpoint Configuration
+
 ```bash
 $ svs config --rpc
 
@@ -846,6 +868,7 @@ Command: _
 ## Session Management & Security
 
 ### Session Status and Control
+
 ```bash
 $ svs session
 
@@ -904,6 +927,7 @@ Session expires in 12 minutes 42 seconds...
 ## Command Line Options
 
 ### Global Options
+
 ```bash
   -c, --config PATH     Use custom config file
   -v, --verbose         Verbose output
@@ -916,6 +940,7 @@ Session expires in 12 minutes 42 seconds...
 ```
 
 ### Command Examples
+
 ```bash
 # Setup
 svs setup
@@ -938,6 +963,7 @@ svs logs
 ```
 
 ### Environment Variables
+
 ```bash
 export SVS_CONFIG_PATH=~/.solana-validator-switch/config.json
 export SVS_SSH_TIMEOUT=30

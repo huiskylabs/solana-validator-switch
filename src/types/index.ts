@@ -1,49 +1,5 @@
-// Core configuration interfaces
-export interface NodeConfig {
-  label: string;
-  host: string;
-  port: number;
-  user: string;
-  keyPath: string;
-  paths: {
-    fundedIdentity: string;
-    unfundedIdentity: string;
-    ledger: string;
-    tower: string;
-    solanaCliPath: string;
-  };
-}
-
-export interface MonitoringConfig {
-  interval: number;
-  healthThreshold: number;
-  readinessThreshold: number;
-}
-
-export interface DisplayConfig {
-  theme: 'dark' | 'light';
-  compact: boolean;
-  showTechnicalDetails: boolean;
-}
-
-export interface Config {
-  version: string;
-  nodes: {
-    primary: NodeConfig;
-    backup: NodeConfig;
-  };
-  rpc: {
-    endpoint: string;
-    timeout: number;
-  };
-  monitoring: MonitoringConfig;
-  security: {
-    confirmSwitches: boolean;
-    sessionTimeout: number;
-    maxRetries: number;
-  };
-  display: DisplayConfig;
-}
+// Re-export all configuration types from the main config file
+export * from './config';
 
 // Environment configuration
 export interface EnvironmentConfig {
@@ -116,8 +72,8 @@ export interface SwitchState {
 }
 
 export interface SwitchPlan {
-  from: NodeConfig;
-  to: NodeConfig;
+  from: any;
+  to: any;
   estimatedTime: number;
   riskLevel: 'low' | 'medium' | 'high';
   warnings: string[];
@@ -152,6 +108,7 @@ export interface CLIOptions {
   list?: boolean;
   edit?: boolean;
   test?: boolean;
+  export?: boolean;
   interval?: string;
   compact?: boolean;
   json?: boolean;

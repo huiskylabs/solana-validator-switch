@@ -39,12 +39,14 @@
     "node": ">=16.0.0"
   },
   "dependencies": {
+    "@types/figlet": "^1.7.0",
     "blessed": "^0.1.81",
     "boxen": "^7.1.0",
     "chalk": "^5.3.0",
     "cli-table3": "^0.6.3",
     "commander": "^11.0.0",
     "conf": "^11.0.1",
+    "figlet": "^1.8.1",
     "inquirer": "^9.3.7",
     "node-ssh": "^13.1.0",
     "ora": "^7.0.1",

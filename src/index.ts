@@ -13,8 +13,7 @@ import { Logger } from './utils/logger.js';
 import type { CLIOptions } from './types/index.js';
 import inquirer from 'inquirer';
 
-// Temporarily disable SSH key detector to avoid TypeScript errors
-// import { SSHKeyDetector } from './utils/ssh-key-detector.js';
+// SSH key detector is available for commands that need it
 
 const program = new Command();
 

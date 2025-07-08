@@ -115,6 +115,8 @@ class SSHConnection extends EventEmitter {
 
   async connect(): Promise<void> {
     return new Promise((resolve, reject) => {
+      const connectStartTime = Date.now();
+      
       const timeout = setTimeout(() => {
         reject(new SSHTimeoutError(
           `Connection timeout after ${this.config.timeout}ms`,
@@ -125,6 +127,11 @@ class SSHConnection extends EventEmitter {
 
       this.client.once('ready', () => {
         clearTimeout(timeout);
+        
+        // Calculate and store connection latency
+        const connectionTime = Date.now() - connectStartTime;
+        this.status.networkLatency = connectionTime;
+        
         resolve();
       });
 
@@ -139,7 +146,22 @@ class SSHConnection extends EventEmitter {
       });
 
       this.emitEvent('connecting');
-      this.client.connect(this.config);
+      
+      // Convert our config to SSH2 ConnectConfig
+      const connectConfig: any = {
+        host: this.config.host,
+        port: this.config.port,
+        username: this.config.username,
+        ...(this.config.privateKey && { privateKey: this.config.privateKey }),
+        ...(this.config.passphrase && { passphrase: this.config.passphrase }),
+        ...(this.config.agent && { agent: this.config.agent }),
+        ...(this.config.timeout && { timeout: this.config.timeout }),
+        ...(this.config.keepaliveInterval && { keepaliveInterval: this.config.keepaliveInterval }),
+        ...(this.config.keepaliveCountMax && { keepaliveCountMax: this.config.keepaliveCountMax }),
+        ...(this.config.readyTimeout && { readyTimeout: this.config.readyTimeout }),
+      };
+      
+      this.client.connect(connectConfig);
     });
   }
 
@@ -270,7 +292,7 @@ export class SSHManager extends EventEmitter {
     }
   }
 
-  async addConnection(nodeConfig: NodeConfig, sshKeyPath: string): Promise<string> {
+  async addConnection(nodeConfig: NodeConfig, sshKeyPath?: string): Promise<string> {
     const connectionId = this.createConnectionId(
       nodeConfig.host,
       nodeConfig.port,
@@ -286,17 +308,56 @@ export class SSHManager extends EventEmitter {
       throw new Error(`Maximum connections (${this.poolConfig.maxConnections}) reached`);
     }
 
-    const privateKey = await this.loadPrivateKey(sshKeyPath);
-    
     const sshConfig: SSHConnectionConfig = {
       host: nodeConfig.host,
       port: nodeConfig.port,
       username: nodeConfig.user,
-      privateKey,
       timeout: this.poolConfig.connectionTimeout,
       keepaliveInterval: this.poolConfig.keepAliveInterval,
       keepaliveCountMax: this.poolConfig.keepAliveCountMax,
     };
+
+    // Try to load SSH key - either specified path or default locations
+    let keyLoaded = false;
+    
+    if (sshKeyPath) {
+      // Use specified key path
+      try {
+        const privateKey = await this.loadPrivateKey(sshKeyPath);
+        sshConfig.privateKey = privateKey;
+        this.logger.debug(`Using specified private key: ${sshKeyPath}`);
+        keyLoaded = true;
+      } catch (error) {
+        this.logger.warn(`Failed to load specified private key ${sshKeyPath}:`, { error: String(error) });
+      }
+    }
+    
+    if (!keyLoaded) {
+      // Try default SSH key locations in order (same as ssh command)
+      const defaultKeyPaths = [
+        `${process.env.HOME}/.ssh/id_rsa`,
+        `${process.env.HOME}/.ssh/id_ecdsa`, 
+        `${process.env.HOME}/.ssh/id_ed25519`,
+        `${process.env.HOME}/.ssh/id_dsa`
+      ];
+      
+      for (const keyPath of defaultKeyPaths) {
+        try {
+          const privateKey = await this.loadPrivateKey(keyPath);
+          sshConfig.privateKey = privateKey;
+          this.logger.debug(`Using default private key: ${keyPath}`);
+          keyLoaded = true;
+          break;
+        } catch (error) {
+          // Try next key
+          continue;
+        }
+      }
+      
+      if (!keyLoaded) {
+        this.logger.warn('No SSH keys found in default locations, connection may fail');
+      }
+    }
 
     const connection = new SSHConnection(sshConfig, this.poolConfig);
     

@@ -1,9 +1,7 @@
 // SSH-related TypeScript interfaces and types
 
-import type { ConnectConfig } from 'ssh2';
-
 // SSH connection configuration
-export interface SSHConnectionConfig extends Partial<ConnectConfig> {
+export interface SSHConnectionConfig {
   host: string;
   port: number;
   username: string;

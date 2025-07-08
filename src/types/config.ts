@@ -61,8 +61,7 @@ export interface RPCConfig {
 
 // SSH configuration for the CLI machine
 export interface SSHConfig {
-  keyPath: string;
-  agent?: boolean;
+  keyPath?: string; // Optional - will use SSH agent if not provided
   timeout: number;
 }
 

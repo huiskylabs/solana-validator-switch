@@ -24,7 +24,7 @@ export class SSHDiagnosticsService {
    */
   async runDiagnostics(
     nodeConfig: NodeConfig,
-    sshKeyPath: string
+    sshKeyPath?: string
   ): Promise<SSHDiagnostics> {
     const connectionId = `${nodeConfig.user}@${nodeConfig.host}:${nodeConfig.port}`;
     
@@ -92,10 +92,12 @@ export class SSHDiagnosticsService {
         }
       }
 
-      // Test 5: Key file validation
-      const keyValidation = await this.validateSSHKey(sshKeyPath);
-      if (!keyValidation.valid) {
-        diagnostics.errors.push(`SSH key validation failed: ${keyValidation.error}`);
+      // Test 5: Key file validation (only if key path provided)
+      if (sshKeyPath) {
+        const keyValidation = await this.validateSSHKey(sshKeyPath);
+        if (!keyValidation.valid) {
+          diagnostics.errors.push(`SSH key validation failed: ${keyValidation.error}`);
+        }
       }
 
     } catch (error) {
@@ -188,7 +190,7 @@ export class SSHDiagnosticsService {
   /**
    * Test SSH authentication with detailed connection info
    */
-  private async testAuthentication(nodeConfig: NodeConfig, sshKeyPath: string): Promise<{
+  private async testAuthentication(nodeConfig: NodeConfig, sshKeyPath?: string): Promise<{
     success: boolean;
     error?: string;
     keyExchange?: string;
@@ -207,7 +209,7 @@ export class SSHDiagnosticsService {
         '-o', 'StrictHostKeyChecking=no',
         '-o', 'UserKnownHostsFile=/dev/null',
         '-o', 'LogLevel=ERROR',
-        '-i', sshKeyPath,
+        ...(sshKeyPath ? ['-i', sshKeyPath] : []), // Only add -i flag if key path provided
         '-p', nodeConfig.port.toString(),
         `${nodeConfig.user}@${nodeConfig.host}`,
         'echo "SSH_AUTH_TEST_SUCCESS"'
@@ -248,7 +250,7 @@ export class SSHDiagnosticsService {
   /**
    * Test basic command execution capability
    */
-  private async testCommandExecution(nodeConfig: NodeConfig, sshKeyPath: string): Promise<{
+  private async testCommandExecution(nodeConfig: NodeConfig, sshKeyPath?: string): Promise<{
     success: boolean;
     error?: string;
   }> {
@@ -260,7 +262,7 @@ export class SSHDiagnosticsService {
         '-o', 'StrictHostKeyChecking=no',
         '-o', 'UserKnownHostsFile=/dev/null',
         '-o', 'LogLevel=ERROR',
-        '-i', sshKeyPath,
+        ...(sshKeyPath ? ['-i', sshKeyPath] : []), // Only add -i flag if key path provided
         '-p', nodeConfig.port.toString(),
         `${nodeConfig.user}@${nodeConfig.host}`,
         'whoami && pwd && date'

@@ -643,7 +643,7 @@ class ConfigCommandHandler {
         for (const node of nodesToTest) {
           const connectionId = await this.sshManager.addConnection(
             node.config, 
-            config.ssh.keyPath
+            config.ssh?.keyPath
           );
           await this.sshManager.connect(connectionId);
         }
@@ -651,6 +651,10 @@ class ConfigCommandHandler {
       } catch (error) {
         spinner.fail('Failed to establish SSH connections');
         console.error(chalk.red(`Connection error: ${error}`));
+        
+        // Always offer SSH key setup when connections fail, as it's likely an auth issue
+        console.log(chalk.yellow('\n💡 Connection failures are often due to SSH authentication issues.'));
+        await this.offerSSHKeySetup(nodesToTest, config, testType);
         return;
       }
 
@@ -660,7 +664,7 @@ class ConfigCommandHandler {
             await this.runQuickConnectionTest(nodesToTest);
             break;
           case 'diagnostics':
-            await this.runDiagnosticsTest(nodesToTest, config.ssh.keyPath);
+            await this.runDiagnosticsTest(nodesToTest, config.ssh?.keyPath);
             break;
           case 'health':
             await this.runHealthCheck(nodesToTest);
@@ -669,7 +673,7 @@ class ConfigCommandHandler {
             await this.runNodeDetection(nodesToTest);
             break;
           case 'complete':
-            await this.runCompleteTestSuite(nodesToTest, config.ssh.keyPath);
+            await this.runCompleteTestSuite(nodesToTest, config.ssh?.keyPath);
             break;
         }
       } finally {
@@ -717,7 +721,7 @@ class ConfigCommandHandler {
 
   private async runDiagnosticsTest(
     nodes: Array<{ label: string; config: NodeConfig }>,
-    sshKeyPath: string
+    sshKeyPath?: string
   ): Promise<void> {
     console.log(chalk.cyan('\n🔍 SSH Diagnostics Results\n'));
 
@@ -792,7 +796,7 @@ class ConfigCommandHandler {
 
   private async runCompleteTestSuite(
     nodes: Array<{ label: string; config: NodeConfig }>,
-    sshKeyPath: string
+    sshKeyPath?: string
   ): Promise<void> {
     console.log(chalk.cyan('\n🌟 Complete Test Suite\n'));
     
@@ -815,6 +819,248 @@ class ConfigCommandHandler {
       await this.runNodeDetection([node]);
       
       console.log(chalk.magenta(`\n═══ Completed ${node.label} ═══\n`));
+    }
+  }
+
+  private async offerSSHKeySetup(
+    nodes: Array<{ label: string; config: NodeConfig }>,
+    config: any,
+    testType?: string
+  ): Promise<void> {
+    console.log(chalk.yellow('\n🔑 SSH Authentication Failed'));
+    console.log(chalk.cyan('Some nodes failed to authenticate. Let\'s set up SSH key authentication.\n'));
+
+    // Test each node individually to see which ones failed
+    const failedNodes: Array<{ label: string; config: NodeConfig }> = [];
+    
+    for (const node of nodes) {
+      try {
+        const testResult = await this.sshDiagnostics.runDiagnostics(node.config, config.ssh?.keyPath);
+        if (!testResult.authentication) {
+          failedNodes.push(node);
+        }
+      } catch (error) {
+        failedNodes.push(node);
+      }
+    }
+
+    if (failedNodes.length === 0) {
+      console.log(chalk.green('All nodes are actually working now. Please try the test again.'));
+      return;
+    }
+
+    console.log(chalk.red(`❌ Failed to authenticate to ${failedNodes.length} node(s):`));
+    failedNodes.forEach(node => {
+      console.log(chalk.red(`   • ${node.label} (${node.config.user}@${node.config.host})`));
+    });
+
+    console.log(chalk.cyan('\n📋 SSH Key Setup Options:\n'));
+    console.log('1. 🔑 ' + chalk.green('Get ssh-copy-id commands') + ' - Copy-pastable commands for another terminal');
+    console.log('2. 📖 ' + chalk.blue('Manual Instructions') + ' - Show step-by-step guide');
+    console.log('3. ⏩ ' + chalk.gray('Skip') + ' - Continue without setting up keys');
+
+    const { setupChoice } = await inquirer.prompt([
+      {
+        type: 'list',
+        name: 'setupChoice',
+        message: 'How would you like to set up SSH keys?',
+        choices: [
+          { name: '🔑 Get ssh-copy-id commands (recommended)', value: 'run-now' },
+          { name: '📖 Show Manual Instructions', value: 'manual' },
+          { name: '⏩ Skip for now', value: 'skip' },
+        ],
+      },
+    ]);
+
+    switch (setupChoice) {
+      case 'run-now':
+        await this.runSSHCopyIdNow(failedNodes, config, testType, nodes);
+        break;
+      case 'manual':
+        await this.showManualSSHKeyInstructions(failedNodes);
+        break;
+      case 'skip':
+        console.log(chalk.yellow('\n⚠️ Skipping SSH key setup. You can run this again later with: svs config --test'));
+        break;
+    }
+  }
+
+
+  private async runSSHCopyIdNow(
+    failedNodes: Array<{ label: string; config: NodeConfig }>,
+    config: any,
+    testType?: string,
+    allNodes?: Array<{ label: string; config: NodeConfig }>
+  ): Promise<void> {
+    console.log(chalk.cyan('\n🔑 Setting up SSH keys with ssh-copy-id...\n'));
+
+    const sshKeyPath = config.ssh?.keyPath || `${process.env.HOME}/.ssh/id_rsa`;
+    const publicKeyPath = sshKeyPath + '.pub';
+
+    // Check if public key exists
+    try {
+      const fs = await import('fs');
+      await fs.promises.access(publicKeyPath);
+    } catch (error) {
+      console.error(chalk.red(`❌ Public key not found at ${publicKeyPath}`));
+      console.log(chalk.yellow('💡 Generate an SSH key first with: ssh-keygen -t rsa -b 4096'));
+      return;
+    }
+
+    for (const node of failedNodes) {
+      const nodeLabel = `${node.label} (${node.config.user}@${node.config.host})`;
+      
+      // Build the ssh-copy-id command
+      const portFlag = node.config.port !== 22 ? ` -p ${node.config.port}` : '';
+      const command = `ssh-copy-id -i ${publicKeyPath}${portFlag} ${node.config.user}@${node.config.host}`;
+      
+      console.log(chalk.blue(`\n🔑 Setting up SSH key for ${nodeLabel}`));
+      console.log(chalk.cyan('\n📋 Copy and run this command in another terminal:'));
+      console.log(chalk.green(`${command}`));
+      console.log(chalk.yellow('📝 This will prompt for your server password.'));
+      
+      const { waitForCompletion } = await inquirer.prompt([
+        {
+          type: 'confirm',
+          name: 'waitForCompletion',
+          message: 'Have you successfully run the ssh-copy-id command in another terminal?',
+          default: false,
+        },
+      ]);
+
+      if (waitForCompletion) {
+        console.log(chalk.green(`✅ SSH key setup completed for ${nodeLabel}`));
+      } else {
+        console.log(chalk.yellow(`⚠️ You can set up ${nodeLabel} later by running:`));
+        console.log(chalk.gray(`   ${command}`));
+      }
+    }
+
+    // Offer to retry the connection test
+    console.log(chalk.cyan('\n🎉 SSH key setup completed!'));
+    
+    const { retryTest } = await inquirer.prompt([
+      {
+        type: 'confirm',
+        name: 'retryTest',
+        message: 'Would you like to retry the connection test now?',
+        default: true,
+      },
+    ]);
+
+    if (retryTest) {
+      console.log(chalk.blue('\n🔄 Retrying connection test...\n'));
+      
+      // Retry the specific test that was originally selected
+      if (testType && allNodes) {
+        await this.retrySpecificTest(testType, allNodes, config);
+      } else {
+        // Fallback to full test menu if we don't have the context
+        await this.testConnections();
+      }
+    } else {
+      console.log(chalk.blue('\n💡 You can run "svs config --test" again anytime to verify the connections work!'));
+    }
+  }
+
+  private async retrySpecificTest(
+    testType: string,
+    nodesToTest: Array<{ label: string; config: NodeConfig }>,
+    config: any
+  ): Promise<void> {
+    // Initialize SSH connections again
+    const spinner = ora('Setting up SSH connections...').start();
+    
+    try {
+      for (const node of nodesToTest) {
+        const connectionId = await this.sshManager.addConnection(
+          node.config, 
+          config.ssh?.keyPath
+        );
+        await this.sshManager.connect(connectionId);
+      }
+      spinner.succeed('SSH connections established');
+      
+      // Run the specific test that was originally selected
+      switch (testType) {
+        case 'quick':
+          await this.runQuickConnectionTest(nodesToTest);
+          break;
+        case 'diagnostics':
+          await this.runDiagnosticsTest(nodesToTest, config.ssh?.keyPath);
+          break;
+        case 'health':
+          await this.runHealthCheck(nodesToTest);
+          break;
+        case 'detection':
+          await this.runNodeDetection(nodesToTest);
+          break;
+        case 'complete':
+          await this.runCompleteTestSuite(nodesToTest, config.ssh?.keyPath);
+          break;
+        default:
+          await this.runQuickConnectionTest(nodesToTest);
+      }
+      
+    } catch (error) {
+      spinner.fail('Connection test still failing');
+      console.error(chalk.red(`Error: ${error}`));
+      console.log(chalk.yellow('💡 You may need to check your SSH key setup or try the manual instructions.'));
+    } finally {
+      // Clean up connections
+      await this.sshManager.disconnectAll();
+    }
+  }
+
+  private async showManualSSHKeyInstructions(
+    failedNodes: Array<{ label: string; config: NodeConfig }>
+  ): Promise<void> {
+    console.log(chalk.cyan('\n📖 Manual SSH Key Setup Instructions\n'));
+
+    console.log(chalk.blue('🔧 Method 1: Using ssh-copy-id (Recommended)\n'));
+    
+    failedNodes.forEach((node, index) => {
+      const nodeInfo = `${node.config.user}@${node.config.host}`;
+      const portFlag = node.config.port !== 22 ? ` -p ${node.config.port}` : '';
+      
+      console.log(chalk.green(`${index + 1}. For ${node.label}:`));
+      console.log(chalk.gray(`   ssh-copy-id -i ~/.ssh/id_rsa.pub${portFlag} ${nodeInfo}`));
+      console.log('');
+    });
+
+    console.log(chalk.blue('🔧 Method 2: Manual Setup\n'));
+    console.log(chalk.gray('1. Copy your public key:'));
+    console.log(chalk.gray('   cat ~/.ssh/id_rsa.pub | pbcopy'));
+    console.log('');
+    console.log(chalk.gray('2. For each server, SSH in with password and run:'));
+    console.log(chalk.gray('   mkdir -p ~/.ssh'));
+    console.log(chalk.gray('   echo "YOUR_PUBLIC_KEY" >> ~/.ssh/authorized_keys'));
+    console.log(chalk.gray('   chmod 700 ~/.ssh'));
+    console.log(chalk.gray('   chmod 600 ~/.ssh/authorized_keys'));
+    console.log('');
+
+    console.log(chalk.blue('🔧 Method 3: One-liner per server\n'));
+    failedNodes.forEach((node, index) => {
+      const nodeInfo = `${node.config.user}@${node.config.host}`;
+      console.log(chalk.green(`${index + 1}. For ${node.label}:`));
+      console.log(chalk.gray(`   cat ~/.ssh/id_rsa.pub | ssh ${nodeInfo} "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys"`));
+      console.log('');
+    });
+
+    console.log(chalk.yellow('⚠️ After setup, test with: ') + chalk.blue('svs config --test'));
+    console.log(chalk.gray('💡 Each server should connect without asking for a password'));
+
+    const { continuePrompt } = await inquirer.prompt([
+      {
+        type: 'confirm',
+        name: 'continuePrompt',
+        message: 'Press Enter when you\'ve finished setting up SSH keys...',
+        default: true,
+      },
+    ]);
+
+    if (continuePrompt) {
+      console.log(chalk.blue('\n🔄 You can now run "svs config --test" to verify the connections work!'));
     }
   }
 

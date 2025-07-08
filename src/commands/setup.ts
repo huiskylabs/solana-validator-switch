@@ -594,7 +594,7 @@ class SetupWizard {
               config.nodes.primary.host,
               config.nodes.primary.port,
               config.nodes.primary.user,
-              config.ssh.keyPath
+              config.ssh?.keyPath || ''
             )
             .then((result: any) => ({ node: 'Primary', ...result }))
         );
@@ -609,7 +609,7 @@ class SetupWizard {
               config.nodes.backup.host,
               config.nodes.backup.port,
               config.nodes.backup.user,
-              config.ssh.keyPath
+              config.ssh?.keyPath || ''
             )
             .then((result: any) => ({ node: 'Backup', ...result }))
         );

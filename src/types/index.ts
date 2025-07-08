@@ -1,6 +1,9 @@
 // Re-export all configuration types from the main config file
 export * from './config';
 
+// Re-export SSH types
+export * from './ssh';
+
 // Environment configuration
 export interface EnvironmentConfig {
   SVS_CONFIG_PATH?: string;

@@ -8,16 +8,28 @@ import { ConfigManager } from '../utils/config-manager.js';
 import { SSHKeyDetector } from '../utils/ssh-key-detector.js';
 import { Validator } from '../utils/validator.js';
 import { Logger } from '../utils/logger.js';
+import { SSHManager } from '../lib/ssh-manager.js';
+import { SSHDiagnosticsService } from '../utils/ssh-diagnostics.js';
+import { HealthCheckService } from '../lib/health-checker.js';
+import { NodeDetectionService } from '../lib/node-detector.js';
 import type { NodeConfig } from '../types/config.js';
 
 class ConfigCommandHandler {
   private configManager: ConfigManager;
   private sshDetector: SSHKeyDetector;
+  private sshManager: SSHManager;
+  private sshDiagnostics: SSHDiagnosticsService;
+  private healthChecker: HealthCheckService;
+  private nodeDetector: NodeDetectionService;
   private logger: Logger;
 
   constructor() {
     this.configManager = new ConfigManager();
     this.sshDetector = new SSHKeyDetector();
+    this.sshManager = new SSHManager();
+    this.sshDiagnostics = new SSHDiagnosticsService();
+    this.healthChecker = new HealthCheckService(this.sshManager);
+    this.nodeDetector = new NodeDetectionService(this.sshManager);
     this.logger = new Logger();
   }
 
@@ -578,7 +590,7 @@ class ConfigCommandHandler {
   }
 
   private async testConnections(): Promise<void> {
-    const spinner = ora('Testing connections...').start();
+    const spinner = ora('Loading configuration...').start();
 
     try {
       const config = await this.configManager.load();
@@ -591,86 +603,218 @@ class ConfigCommandHandler {
         return;
       }
 
-      const results: Array<{ node: string; success: boolean; error?: string }> =
-        [];
+      // Prompt for test type
+      spinner.stop();
+      const { testType } = await inquirer.prompt([
+        {
+          type: 'list',
+          name: 'testType',
+          message: 'What type of test would you like to run?',
+          choices: [
+            { name: '🚀 Quick Connection Test', value: 'quick' },
+            { name: '🔍 Full Diagnostics', value: 'diagnostics' },
+            { name: '🏥 Health Check', value: 'health' },
+            { name: '🔍 Node Detection', value: 'detection' },
+            { name: '🌟 Complete Test Suite', value: 'complete' },
+          ],
+        },
+      ]);
 
-      // Test primary node
+      const nodesToTest: Array<{ label: string; config: NodeConfig }> = [];
+      
       if (config.nodes.primary) {
-        spinner.text = 'Testing primary node connection...';
-        try {
-          const result = await this.sshDetector.testConnection(
-            config.nodes.primary.host,
-            config.nodes.primary.port,
-            config.nodes.primary.user,
-            config.ssh.keyPath
-          );
-          const resultObj: any = {
-            node: `Primary (${config.nodes.primary.label})`,
-            success: result.success,
-          };
-          if (result.error) {
-            resultObj.error = result.error;
-          }
-          results.push(resultObj);
-        } catch (error) {
-          results.push({
-            node: `Primary (${config.nodes.primary.label})`,
-            success: false,
-            error: (error as Error).message,
-          });
-        }
+        nodesToTest.push({ 
+          label: `Primary (${config.nodes.primary.label})`, 
+          config: config.nodes.primary 
+        });
       }
-
-      // Test backup node
+      
       if (config.nodes.backup) {
-        spinner.text = 'Testing backup node connection...';
-        try {
-          const result = await this.sshDetector.testConnection(
-            config.nodes.backup.host,
-            config.nodes.backup.port,
-            config.nodes.backup.user,
-            config.ssh.keyPath
-          );
-          const resultObj: any = {
-            node: `Backup (${config.nodes.backup.label})`,
-            success: result.success,
-          };
-          if (result.error) {
-            resultObj.error = result.error;
-          }
-          results.push(resultObj);
-        } catch (error) {
-          results.push({
-            node: `Backup (${config.nodes.backup.label})`,
-            success: false,
-            error: (error as Error).message,
-          });
-        }
+        nodesToTest.push({ 
+          label: `Backup (${config.nodes.backup.label})`, 
+          config: config.nodes.backup 
+        });
       }
 
-      spinner.succeed('Connection tests completed');
+      // Initialize SSH connections
+      spinner.start('Setting up SSH connections...');
+      
+      try {
+        for (const node of nodesToTest) {
+          const connectionId = await this.sshManager.addConnection(
+            node.config, 
+            config.ssh.keyPath
+          );
+          await this.sshManager.connect(connectionId);
+        }
+        spinner.succeed('SSH connections established');
+      } catch (error) {
+        spinner.fail('Failed to establish SSH connections');
+        console.error(chalk.red(`Connection error: ${error}`));
+        return;
+      }
 
-      console.log(chalk.cyan('\n🔗 Connection Test Results\n'));
+      try {
+        switch (testType) {
+          case 'quick':
+            await this.runQuickConnectionTest(nodesToTest);
+            break;
+          case 'diagnostics':
+            await this.runDiagnosticsTest(nodesToTest, config.ssh.keyPath);
+            break;
+          case 'health':
+            await this.runHealthCheck(nodesToTest);
+            break;
+          case 'detection':
+            await this.runNodeDetection(nodesToTest);
+            break;
+          case 'complete':
+            await this.runCompleteTestSuite(nodesToTest, config.ssh.keyPath);
+            break;
+        }
+      } finally {
+        // Clean up connections
+        await this.sshManager.disconnectAll();
+      }
 
-      const resultsTable = new Table({
-        head: [chalk.cyan('Node'), chalk.cyan('Status'), chalk.cyan('Details')],
-        style: { head: [], border: [] },
-      });
-
-      results.forEach(result => {
-        resultsTable.push([
-          result.node,
-          result.success ? chalk.green('✅ Connected') : chalk.red('❌ Failed'),
-          result.error
-            ? chalk.red(result.error)
-            : chalk.green('Connection successful'),
-        ]);
-      });
-
-      console.log(resultsTable.toString());
     } catch (error) {
       spinner.fail('Connection test failed');
       throw error;
+    }
+  }
+
+  private async runQuickConnectionTest(
+    nodes: Array<{ label: string; config: NodeConfig }>
+  ): Promise<void> {
+    console.log(chalk.cyan('\n🚀 Quick Connection Test Results\n'));
+
+    const resultsTable = new Table({
+      head: [chalk.cyan('Node'), chalk.cyan('Status'), chalk.cyan('Latency')],
+      style: { head: [], border: [] },
+    });
+
+    for (const node of nodes) {
+      const connectionId = `${node.config.user}@${node.config.host}:${node.config.port}`;
+      const status = this.sshManager.getConnectionStatus(connectionId);
+      
+      if (status?.connected) {
+        resultsTable.push([
+          node.label,
+          chalk.green('✅ Connected'),
+          status.networkLatency ? `${status.networkLatency}ms` : 'N/A'
+        ]);
+      } else {
+        resultsTable.push([
+          node.label,
+          chalk.red('❌ Failed'),
+          status?.lastError || 'Connection failed'
+        ]);
+      }
+    }
+
+    console.log(resultsTable.toString());
+  }
+
+  private async runDiagnosticsTest(
+    nodes: Array<{ label: string; config: NodeConfig }>,
+    sshKeyPath: string
+  ): Promise<void> {
+    console.log(chalk.cyan('\n🔍 SSH Diagnostics Results\n'));
+
+    for (const node of nodes) {
+      const spinner = ora(`Running diagnostics for ${node.label}...`).start();
+      
+      try {
+        const diagnostics = await this.sshDiagnostics.runDiagnostics(
+          node.config, 
+          sshKeyPath
+        );
+        
+        spinner.succeed(`Diagnostics completed for ${node.label}`);
+        console.log('\n' + this.sshDiagnostics.generateReport(diagnostics));
+        console.log('\n' + '─'.repeat(60) + '\n');
+        
+      } catch (error) {
+        spinner.fail(`Diagnostics failed for ${node.label}`);
+        console.error(chalk.red(`Error: ${error}`));
+      }
+    }
+  }
+
+  private async runHealthCheck(
+    nodes: Array<{ label: string; config: NodeConfig }>
+  ): Promise<void> {
+    console.log(chalk.cyan('\n🏥 Node Health Check Results\n'));
+
+    for (const node of nodes) {
+      const spinner = ora(`Checking health of ${node.label}...`).start();
+      
+      try {
+        const connectionId = `${node.config.user}@${node.config.host}:${node.config.port}`;
+        const healthResult = await this.healthChecker.checkNodeHealth(
+          connectionId, 
+          node.config
+        );
+        
+        spinner.succeed(`Health check completed for ${node.label}`);
+        console.log('\n' + this.healthChecker.generateHealthReport(healthResult));
+        console.log('\n' + '─'.repeat(60) + '\n');
+        
+      } catch (error) {
+        spinner.fail(`Health check failed for ${node.label}`);
+        console.error(chalk.red(`Error: ${error}`));
+      }
+    }
+  }
+
+  private async runNodeDetection(
+    nodes: Array<{ label: string; config: NodeConfig }>
+  ): Promise<void> {
+    console.log(chalk.cyan('\n🔍 Node Detection Results\n'));
+
+    for (const node of nodes) {
+      const spinner = ora(`Detecting node configuration for ${node.label}...`).start();
+      
+      try {
+        const connectionId = `${node.config.user}@${node.config.host}:${node.config.port}`;
+        const detectionResult = await this.nodeDetector.detectNode(connectionId);
+        
+        spinner.succeed(`Node detection completed for ${node.label}`);
+        console.log('\n' + this.nodeDetector.generateDetectionReport(detectionResult));
+        console.log('\n' + '─'.repeat(60) + '\n');
+        
+      } catch (error) {
+        spinner.fail(`Node detection failed for ${node.label}`);
+        console.error(chalk.red(`Error: ${error}`));
+      }
+    }
+  }
+
+  private async runCompleteTestSuite(
+    nodes: Array<{ label: string; config: NodeConfig }>,
+    sshKeyPath: string
+  ): Promise<void> {
+    console.log(chalk.cyan('\n🌟 Complete Test Suite\n'));
+    
+    for (const node of nodes) {
+      console.log(chalk.magenta(`\n═══ Testing ${node.label} ═══\n`));
+      
+      // 1. Quick connection test
+      await this.runQuickConnectionTest([node]);
+      
+      // 2. SSH diagnostics
+      console.log(chalk.cyan('\n📡 SSH Diagnostics:'));
+      await this.runDiagnosticsTest([node], sshKeyPath);
+      
+      // 3. Health check
+      console.log(chalk.cyan('\n🏥 Health Check:'));
+      await this.runHealthCheck([node]);
+      
+      // 4. Node detection
+      console.log(chalk.cyan('\n🔍 Node Detection:'));
+      await this.runNodeDetection([node]);
+      
+      console.log(chalk.magenta(`\n═══ Completed ${node.label} ═══\n`));
     }
   }
 

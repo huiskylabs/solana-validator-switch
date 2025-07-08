@@ -85,7 +85,9 @@ export class ConfigManager {
    */
   async save(config?: PartialConfig): Promise<void> {
     try {
-      const configToSave = config ? this.mergeWithCurrent(config) : this.config;
+      const configToSave = config 
+        ? (this.config ? this.mergeWithCurrent(config) : config as Config)
+        : this.config;
 
       if (!configToSave) {
         throw new Error('No configuration to save');
@@ -294,10 +296,6 @@ export class ConfigManager {
         theme: (env.SVS_THEME as 'dark' | 'light' | 'auto') || 'auto',
         compact: env.SVS_COMPACT_MODE === 'true',
         showTechnicalDetails: false,
-        showTimestamps: true,
-        showLogLevel: true,
-        colorOutput: env.SVS_NO_COLOR !== 'true',
-        refreshRate: 2,
       };
     }
 
@@ -307,7 +305,6 @@ export class ConfigManager {
       if (!isNaN(timeout)) {
         overrides.security = {
           confirmSwitches: true,
-          sessionTimeout: 60,
           maxRetries: 3,
           sshTimeout: timeout,
           requireHealthCheck: true,
@@ -352,7 +349,11 @@ export class ConfigManager {
     return path.resolve(userConfigPath);
   }
 
-  private async exists(): Promise<boolean> {
+  getConfigPath(): string {
+    return this.configPath;
+  }
+
+  async exists(): Promise<boolean> {
     try {
       await fs.access(this.configPath);
       return true;
@@ -376,16 +377,20 @@ export class ConfigManager {
     return {
       version: '1.0.0',
       configPath: this.configPath,
+      ssh: {
+        keyPath: '',
+        timeout: 30,
+      },
       nodes: {
         primary: {
           label: 'primary',
           host: '',
           port: 22,
           user: '',
-          keyPath: '',
           paths: {
             fundedIdentity: '',
             unfundedIdentity: '',
+            voteKeypair: '',
             ledger: '',
             tower: '',
             solanaCliPath: '',
@@ -396,10 +401,10 @@ export class ConfigManager {
           host: '',
           port: 22,
           user: '',
-          keyPath: '',
           paths: {
             fundedIdentity: '',
             unfundedIdentity: '',
+            voteKeypair: '',
             ledger: '',
             tower: '',
             solanaCliPath: '',

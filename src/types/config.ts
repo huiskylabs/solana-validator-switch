@@ -7,7 +7,6 @@ export interface NodeConfig {
   host: string;
   port: number;
   user: string;
-  keyPath: string;
   paths: NodePaths;
   metadata?: NodeMetadata;
 }
@@ -15,6 +14,7 @@ export interface NodeConfig {
 export interface NodePaths {
   fundedIdentity: string;
   unfundedIdentity: string;
+  voteKeypair: string;
   ledger: string;
   tower: string;
   solanaCliPath: string;
@@ -56,22 +56,16 @@ export interface DisplayConfig {
   theme: 'dark' | 'light' | 'auto';
   compact: boolean;
   showTechnicalDetails: boolean;
-  showTimestamps: boolean;
-  showLogLevel: boolean;
-  colorOutput: boolean;
-  terminalWidth?: number;
-  refreshRate: number; // seconds
 }
 
 // Security configuration
 export interface SecurityConfig {
   confirmSwitches: boolean;
-  sessionTimeout: number; // minutes
   maxRetries: number;
-  sshTimeout: number; // seconds
-  requireHealthCheck: boolean;
-  allowForceSwitch: boolean;
-  auditLog: boolean;
+  sshTimeout?: number; // seconds
+  requireHealthCheck?: boolean;
+  allowForceSwitch?: boolean;
+  auditLog?: boolean;
 }
 
 // RPC configuration with failover
@@ -87,10 +81,18 @@ export interface RPCConfig {
   };
 }
 
+// SSH configuration for the CLI machine
+export interface SSHConfig {
+  keyPath: string;
+  agent?: boolean;
+  timeout: number;
+}
+
 // Main configuration interface
 export interface Config {
   version: string;
   configPath?: string;
+  ssh: SSHConfig;
   nodes: {
     primary: NodeConfig;
     backup: NodeConfig;
@@ -229,7 +231,6 @@ export const DEFAULT_CONFIG: Partial<Config> = {
   },
   security: {
     confirmSwitches: true,
-    sessionTimeout: 60,
     maxRetries: 3,
     sshTimeout: 30,
     requireHealthCheck: true,
@@ -240,10 +241,6 @@ export const DEFAULT_CONFIG: Partial<Config> = {
     theme: 'auto',
     compact: false,
     showTechnicalDetails: false,
-    showTimestamps: true,
-    showLogLevel: true,
-    colorOutput: true,
-    refreshRate: 2,
   },
   advanced: {
     sshPoolSize: 2,

@@ -17,6 +17,7 @@ export interface ValidationError {
 export interface ValidationWarning {
   field: string;
   message: string;
+  code?: string;
   suggestion?: string;
 }
 
@@ -43,7 +44,7 @@ export class Validator {
     const cfg = config as Record<string, unknown>;
 
     // Required fields
-    const requiredFields = ['version', 'nodes', 'rpc'];
+    const requiredFields = ['version', 'ssh', 'nodes', 'rpc'];
     for (const field of requiredFields) {
       if (!(field in cfg)) {
         errors.push({
@@ -61,11 +62,18 @@ export class Validator {
       warnings.push(...versionResult.warnings);
     }
 
+    // Validate SSH configuration
+    if ('ssh' in cfg && typeof cfg.ssh === 'object' && cfg.ssh) {
+      const sshResult = this.validateSSH(cfg.ssh);
+      errors.push(...sshResult.errors);
+      warnings.push(...sshResult.warnings);
+    }
+
     // Validate nodes
     if ('nodes' in cfg && typeof cfg.nodes === 'object' && cfg.nodes) {
       const nodesResult = this.validateNodes(cfg.nodes);
       errors.push(...nodesResult.errors);
-      warnings.push(...warnings);
+      warnings.push(...nodesResult.warnings);
     }
 
     // Validate RPC configuration
@@ -102,7 +110,6 @@ export class Validator {
       'host',
       'port',
       'user',
-      'keyPath',
       'paths',
     ];
     for (const field of requiredFields) {
@@ -474,6 +481,79 @@ export class Validator {
   }
 
   /**
+   * Validate SSH configuration
+   */
+  private static validateSSH(ssh: unknown): ValidationResult {
+    const errors: ValidationError[] = [];
+    const warnings: ValidationWarning[] = [];
+
+    if (!ssh || typeof ssh !== 'object') {
+      errors.push({
+        field: 'ssh',
+        message: 'SSH configuration must be an object',
+        code: 'INVALID_TYPE',
+      });
+      return { valid: false, errors, warnings };
+    }
+
+    const sshConfig = ssh as Record<string, unknown>;
+
+    // Validate keyPath
+    if (!sshConfig.keyPath) {
+      errors.push({
+        field: 'ssh.keyPath',
+        message: 'SSH key path is required',
+        code: 'REQUIRED_FIELD_MISSING',
+      });
+    } else if (typeof sshConfig.keyPath !== 'string') {
+      errors.push({
+        field: 'ssh.keyPath',
+        message: 'SSH key path must be a string',
+        code: 'INVALID_TYPE',
+      });
+    } else {
+      // Validate key path format
+      const keyPath = sshConfig.keyPath as string;
+      if (!keyPath.trim()) {
+        errors.push({
+          field: 'ssh.keyPath',
+          message: 'SSH key path cannot be empty',
+          code: 'INVALID_VALUE',
+        });
+      } else if (!keyPath.startsWith('/') && !keyPath.startsWith('~')) {
+        warnings.push({
+          field: 'ssh.keyPath',
+          message: 'SSH key path should be an absolute path',
+          code: 'SUSPICIOUS_VALUE',
+          suggestion: 'Use absolute path starting with / or ~',
+        });
+      }
+    }
+
+    // Validate timeout
+    if (sshConfig.timeout !== undefined) {
+      if (typeof sshConfig.timeout !== 'number') {
+        errors.push({
+          field: 'ssh.timeout',
+          message: 'SSH timeout must be a number',
+          code: 'INVALID_TYPE',
+        });
+      } else {
+        const timeout = sshConfig.timeout as number;
+        if (timeout < 5 || timeout > 300) {
+          errors.push({
+            field: 'ssh.timeout',
+            message: 'SSH timeout must be between 5 and 300 seconds',
+            code: 'INVALID_VALUE',
+          });
+        }
+      }
+    }
+
+    return { valid: errors.length === 0, errors, warnings };
+  }
+
+  /**
    * Validate RPC configuration
    */
   private static validateRPC(rpc: unknown): ValidationResult {
@@ -541,6 +621,7 @@ export class Validator {
     const requiredPaths = [
       'fundedIdentity',
       'unfundedIdentity',
+      'voteKeypair',
       'ledger',
       'tower',
       'solanaCliPath',

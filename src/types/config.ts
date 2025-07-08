@@ -164,6 +164,15 @@ export interface ConfigValidationSchema {
   patterns: Record<string, RegExp>;
 }
 
+export interface ValidationSchema {
+  required?: string[];
+  optional?: string[];
+  types?: Record<string, string>;
+  ranges?: Record<string, [number, number]>;
+  patterns?: Record<string, RegExp>;
+  custom?: Record<string, (value: unknown) => boolean>;
+}
+
 // Configuration migration interface
 export interface ConfigMigration {
   fromVersion: string;

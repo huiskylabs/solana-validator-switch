@@ -18,8 +18,6 @@ export interface NodePaths {
   ledger: string;
   tower: string;
   solanaCliPath: string;
-  configFile?: string;
-  logFile?: string;
 }
 
 export interface NodeMetadata {
@@ -31,54 +29,34 @@ export interface NodeMetadata {
   notes?: string;
 }
 
-// Monitoring configuration with detailed settings
+// Monitoring configuration - simplified (no advanced options in setup)
 export interface MonitoringConfig {
   interval: number; // milliseconds
   healthThreshold: number; // vote distance threshold
   readinessThreshold: number; // slots behind threshold
   enableMetrics: boolean;
   metricsRetention: number; // days
-  alerting?: AlertingConfig;
 }
 
-export interface AlertingConfig {
-  enabled: boolean;
-  healthAlerts: boolean;
-  switchAlerts: boolean;
-  errorAlerts: boolean;
-  webhookUrl?: string;
-  slackChannel?: string;
-  discordWebhook?: string;
-}
 
-// Display configuration with theme and layout options
+// Display configuration with simplified options
 export interface DisplayConfig {
-  theme: 'dark' | 'light' | 'auto';
-  compact: boolean;
-  showTechnicalDetails: boolean;
+  theme: 'dark'; // Fixed to dark theme as per setup simplification
+  compact: boolean; // Always true in setup
+  showTechnicalDetails: boolean; // Always false in setup
 }
 
-// Security configuration
+// Security configuration - simplified
 export interface SecurityConfig {
   confirmSwitches: boolean;
   maxRetries: number;
-  sshTimeout?: number; // seconds
-  requireHealthCheck?: boolean;
-  allowForceSwitch?: boolean;
-  auditLog?: boolean;
 }
 
-// RPC configuration with failover
+// RPC configuration - simplified
 export interface RPCConfig {
   endpoint: string;
   timeout: number; // milliseconds
   retries: number;
-  failoverEndpoints?: string[];
-  customHeaders?: Record<string, string>;
-  rateLimiting?: {
-    enabled: boolean;
-    requestsPerMinute: number;
-  };
 }
 
 // SSH configuration for the CLI machine
@@ -88,7 +66,7 @@ export interface SSHConfig {
   timeout: number;
 }
 
-// Main configuration interface
+// Main configuration interface - simplified
 export interface Config {
   version: string;
   configPath?: string;
@@ -101,60 +79,16 @@ export interface Config {
   monitoring: MonitoringConfig;
   security: SecurityConfig;
   display: DisplayConfig;
-  advanced?: AdvancedConfig;
 }
 
-// Advanced configuration for power users
-export interface AdvancedConfig {
-  sshPoolSize: number;
-  sshKeepAlive: number; // seconds
-  commandTimeout: number; // seconds
-  towerBackups: number;
-  automaticSwitching?: AutoSwitchConfig;
-  performance?: PerformanceConfig;
-}
 
-export interface AutoSwitchConfig {
-  enabled: boolean;
-  triggers: {
-    voteDistance: number;
-    unhealthyDuration: number; // seconds
-    diskThreshold: number; // percentage
-    memoryThreshold: number; // percentage
-  };
-  schedule?: {
-    enabled: boolean;
-    maintenanceWindows: TimeWindow[];
-  };
-}
-
-export interface TimeWindow {
-  start: string; // HH:MM format
-  end: string; // HH:MM format
-  timezone: string;
-  days: number[]; // 0-6, Sunday = 0
-}
-
-export interface PerformanceConfig {
-  cacheSize: number; // MB
-  logLevel: 'debug' | 'info' | 'warn' | 'error';
-  maxLogFiles: number;
-  maxLogSize: number; // MB
-  enableProfiling: boolean;
-}
-
-// Environment configuration
+// Environment configuration - simplified
 export interface EnvironmentConfig {
   SVS_CONFIG_PATH?: string;
   SVS_SSH_TIMEOUT?: string;
   SVS_LOG_LEVEL?: 'debug' | 'info' | 'warn' | 'error';
-  SVS_NO_COLOR?: string;
-  SVS_REFRESH_INTERVAL?: string;
   SVS_RPC_ENDPOINT?: string;
-  SVS_MAX_RETRIES?: string;
-  SVS_THEME?: 'dark' | 'light' | 'auto';
-  SVS_COMPACT_MODE?: string;
-  SVS_AUTO_SWITCH?: string;
+  SVS_REFRESH_INTERVAL?: string;
 }
 
 // Configuration validation schemas
@@ -204,56 +138,29 @@ export interface SetupWizardState {
   warnings: string[];
 }
 
-// Default configuration values
+// Default configuration values - simplified to match setup
 export const DEFAULT_CONFIG: Partial<Config> = {
   version: '1.0.0',
   rpc: {
     endpoint: 'https://api.mainnet-beta.solana.com',
     timeout: 30000,
     retries: 3,
-    rateLimiting: {
-      enabled: true,
-      requestsPerMinute: 100,
-    },
   },
   monitoring: {
-    interval: 2000,
-    healthThreshold: 10,
+    interval: 5000,
+    healthThreshold: 100,
     readinessThreshold: 50,
     enableMetrics: true,
     metricsRetention: 7,
-    alerting: {
-      enabled: false,
-      healthAlerts: true,
-      switchAlerts: true,
-      errorAlerts: true,
-    },
   },
   security: {
     confirmSwitches: true,
     maxRetries: 3,
-    sshTimeout: 30,
-    requireHealthCheck: true,
-    allowForceSwitch: false,
-    auditLog: true,
   },
   display: {
-    theme: 'auto',
-    compact: false,
+    theme: 'dark',
+    compact: true,
     showTechnicalDetails: false,
-  },
-  advanced: {
-    sshPoolSize: 2,
-    sshKeepAlive: 30,
-    commandTimeout: 30,
-    towerBackups: 5,
-    performance: {
-      cacheSize: 100,
-      logLevel: 'info',
-      maxLogFiles: 5,
-      maxLogSize: 10,
-      enableProfiling: false,
-    },
   },
 };
 

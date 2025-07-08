@@ -273,44 +273,11 @@ export class ConfigManager {
       };
     }
 
-    // Logging configuration
-    if (env.SVS_LOG_LEVEL) {
-      overrides.advanced = {
-        sshPoolSize: 2,
-        sshKeepAlive: 30,
-        commandTimeout: 30,
-        towerBackups: 5,
-        performance: {
-          logLevel: env.SVS_LOG_LEVEL as 'debug' | 'info' | 'warn' | 'error',
-          cacheSize: 100,
-          maxLogFiles: 5,
-          maxLogSize: 10,
-          enableProfiling: false,
-        },
-      };
-    }
-
-    // Display settings
-    if (env.SVS_THEME || env.SVS_NO_COLOR || env.SVS_COMPACT_MODE) {
-      overrides.display = {
-        theme: (env.SVS_THEME as 'dark' | 'light' | 'auto') || 'auto',
-        compact: env.SVS_COMPACT_MODE === 'true',
-        showTechnicalDetails: false,
-      };
-    }
-
     // SSH timeout
     if (env.SVS_SSH_TIMEOUT) {
       const timeout = parseInt(env.SVS_SSH_TIMEOUT, 10);
-      if (!isNaN(timeout)) {
-        overrides.security = {
-          confirmSwitches: true,
-          maxRetries: 3,
-          sshTimeout: timeout,
-          requireHealthCheck: true,
-          allowForceSwitch: false,
-          auditLog: true,
-        };
+      if (!isNaN(timeout) && overrides.ssh) {
+        overrides.ssh.timeout = timeout;
       }
     }
 
@@ -320,7 +287,7 @@ export class ConfigManager {
       if (!isNaN(interval)) {
         overrides.monitoring = {
           interval: interval * 1000, // Convert to ms
-          healthThreshold: 10,
+          healthThreshold: 100,
           readinessThreshold: 50,
           enableMetrics: true,
           metricsRetention: 7,

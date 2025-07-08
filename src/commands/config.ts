@@ -201,7 +201,7 @@ class ConfigCommandHandler {
 
     switch (section) {
       case 'ssh':
-        await this.editConfiguration();
+        await this.editSSHConfiguration();
         break;
       case 'nodes':
         await this.editNodeConfiguration();
@@ -219,6 +219,60 @@ class ConfigCommandHandler {
         await this.editDisplayConfiguration();
         break;
     }
+  }
+
+  private async editSSHConfiguration(): Promise<void> {
+    const config = await this.configManager.load();
+
+    // Detect available SSH keys
+    const sshKeysResult = await this.sshDetector.detectKeys();
+    const keyChoices = sshKeysResult.keys.map(key => ({
+      name: `${key.type.toUpperCase()} - ${key.path} ${key.comment ? '(' + key.comment + ')' : ''}`,
+      value: key.path,
+    }));
+    keyChoices.push({ name: '📝 Enter custom path', value: 'custom' });
+
+    const sshConfig = await inquirer.prompt([
+      {
+        type: 'list',
+        name: 'keyPath',
+        message: 'SSH private key:',
+        choices: keyChoices,
+        default: config.ssh.keyPath,
+      },
+      {
+        type: 'number',
+        name: 'timeout',
+        message: 'SSH timeout (seconds):',
+        default: config.ssh.timeout || 30,
+        validate: (input: number) => {
+          if (!input || input < 5 || input > 300) {
+            return 'Timeout must be between 5 and 300 seconds';
+          }
+          return true;
+        },
+      },
+    ]);
+
+    if (sshConfig.keyPath === 'custom') {
+      const { customKeyPath } = await inquirer.prompt([
+        {
+          type: 'input',
+          name: 'customKeyPath',
+          message: 'Enter SSH private key path:',
+          default: config.ssh.keyPath,
+          validate: (input: string) => {
+            if (!input.trim()) return 'SSH key path is required';
+            return true;
+          },
+        },
+      ]);
+      sshConfig.keyPath = customKeyPath;
+    }
+
+    config.ssh = sshConfig;
+    await this.configManager.save(config);
+    console.log(chalk.green('✅ SSH configuration saved successfully!'));
   }
 
   private async editNodeConfiguration(): Promise<void> {
@@ -240,14 +294,6 @@ class ConfigCommandHandler {
     if (nodeType === 'back') return;
 
     const currentNode = config.nodes?.[nodeType as 'primary' | 'backup'];
-
-    // Detect available SSH keys
-    const sshKeysResult = await this.sshDetector.detectKeys();
-    const keyChoices = sshKeysResult.keys.map(key => ({
-      name: `${key.type.toUpperCase()} - ${key.path} ${key.comment ? '(' + key.comment + ')' : ''}`,
-      value: key.path,
-    }));
-    keyChoices.push({ name: '📝 Enter custom path', value: 'custom' });
 
     const nodeConfig = await inquirer.prompt([
       {
@@ -288,30 +334,7 @@ class ConfigCommandHandler {
           return true;
         },
       },
-      {
-        type: 'list',
-        name: 'keyPath',
-        message: 'SSH private key:',
-        choices: keyChoices,
-        // default: currentNode?.keyPath,
-      },
     ]);
-
-    if (nodeConfig.keyPath === 'custom') {
-      const { customKeyPath } = await inquirer.prompt([
-        {
-          type: 'input',
-          name: 'customKeyPath',
-          message: 'Enter SSH private key path:',
-          // default: currentNode?.keyPath,
-          validate: (input: string) => {
-            if (!input.trim()) return 'SSH key path is required';
-            return true;
-          },
-        },
-      ]);
-      nodeConfig.keyPath = customKeyPath;
-    }
 
     // Get path configuration
     const pathConfig = await inquirer.prompt([
@@ -493,30 +516,24 @@ class ConfigCommandHandler {
 
     const displayConfig = await inquirer.prompt([
       {
-        type: 'list',
-        name: 'theme',
-        message: 'Display theme:',
-        choices: [
-          { name: '🌙 Dark', value: 'dark' },
-          { name: '☀️ Light', value: 'light' },
-        ],
-        default: config.display?.theme || 'dark',
-      },
-      {
         type: 'confirm',
         name: 'compact',
         message: 'Use compact display mode?',
-        default: config.display?.compact ?? false,
+        default: config.display?.compact ?? true,
       },
       {
         type: 'confirm',
         name: 'showTechnicalDetails',
         message: 'Show technical details in output?',
-        default: config.display?.showTechnicalDetails ?? true,
+        default: config.display?.showTechnicalDetails ?? false,
       },
     ]);
 
-    config.display = displayConfig;
+    // Force theme to dark as per setup simplification
+    config.display = {
+      theme: 'dark',
+      ...displayConfig,
+    };
     await this.configManager.save(config);
     console.log(chalk.green('✅ Display configuration saved successfully!'));
   }
@@ -546,7 +563,7 @@ class ConfigCommandHandler {
             config.nodes.primary.host,
             config.nodes.primary.port,
             config.nodes.primary.user,
-            'temp-key-path'
+            config.ssh.keyPath
           );
           const resultObj: any = {
             node: `Primary (${config.nodes.primary.label})`,
@@ -573,7 +590,7 @@ class ConfigCommandHandler {
             config.nodes.backup.host,
             config.nodes.backup.port,
             config.nodes.backup.user,
-            'temp-key-path'
+            config.ssh.keyPath
           );
           const resultObj: any = {
             node: `Backup (${config.nodes.backup.label})`,

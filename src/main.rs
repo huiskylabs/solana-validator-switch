@@ -6,7 +6,7 @@ mod ssh;
 mod commands;
 mod types;
 
-use commands::{config_command, setup_command};
+use commands::{config_command, setup_command, status_command};
 
 #[derive(Parser)]
 #[command(name = "svs")]
@@ -76,10 +76,7 @@ async fn show_interactive_menu() -> Result<()> {
         
         match index {
             0 => show_config_menu().await?,
-            1 => {
-                println!("{}", "📋 Status coming soon...".yellow());
-                std::thread::sleep(std::time::Duration::from_secs(1));
-            },
+            1 => status_command().await?,
             2 => show_switch_menu().await?,
             3 => { // Exit
                 println!("{}", "👋 Goodbye!".bright_green());

@@ -170,7 +170,7 @@ async fn run_quick_connection_test(config: &Config) -> Result<()> {
                 spinner.finish_and_clear();
                 
                 // Validate files
-                let validation = validate_node_files(&ssh, node).await?;
+                let validation = validate_node_files(&mut ssh, node).await?;
                 let files_status = format!("{}/{}", validation.valid_files, validation.total_files);
                 let files_color = if validation.valid_files == validation.total_files {
                     files_status.green()
@@ -248,32 +248,32 @@ async fn show_passed_validations(config: &Config, node: &crate::types::NodeConfi
     // Check each validation that passed and show checkmarks
     
     // Check ledger directory
-    if let Ok(_) = ssh.execute_command(&format!("test -d \"{}\"", node.paths.ledger)) {
+    if let Ok(_) = ssh.execute_command(&format!("test -d \"{}\"", node.paths.ledger)).await {
         println!("   ✓ Ledger directory: {}", node.paths.ledger.green());
     }
     
     // Check accounts folder
-    if let Ok(_) = ssh.execute_command(&format!("test -d \"{}/accounts\"", node.paths.ledger)) {
+    if let Ok(_) = ssh.execute_command(&format!("test -d \"{}/accounts\"", node.paths.ledger)).await {
         println!("   ✓ Accounts folder in ledger directory");
     }
     
     // Check tower file
-    if let Ok(output) = ssh.execute_command(&format!("ls {}/tower-1_9-*.bin 2>/dev/null | head -1", node.paths.ledger)) {
+    if let Ok(output) = ssh.execute_command(&format!("ls {}/tower-1_9-*.bin 2>/dev/null | head -1", node.paths.ledger)).await {
         if !output.is_empty() {
             println!("   ✓ Tower file: {}", output.trim().green());
         }
     }
     
     // Check keypairs
-    if let Ok(_) = ssh.execute_command(&format!("test -f \"{}\"", node.paths.funded_identity)) {
+    if let Ok(_) = ssh.execute_command(&format!("test -f \"{}\"", node.paths.funded_identity)).await {
         println!("   ✓ Funded identity keypair: {}", node.paths.funded_identity.green());
     }
     
-    if let Ok(_) = ssh.execute_command(&format!("test -f \"{}\"", node.paths.unfunded_identity)) {
+    if let Ok(_) = ssh.execute_command(&format!("test -f \"{}\"", node.paths.unfunded_identity)).await {
         println!("   ✓ Unfunded identity keypair: {}", node.paths.unfunded_identity.green());
     }
     
-    if let Ok(_) = ssh.execute_command(&format!("test -f \"{}\"", node.paths.vote_keypair)) {
+    if let Ok(_) = ssh.execute_command(&format!("test -f \"{}\"", node.paths.vote_keypair)).await {
         println!("   ✓ Vote account keypair: {}", node.paths.vote_keypair.green());
     }
     

@@ -1,5 +1,6 @@
 use anyhow::{Result, anyhow};
 use ssh2::Session;
+use std::collections::HashMap;
 use std::net::TcpStream;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -7,52 +8,308 @@ use std::io::Read;
 
 use crate::types::{NodeConfig, ConnectionStatus, ValidationResult};
 
-pub struct SshManager {
-    session: Option<Session>,
+/// Individual SSH connection with health tracking
+pub struct SshConnection {
+    session: Session,
+    node_id: String,
+    connected_at: Instant,
+    last_used: Instant,
+    is_healthy: bool,
 }
 
-impl SshManager {
-    pub fn new() -> Self {
-        SshManager { session: None }
+impl SshConnection {
+    pub fn new(session: Session, node_id: String) -> Self {
+        let now = Instant::now();
+        SshConnection {
+            session,
+            node_id,
+            connected_at: now,
+            last_used: now,
+            is_healthy: true,
+        }
     }
     
-    pub async fn connect(&mut self, node: &NodeConfig, ssh_key_path: &str) -> Result<ConnectionStatus> {
-        let start_time = Instant::now();
+    pub fn is_connected(&self) -> bool {
+        self.is_healthy && self.session.authenticated()
+    }
+    
+    pub fn update_last_used(&mut self) {
+        self.last_used = Instant::now();
+    }
+    
+    pub fn mark_unhealthy(&mut self) {
+        self.is_healthy = false;
+    }
+    
+    pub fn execute_command(&mut self, command: &str) -> Result<String> {
+        self.update_last_used();
         
-        // Connect to TCP stream
-        let tcp = TcpStream::connect(format!("{}:{}", node.host, node.port))?;
-        tcp.set_read_timeout(Some(Duration::from_secs(30)))?;
-        tcp.set_write_timeout(Some(Duration::from_secs(30)))?;
+        let mut channel = self.session.channel_session()?;
+        channel.exec(command)?;
+        
+        let mut output = String::new();
+        channel.read_to_string(&mut output)?;
+        channel.wait_close()?;
+        
+        let exit_status = channel.exit_status()?;
+        if exit_status != 0 {
+            return Err(anyhow!("Command failed with exit status {}: {}", exit_status, output));
+        }
+        
+        Ok(output)
+    }
+    
+    pub fn health_check(&mut self) -> bool {
+        // Simple health check - try to execute a lightweight command
+        match self.execute_command("echo 'health_check'") {
+            Ok(output) if output.trim() == "health_check" => {
+                self.is_healthy = true;
+                true
+            }
+            _ => {
+                self.mark_unhealthy();
+                false
+            }
+        }
+    }
+}
+
+/// Persistent SSH connection pool manager
+pub struct SshConnectionPool {
+    connections: HashMap<String, SshConnection>,
+    config: PoolConfig,
+}
+
+pub struct PoolConfig {
+    pub max_idle_time: Duration,
+    pub health_check_interval: Duration,
+    pub connect_timeout: Duration,
+}
+
+impl Default for PoolConfig {
+    fn default() -> Self {
+        PoolConfig {
+            max_idle_time: Duration::from_secs(300), // 5 minutes
+            health_check_interval: Duration::from_secs(60), // 1 minute
+            connect_timeout: Duration::from_secs(10),
+        }
+    }
+}
+
+impl SshConnectionPool {
+    pub fn new() -> Self {
+        SshConnectionPool {
+            connections: HashMap::new(),
+            config: PoolConfig::default(),
+        }
+    }
+    
+    pub fn with_config(config: PoolConfig) -> Self {
+        SshConnectionPool {
+            connections: HashMap::new(),
+            config,
+        }
+    }
+    
+    /// Get connection ID for a node
+    fn get_connection_id(node: &NodeConfig) -> String {
+        format!("{}@{}:{}", node.user, node.host, node.port)
+    }
+    
+    /// Get or create a connection to a node
+    pub async fn get_connection(&mut self, node: &NodeConfig, ssh_key_path: &str) -> Result<&mut SshConnection> {
+        let connection_id = Self::get_connection_id(node);
+        
+        // Check if we need to reconnect
+        let needs_reconnect = if let Some(conn) = self.connections.get_mut(&connection_id) {
+            if conn.is_connected() {
+                // Quick health check if it's been a while
+                if conn.last_used.elapsed() > self.config.health_check_interval {
+                    !conn.health_check()
+                } else {
+                    false
+                }
+            } else {
+                true
+            }
+        } else {
+            true
+        };
+        
+        if needs_reconnect {
+            // Remove any existing unhealthy connection
+            self.connections.remove(&connection_id);
+            
+            // Create new connection
+            println!("🔌 Establishing SSH connection to {}...", connection_id);
+            let start_time = Instant::now();
+            
+            let session = self.create_session(node, ssh_key_path).await?;
+            let connection = SshConnection::new(session, connection_id.clone());
+            
+            let latency = start_time.elapsed();
+            println!("✅ Connected to {} ({}ms)", connection_id, latency.as_millis());
+            
+            self.connections.insert(connection_id.clone(), connection);
+        }
+        
+        Ok(self.connections.get_mut(&connection_id).unwrap())
+    }
+    
+    /// Create a new SSH session
+    async fn create_session(&self, node: &NodeConfig, ssh_key_path: &str) -> Result<Session> {
+        // Connect to TCP stream with timeout
+        let tcp = TcpStream::connect_timeout(
+            &format!("{}:{}", node.host, node.port).parse()?,
+            self.config.connect_timeout,
+        )?;
+        
+        tcp.set_read_timeout(Some(self.config.connect_timeout))?;
+        tcp.set_write_timeout(Some(self.config.connect_timeout))?;
+        tcp.set_nodelay(true)?; // Disable Nagle's algorithm for lower latency
         
         // Create SSH session
         let mut session = Session::new()?;
         session.set_tcp_stream(tcp);
         session.handshake()?;
         
-        // Authenticate with private key
-        let private_key_path = Path::new(ssh_key_path);
-        if !private_key_path.exists() {
-            return Err(anyhow!("SSH private key not found: {}", ssh_key_path));
-        }
-        
-        // Try with and without passphrase
-        let result = session.userauth_pubkey_file(
+        // Authenticate with SSH key
+        session.userauth_pubkey_file(
             &node.user,
             None,
-            private_key_path,
+            Path::new(ssh_key_path),
             None,
-        );
-        
-        if let Err(_) = result {
-            return Err(anyhow!("SSH authentication failed for {}@{}", node.user, node.host));
-        }
+        )?;
         
         if !session.authenticated() {
-            return Err(anyhow!("SSH authentication failed"));
+            return Err(anyhow!("SSH authentication failed for {}", node.user));
         }
         
+        Ok(session)
+    }
+    
+    /// Execute command on a node with automatic connection management
+    pub async fn execute_command(&mut self, node: &NodeConfig, ssh_key_path: &str, command: &str) -> Result<String> {
+        let connection = self.get_connection(node, ssh_key_path).await?;
+        connection.execute_command(command)
+    }
+    
+    /// Get connection status for a node
+    pub fn get_connection_status(&self, node: &NodeConfig) -> Option<ConnectionStatus> {
+        let connection_id = Self::get_connection_id(node);
+        
+        if let Some(conn) = self.connections.get(&connection_id) {
+            let latency = if conn.is_connected() {
+                // Calculate average latency based on connection time
+                Some(conn.connected_at.elapsed().as_millis() as u64)
+            } else {
+                None
+            };
+            
+            Some(ConnectionStatus {
+                connected: conn.is_connected(),
+                latency_ms: latency,
+                error: if conn.is_connected() { None } else { Some("Connection unhealthy".to_string()) },
+            })
+        } else {
+            None
+        }
+    }
+    
+    /// Perform health checks on all connections
+    pub fn health_check_all(&mut self) {
+        let mut unhealthy_connections = Vec::new();
+        
+        for (id, conn) in &mut self.connections {
+            if !conn.health_check() {
+                unhealthy_connections.push(id.clone());
+            }
+        }
+        
+        // Remove unhealthy connections
+        for id in unhealthy_connections {
+            println!("🔌 Removing unhealthy connection to {}", id);
+            self.connections.remove(&id);
+        }
+    }
+    
+    /// Clean up idle connections
+    pub fn cleanup_idle_connections(&mut self) {
+        let now = Instant::now();
+        let mut idle_connections = Vec::new();
+        
+        for (id, conn) in &self.connections {
+            if now.duration_since(conn.last_used) > self.config.max_idle_time {
+                idle_connections.push(id.clone());
+            }
+        }
+        
+        for id in idle_connections {
+            println!("🧹 Cleaning up idle connection to {}", id);
+            self.connections.remove(&id);
+        }
+    }
+    
+    /// Get statistics about the connection pool
+    pub fn get_pool_stats(&self) -> PoolStats {
+        let total_connections = self.connections.len();
+        let healthy_connections = self.connections.values()
+            .filter(|conn| conn.is_connected())
+            .count();
+            
+        PoolStats {
+            total_connections,
+            healthy_connections,
+            unhealthy_connections: total_connections - healthy_connections,
+        }
+    }
+    
+    /// Gracefully disconnect all connections
+    pub fn disconnect_all(&mut self) {
+        let count = self.connections.len();
+        if count > 0 {
+            println!("🔌 Disconnecting {} SSH connection(s)...", count);
+            self.connections.clear();
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct PoolStats {
+    pub total_connections: usize,
+    pub healthy_connections: usize,
+    pub unhealthy_connections: usize,
+}
+
+impl Drop for SshConnectionPool {
+    fn drop(&mut self) {
+        self.disconnect_all();
+    }
+}
+
+/// Legacy SshManager for backwards compatibility
+pub struct SshManager {
+    pool: SshConnectionPool,
+    current_node: Option<NodeConfig>,
+    current_ssh_key: Option<String>,
+}
+
+impl SshManager {
+    pub fn new() -> Self {
+        SshManager {
+            pool: SshConnectionPool::new(),
+            current_node: None,
+            current_ssh_key: None,
+        }
+    }
+    
+    pub async fn connect(&mut self, node: &NodeConfig, ssh_key_path: &str) -> Result<ConnectionStatus> {
+        self.current_node = Some(node.clone());
+        self.current_ssh_key = Some(ssh_key_path.to_string());
+        
+        let start_time = Instant::now();
+        let _connection = self.pool.get_connection(node, ssh_key_path).await?;
         let latency = start_time.elapsed();
-        self.session = Some(session);
         
         Ok(ConnectionStatus {
             connected: true,
@@ -61,70 +318,59 @@ impl SshManager {
         })
     }
     
-    pub fn execute_command(&self, command: &str) -> Result<String> {
-        let session = self.session.as_ref()
-            .ok_or_else(|| anyhow!("No active SSH session"))?;
-            
-        let mut channel = session.channel_session()?;
-        channel.exec(command)?;
-        
-        let mut output = String::new();
-        channel.read_to_string(&mut output)?;
-        
-        channel.wait_close()?;
-        let exit_status = channel.exit_status()?;
-        
-        if exit_status != 0 {
-            return Err(anyhow!("Command failed with exit code {}: {}", exit_status, command));
-        }
-        
-        Ok(output.trim().to_string())
-    }
-    
-    pub fn disconnect(&mut self) {
-        if let Some(session) = self.session.take() {
-            let _ = session.disconnect(None, "", None);
+    pub async fn execute_command(&mut self, command: &str) -> Result<String> {
+        if let (Some(node), Some(ssh_key)) = (&self.current_node, &self.current_ssh_key) {
+            self.pool.execute_command(node, ssh_key, command).await
+        } else {
+            Err(anyhow!("No active connection. Call connect() first."))
         }
     }
     
     pub fn is_connected(&self) -> bool {
-        self.session.is_some()
+        if let Some(node) = &self.current_node {
+            self.pool.get_connection_status(node)
+                .map(|status| status.connected)
+                .unwrap_or(false)
+        } else {
+            false
+        }
+    }
+    
+    pub fn disconnect(&mut self) {
+        // For backwards compatibility, don't actually disconnect
+        // Just clear current node reference
+        self.current_node = None;
+        self.current_ssh_key = None;
+    }
+    
+    /// Get access to the connection pool for advanced operations
+    pub fn get_pool(&mut self) -> &mut SshConnectionPool {
+        &mut self.pool
     }
 }
 
-impl Drop for SshManager {
-    fn drop(&mut self) {
-        self.disconnect();
-    }
-}
-
-pub async fn validate_node_files(ssh: &SshManager, node: &NodeConfig) -> Result<ValidationResult> {
-    let mut valid_files = 0;
-    let total_files = 6;
+/// Validate validator files on a remote node
+pub async fn validate_node_files(ssh_manager: &mut SshManager, node: &NodeConfig) -> Result<ValidationResult> {
     let mut issues = Vec::new();
+    let mut valid_files = 0;
+    let total_files = 6; // ledger, accounts, tower, funded, unfunded, vote
     
     // Check ledger directory
-    match ssh.execute_command(&format!("test -d \"{}\"", node.paths.ledger)) {
+    match ssh_manager.execute_command(&format!("test -d \"{}\"", node.paths.ledger)).await {
         Ok(_) => valid_files += 1,
         Err(_) => issues.push(format!("Ledger directory missing: {}", node.paths.ledger)),
     }
     
     // Check accounts folder
-    match ssh.execute_command(&format!("test -d \"{}/accounts\"", node.paths.ledger)) {
+    match ssh_manager.execute_command(&format!("test -d \"{}/accounts\"", node.paths.ledger)).await {
         Ok(_) => valid_files += 1,
         Err(_) => issues.push("Accounts folder missing in ledger directory".to_string()),
     }
     
     // Check tower file
-    match ssh.execute_command(&format!("ls {}/tower-1_9-*.bin 2>/dev/null | head -1", node.paths.ledger)) {
-        Ok(output) => {
-            if !output.is_empty() {
-                valid_files += 1;
-            } else {
-                issues.push("Tower file not found in ledger directory (pattern: tower-1_9-*.bin)".to_string());
-            }
-        },
-        Err(_) => issues.push("Tower file not found in ledger directory (pattern: tower-1_9-*.bin)".to_string()),
+    match ssh_manager.execute_command(&format!("ls {}/tower-1_9-*.bin 2>/dev/null | head -1", node.paths.ledger)).await {
+        Ok(output) if !output.trim().is_empty() => valid_files += 1,
+        _ => issues.push("Tower file not found in ledger directory (pattern: tower-1_9-*.bin)".to_string()),
     }
     
     // Check keypairs
@@ -133,7 +379,7 @@ pub async fn validate_node_files(ssh: &SshManager, node: &NodeConfig) -> Result<
         ("Unfunded identity keypair", &node.paths.unfunded_identity),
         ("Vote account keypair", &node.paths.vote_keypair),
     ] {
-        match ssh.execute_command(&format!("test -f \"{}\"", path)) {
+        match ssh_manager.execute_command(&format!("test -f \"{}\"", path)).await {
             Ok(_) => valid_files += 1,
             Err(_) => issues.push(format!("{} missing: {}", name, path)),
         }

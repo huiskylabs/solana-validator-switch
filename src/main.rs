@@ -31,8 +31,6 @@ enum Commands {
         #[arg(short, long)]
         test: bool,
     },
-    /// Setup initial configuration
-    Setup,
 }
 
 #[tokio::main]
@@ -43,11 +41,8 @@ async fn main() -> Result<()> {
         Some(Commands::Config { list, edit, test }) => {
             config_command(list, edit, test).await?;
         }
-        Some(Commands::Setup) => {
-            setup_command().await?;
-        }
         None => {
-            // Interactive main menu like original Node.js version
+            // Interactive main menu
             show_interactive_menu().await?;
         }
     }
@@ -67,13 +62,9 @@ async fn show_interactive_menu() -> Result<()> {
 
     loop {
         let mut options = vec![
-            "🔧 Setup - Configure your validator nodes and SSH keys",
+            "⚙️  Config - Manage configuration",
             "📋 Status - Check current validator status",
-            "🔄 Switch - Switch between validators", 
-            "💚 Health - Detailed health check",
-            "📊 Monitor - Real-time monitoring dashboard",
-            "⚙️ Config - Manage configuration",
-            "📌 Version - Show version information"
+            "🔄 Switch - Switch between validators"
         ];
         
         options.push("❌ Exit");
@@ -84,26 +75,13 @@ async fn show_interactive_menu() -> Result<()> {
         let index = options.iter().position(|x| x == &selection).unwrap();
         
         match index {
-            0 => setup_command().await?,
+            0 => show_config_menu().await?,
             1 => {
                 println!("{}", "📋 Status coming soon...".yellow());
                 std::thread::sleep(std::time::Duration::from_secs(1));
             },
             2 => show_switch_menu().await?,
-            3 => {
-                println!("{}", "💚 Health check coming soon...".yellow());
-                std::thread::sleep(std::time::Duration::from_secs(1));
-            },
-            4 => {
-                println!("{}", "📊 Monitor coming soon...".yellow());
-                std::thread::sleep(std::time::Duration::from_secs(1));
-            },
-            5 => show_config_menu().await?,
-            6 => {
-                println!("{}", "📌 Version: 1.0.0".bright_blue());
-                std::thread::sleep(std::time::Duration::from_secs(1));
-            },
-            7 => { // Exit
+            3 => { // Exit
                 println!("{}", "👋 Goodbye!".bright_green());
                 break;
             },
@@ -123,6 +101,7 @@ async fn show_config_menu() -> Result<()> {
         println!();
         
         let mut options = vec![
+            "🔧 Setup - Configure your validator nodes and SSH keys",
             "📋 List - Show current configuration",
             "✏️  Edit - Edit configuration interactively",
             "🧪 Test - Test SSH connections"
@@ -136,10 +115,11 @@ async fn show_config_menu() -> Result<()> {
         let index = options.iter().position(|x| x == &selection).unwrap();
         
         match index {
-            0 => config_command(true, false, false).await?,
-            1 => config_command(false, true, false).await?,
-            2 => config_command(false, false, true).await?,
-            3 => break, // Back to main menu
+            0 => setup_command().await?,
+            1 => config_command(true, false, false).await?,
+            2 => config_command(false, true, false).await?,
+            3 => config_command(false, false, true).await?,
+            4 => break, // Back to main menu
             _ => unreachable!(),
         }
     }
@@ -158,8 +138,7 @@ async fn show_switch_menu() -> Result<()> {
         let mut options = vec![
             "🔄 Switch - Perform validator switch",
             "🧪 Dry Run - Preview switch without executing",
-            "⚡ Force - Force switch (skip safety checks)",
-            "📊 Status - Check switch readiness"
+            "⚡ Force - Force switch (skip tower copy)"
         ];
         
         options.push("⬅️  Back to main menu");
@@ -179,14 +158,10 @@ async fn show_switch_menu() -> Result<()> {
                 std::thread::sleep(std::time::Duration::from_secs(1));
             },
             2 => {
-                println!("{}", "⚡ Force switch coming soon...".yellow());
+                println!("{}", "⚡ Force switch (skip tower copy) coming soon...".yellow());
                 std::thread::sleep(std::time::Duration::from_secs(1));
             },
-            3 => {
-                println!("{}", "📊 Switch status coming soon...".yellow());
-                std::thread::sleep(std::time::Duration::from_secs(1));
-            },
-            4 => break, // Back to main menu
+            3 => break, // Back to main menu
             _ => unreachable!(),
         }
     }

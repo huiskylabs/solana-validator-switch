@@ -30,15 +30,19 @@ solana-validator-switch/
 ## 🚀 Development Phases
 
 ### Phase 1: Core Foundation (Weeks 1-3)
+
 **Goal**: Basic CLI structure and SSH connectivity
 
 ### Phase 2: Switching Logic (Weeks 4-6)
+
 **Goal**: Implement validator switching functionality
 
 ### Phase 3: Monitoring & UX (Weeks 7-9)
+
 **Goal**: Real-time monitoring and polished user experience
 
 ### Phase 4: Advanced Features (Weeks 10-12)
+
 **Goal**: Analytics, automation, and production optimizations
 
 ---
@@ -46,10 +50,12 @@ solana-validator-switch/
 ## 📊 Detailed Milestones
 
 # Milestone 1: Project Setup & CLI Foundation
+
 **Duration**: Week 1
 **Priority**: CRITICAL
 
 ## 1.1 Project Initialization
+
 - [ ] Initialize npm project with TypeScript as primary language
 - [ ] Set up package.json with TypeScript build scripts
 - [ ] Configure TypeScript with strict mode enabled
@@ -59,6 +65,7 @@ solana-validator-switch/
 - [ ] Configure GitHub Actions for TypeScript CI/CD
 
 ### Key Files to Create:
+
 ```
 package.json                    # TypeScript project configuration
 tsconfig.json                   # TypeScript compiler configuration
@@ -72,6 +79,7 @@ bin/solana-validator-switch.js  # Compiled JavaScript executable
 ```
 
 ### Dependencies to Install:
+
 ```bash
 # Core dependencies
 npm install commander inquirer ssh2 node-ssh ora chalk cli-table3 boxen conf winston
@@ -84,6 +92,7 @@ npm install -D ts-node nodemon rimraf
 ```
 
 ### TypeScript Configuration (tsconfig.json):
+
 ```json
 {
   "compilerOptions": {
@@ -107,6 +116,7 @@ npm install -D ts-node nodemon rimraf
 ```
 
 ## 1.2 Basic CLI Structure
+
 - [ ] Set up Commander.js with TypeScript interfaces
 - [ ] Create strongly-typed command handlers
 - [ ] Implement both `svs` and `solana-validator-switch` commands
@@ -115,6 +125,7 @@ npm install -D ts-node nodemon rimraf
 - [ ] Set up TypeScript build and watch scripts
 
 ### Package.json Scripts:
+
 ```json
 {
   "scripts": {
@@ -132,6 +143,7 @@ npm install -D ts-node nodemon rimraf
 ```
 
 ### Expected Output:
+
 ```bash
 npm run build        # Compile TypeScript to JavaScript
 npm run dev          # Run with ts-node for development
@@ -143,10 +155,12 @@ svs setup --help    # After compilation
 ---
 
 # Milestone 2: Configuration Management
+
 **Duration**: Week 2
 **Priority**: CRITICAL
 
 ## 2.1 Configuration System
+
 - [ ] Create TypeScript configuration schema with strict interfaces
 - [ ] Implement strongly-typed config file management
 - [ ] Add environment variable support with TypeScript validation
@@ -154,6 +168,7 @@ svs setup --help    # After compilation
 - [ ] Implement typed config import/export functionality
 
 ### Key TypeScript Files:
+
 ```
 src/types/config.ts             # Configuration interfaces
 src/utils/config-manager.ts     # Typed configuration manager
@@ -162,6 +177,7 @@ src/commands/config.ts          # Typed config command handlers
 ```
 
 ### TypeScript Configuration Schema:
+
 ```typescript
 // src/types/config.ts
 export interface NodeConfig {
@@ -215,6 +231,7 @@ export interface EnvironmentConfig {
 ```
 
 ## 2.2 Setup Command
+
 - [ ] Create interactive setup wizard
 - [ ] SSH key detection and selection
 - [ ] Node configuration with auto-detection
@@ -223,6 +240,7 @@ export interface EnvironmentConfig {
 - [ ] Save configuration to file
 
 ### Expected Output:
+
 ```bash
 svs setup  # Interactive setup wizard
 svs config --list
@@ -233,10 +251,12 @@ svs config --export
 ---
 
 # Milestone 3: SSH Connection Management
+
 **Duration**: Week 2
 **Priority**: CRITICAL
 
 ## 3.1 SSH Manager
+
 - [ ] Create SSH connection manager class
 - [ ] Implement persistent SSH connections
 - [ ] Add connection pooling and keep-alive
@@ -245,6 +265,7 @@ svs config --export
 - [ ] Implement connection diagnostics
 
 ### Key Files:
+
 ```
 src/lib/ssh-manager.ts
 src/lib/connection-pool.ts
@@ -252,6 +273,7 @@ src/utils/ssh-diagnostics.ts
 ```
 
 ## 3.2 Node Detection
+
 - [ ] Implement validator client detection (Agave, Firedancer, Jito)
 - [ ] Auto-detect file paths and configurations
 - [ ] Verify node accessibility and permissions
@@ -259,6 +281,7 @@ src/utils/ssh-diagnostics.ts
 - [ ] Add system resource monitoring
 
 ### Expected Output:
+
 ```bash
 svs config --test  # Test all connections
 ```
@@ -266,10 +289,12 @@ svs config --test  # Test all connections
 ---
 
 # Milestone 4: Core Switching Logic
+
 **Duration**: Week 3
 **Priority**: CRITICAL
 
 ## 4.1 Switch Algorithm
+
 - [ ] Implement core switching logic
 - [ ] Create tower file transfer system
 - [ ] Add validator start/stop commands
@@ -278,6 +303,7 @@ svs config --test  # Test all connections
 - [ ] Add rollback capabilities
 
 ### Key Files:
+
 ```
 src/lib/switch-manager.ts
 src/lib/tower-manager.ts
@@ -286,6 +312,7 @@ src/utils/switch-state.ts
 ```
 
 ## 4.2 Safety Checks
+
 - [ ] Pre-flight validation system
 - [ ] Switch readiness analysis
 - [ ] Risk assessment logic
@@ -293,6 +320,7 @@ src/utils/switch-state.ts
 - [ ] Recovery procedures
 
 ### Expected Output:
+
 ```bash
 svs switch --dry-run
 svs switch
@@ -302,10 +330,12 @@ svs switch --force
 ---
 
 # Milestone 5: Basic Monitoring
+
 **Duration**: Week 4
 **Priority**: HIGH
 
 ## 5.1 Status Monitoring
+
 - [ ] Create RPC client for Solana
 - [ ] Implement slot monitoring
 - [ ] Add vote distance tracking
@@ -313,6 +343,7 @@ svs switch --force
 - [ ] Add real-time updates
 
 ### Key Files:
+
 ```
 src/lib/solana-rpc.ts
 src/lib/health-checker.ts
@@ -320,12 +351,14 @@ src/lib/monitor.ts
 ```
 
 ## 5.2 Status Commands
+
 - [ ] Implement `svs status` command
 - [ ] Create `svs health` detailed view
 - [ ] Add `svs watch` continuous monitoring
 - [ ] Create compact and verbose output modes
 
 ### Expected Output:
+
 ```bash
 svs status
 svs health
@@ -335,10 +368,12 @@ svs watch
 ---
 
 # Milestone 6: Interactive Dashboard
+
 **Duration**: Week 5
 **Priority**: HIGH
 
 ## 6.1 Terminal UI
+
 - [ ] Create interactive dashboard using blessed
 - [ ] Real-time data updates
 - [ ] Keyboard navigation
@@ -346,6 +381,7 @@ svs watch
 - [ ] Progress bars and loading states
 
 ### Key Files:
+
 ```
 src/ui/dashboard.ts
 src/ui/components.ts
@@ -353,6 +389,7 @@ src/ui/terminal-utils.ts
 ```
 
 ## 6.2 Monitor Command
+
 - [ ] Implement `svs monitor` interactive mode
 - [ ] Add keyboard shortcuts
 - [ ] Create context-sensitive help
@@ -360,6 +397,7 @@ src/ui/terminal-utils.ts
 - [ ] Implement graceful shutdown
 
 ### Expected Output:
+
 ```bash
 svs monitor  # Interactive dashboard
 ```
@@ -367,10 +405,12 @@ svs monitor  # Interactive dashboard
 ---
 
 # Milestone 7: Error Handling & Recovery
+
 **Duration**: Week 6
 **Priority**: HIGH
 
 ## 7.1 Comprehensive Error Handling
+
 - [ ] Create error classification system
 - [ ] Implement automatic diagnostics
 - [ ] Add recovery suggestions
@@ -378,6 +418,7 @@ svs monitor  # Interactive dashboard
 - [ ] Add graceful degradation
 
 ### Key Files:
+
 ```
 src/utils/error-handler.ts
 src/utils/diagnostics.ts
@@ -385,6 +426,7 @@ src/utils/recovery.ts
 ```
 
 ## 7.2 Logging System
+
 - [ ] Implement structured logging
 - [ ] Add log rotation
 - [ ] Create log analysis tools
@@ -392,6 +434,7 @@ src/utils/recovery.ts
 - [ ] Create audit trail
 
 ### Expected Output:
+
 ```bash
 svs logs
 svs logs --follow
@@ -401,10 +444,12 @@ svs logs --level error
 ---
 
 # Milestone 8: Testing & Documentation
+
 **Duration**: Week 7
 **Priority**: HIGH
 
 ## 8.1 Test Suite
+
 - [ ] Unit tests for all core functions
 - [ ] Integration tests for SSH operations
 - [ ] End-to-end tests for switching
@@ -412,6 +457,7 @@ svs logs --level error
 - [ ] Test coverage reporting
 
 ### Test Files:
+
 ```
 tests/unit/
 tests/integration/
@@ -420,6 +466,7 @@ tests/mocks/
 ```
 
 ## 8.2 Documentation
+
 - [ ] API documentation
 - [ ] User guide
 - [ ] Installation instructions
@@ -427,6 +474,7 @@ tests/mocks/
 - [ ] Contributing guidelines
 
 ### Expected Output:
+
 - Complete README.md
 - docs/ directory with guides
 - Inline code documentation
@@ -434,10 +482,12 @@ tests/mocks/
 ---
 
 # Milestone 9: Performance Analytics (Optional)
+
 **Duration**: Week 8
 **Priority**: MEDIUM
 
 ## 9.1 Analytics System
+
 - [ ] Switch performance tracking
 - [ ] Historical data collection
 - [ ] Performance metrics
@@ -445,6 +495,7 @@ tests/mocks/
 - [ ] Optimization suggestions
 
 ### Key Files:
+
 ```
 src/lib/analytics.ts
 src/lib/metrics-collector.ts
@@ -452,6 +503,7 @@ src/commands/analytics.ts
 ```
 
 ### Expected Output:
+
 ```bash
 svs analytics
 svs history
@@ -460,10 +512,12 @@ svs history
 ---
 
 # Milestone 10: Advanced Features (Optional)
+
 **Duration**: Weeks 9-10
 **Priority**: LOW
 
 ## 10.1 Automation Features
+
 - [ ] Auto-switching based on conditions
 - [ ] Scheduled maintenance windows
 - [ ] Alert system integration
@@ -471,6 +525,7 @@ svs history
 - [ ] Slack/Discord integration
 
 ## 10.2 Advanced Configuration
+
 - [ ] Multiple node pairs
 - [ ] Custom switching strategies
 - [ ] Advanced health checks
@@ -480,10 +535,12 @@ svs history
 ---
 
 # Milestone 11: Production Optimization
+
 **Duration**: Week 11
 **Priority**: MEDIUM
 
 ## 11.1 Performance Optimization
+
 - [ ] Connection pooling optimization
 - [ ] Memory usage optimization
 - [ ] CPU usage optimization
@@ -491,6 +548,7 @@ svs history
 - [ ] Caching strategies
 
 ## 11.2 Security Hardening
+
 - [ ] SSH key security audit
 - [ ] Input validation hardening
 - [ ] File permission checks
@@ -500,10 +558,12 @@ svs history
 ---
 
 # Milestone 12: Release Preparation
+
 **Duration**: Week 12
 **Priority**: HIGH
 
 ## 12.1 Package Preparation
+
 - [ ] NPM package configuration
 - [ ] Binary distribution setup
 - [ ] Installation scripts
@@ -511,6 +571,7 @@ svs history
 - [ ] Version management
 
 ## 12.2 Release Process
+
 - [ ] Beta testing
 - [ ] Bug fixes
 - [ ] Performance tuning
@@ -536,20 +597,20 @@ export class SolanaValidatorSwitch {
   private ssh: SSHManager;
   private monitor: MonitorManager;
   private switcher: SwitchManager;
-  
+
   constructor(configPath?: string) {
     this.config = new ConfigManager(configPath);
     this.ssh = new SSHManager();
     this.monitor = new MonitorManager();
     this.switcher = new SwitchManager();
   }
-  
+
   async initialize(): Promise<void> {
     await this.config.load();
     await this.ssh.connect(this.config.getNodes());
     await this.monitor.start();
   }
-  
+
   async shutdown(): Promise<void> {
     await this.monitor.stop();
     await this.ssh.disconnect();
@@ -611,6 +672,7 @@ src/
 ## 🧪 Testing Strategy
 
 ### Unit Tests (75% coverage target)
+
 - All utility functions
 - Configuration management
 - SSH operations (mocked)
@@ -618,12 +680,14 @@ src/
 - Health checking
 
 ### Integration Tests
+
 - SSH connection flow
 - Configuration loading/saving
 - Command execution
 - Error handling
 
 ### E2E Tests
+
 - Complete setup flow
 - Full switching operation
 - Monitoring functionality
@@ -632,6 +696,7 @@ src/
 ## 📦 Development Workflow
 
 ### Phase 1: Foundation (Weeks 1-3)
+
 1. Set up project structure
 2. Implement basic CLI commands
 3. Create configuration system
@@ -639,6 +704,7 @@ src/
 5. Implement core switching
 
 ### Phase 2: Features (Weeks 4-6)
+
 1. Add monitoring capabilities
 2. Build interactive dashboard
 3. Implement error handling
@@ -646,6 +712,7 @@ src/
 5. Create recovery mechanisms
 
 ### Phase 3: Polish (Weeks 7-9)
+
 1. Complete testing suite
 2. Write documentation
 3. Add analytics (optional)
@@ -653,6 +720,7 @@ src/
 5. Performance optimization
 
 ### Phase 4: Release (Weeks 10-12)
+
 1. Beta testing
 2. Bug fixes
 3. Package preparation
@@ -662,6 +730,7 @@ src/
 ## 🎯 Success Criteria
 
 ### Core Requirements (Must Have)
+
 - [ ] Ultra-fast switching (< 1 minute)
 - [ ] Zero credential storage
 - [ ] SSH key-based authentication
@@ -671,6 +740,7 @@ src/
 - [ ] Comprehensive logging
 
 ### Advanced Features (Nice to Have)
+
 - [ ] Performance analytics
 - [ ] Auto-switching
 - [ ] Alert integration
@@ -678,6 +748,7 @@ src/
 - [ ] Advanced automation
 
 ### Quality Metrics
+
 - [ ] 80%+ test coverage
 - [ ] < 1% switch failure rate
 - [ ] < 5 second status response
@@ -687,6 +758,7 @@ src/
 ## 🚀 Getting Started (TypeScript Development)
 
 ### Development Setup
+
 ```bash
 # Clone repository
 git clone https://github.com/your-org/solana-validator-switch
@@ -715,6 +787,7 @@ npm run build && npm start
 ```
 
 ### TypeScript Development Workflow
+
 ```bash
 # Development commands
 npm run dev          # Run with ts-node (no compilation needed)
@@ -730,6 +803,7 @@ npm run clean        # Clean compiled files
 ```
 
 ### First Development Session (TypeScript)
+
 1. Complete Milestone 1 (TypeScript Project Setup)
 2. Implement basic CLI structure with TypeScript interfaces
 3. Create strongly-typed configuration system
@@ -737,6 +811,7 @@ npm run clean        # Clean compiled files
 5. Test runtime: `npm run dev -- --help` and `npm run dev -- --version`
 
 ### TypeScript Development Tips
+
 - Use strict TypeScript configuration for better code quality
 - Define interfaces for all data structures
 - Use proper error types for better debugging

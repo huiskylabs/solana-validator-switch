@@ -21,7 +21,7 @@ export interface MonitoringConfig {
 }
 
 export interface DisplayConfig {
-  theme: "dark" | "light";
+  theme: 'dark' | 'light';
   compact: boolean;
   showTechnicalDetails: boolean;
 }
@@ -49,7 +49,7 @@ export interface Config {
 export interface EnvironmentConfig {
   SVS_CONFIG_PATH?: string;
   SVS_SSH_TIMEOUT?: string;
-  SVS_LOG_LEVEL?: "debug" | "info" | "warn" | "error";
+  SVS_LOG_LEVEL?: 'debug' | 'info' | 'warn' | 'error';
   SVS_NO_COLOR?: string;
   SVS_REFRESH_INTERVAL?: string;
   SVS_RPC_ENDPOINT?: string;
@@ -84,7 +84,7 @@ export interface SystemResources {
 
 export interface HealthStatus {
   score: number;
-  status: "excellent" | "good" | "fair" | "poor";
+  status: 'excellent' | 'good' | 'fair' | 'poor';
 }
 
 export interface MonitoringData {
@@ -99,16 +99,16 @@ export interface MonitoringData {
 }
 
 // Validator client types
-export type ValidatorClient = "agave" | "firedancer" | "jito" | "unknown";
+export type ValidatorClient = 'agave' | 'firedancer' | 'jito' | 'unknown';
 
 // Switch operation types
 export interface SwitchState {
   phase:
-    | "pre-flight"
-    | "stopping-primary"
-    | "transferring-tower"
-    | "starting-backup"
-    | "verification";
+    | 'pre-flight'
+    | 'stopping-primary'
+    | 'transferring-tower'
+    | 'starting-backup'
+    | 'verification';
   startTime: number;
   estimatedTime: number;
   progress: number;
@@ -119,15 +119,15 @@ export interface SwitchPlan {
   from: NodeConfig;
   to: NodeConfig;
   estimatedTime: number;
-  riskLevel: "low" | "medium" | "high";
+  riskLevel: 'low' | 'medium' | 'high';
   warnings: string[];
 }
 
 // Error handling types
 export enum ErrorSeverity {
-  CRITICAL = "critical",
-  WARNING = "warning",
-  INFO = "info",
+  CRITICAL = 'critical',
+  WARNING = 'warning',
+  INFO = 'info',
 }
 
 export interface SwitchError extends Error {
@@ -161,10 +161,10 @@ export interface CLIOptions {
 
 // Recovery types
 export interface RecoveryPlan {
-  strategy: "rollback" | "retry" | "manual";
+  strategy: 'rollback' | 'retry' | 'manual';
   steps: RecoveryStep[];
   estimatedTime: number;
-  riskLevel: "low" | "medium" | "high";
+  riskLevel: 'low' | 'medium' | 'high';
 }
 
 export interface RecoveryStep {
@@ -177,21 +177,24 @@ export interface RecoveryStep {
 // SSH key types
 export interface SSHKey {
   path: string;
-  type: "rsa" | "ed25519" | "ecdsa";
+  type: 'rsa' | 'ed25519' | 'ecdsa' | 'dsa';
   fingerprint: string;
   bits?: number;
+  comment?: string;
+  created?: Date;
+  valid: boolean;
 }
 
 // Logger types
 export interface LogEntry {
   timestamp: number;
-  level: "debug" | "info" | "warn" | "error";
+  level: 'debug' | 'info' | 'warn' | 'error';
   message: string;
   context?: Record<string, unknown>;
 }
 
 export interface LoggerConfig {
-  level: "debug" | "info" | "warn" | "error";
+  level: 'debug' | 'info' | 'warn' | 'error';
   file?: string;
   maxSize?: number;
   maxFiles?: number;

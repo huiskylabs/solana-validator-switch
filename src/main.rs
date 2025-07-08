@@ -64,7 +64,7 @@ async fn show_interactive_menu() -> Result<()> {
         let mut options = vec![
             "⚙️  Config - Manage configuration",
             "📋 Status - Check current validator status",
-            "🔄 Switch - Switch between validators"
+            "🔄 Switch - Switch between primary and backup validators"
         ];
         
         options.push("❌ Exit");
@@ -136,8 +136,8 @@ async fn show_switch_menu() -> Result<()> {
         println!();
         
         let mut options = vec![
-            "🔄 Switch - Perform validator switch",
-            "🧪 Dry Run - Preview switch without executing",
+            "🔄 Switch - Switch between primary and backup validators",
+            "🧪 Dry Run - Preview switch without executing", 
             "⚡ Force - Force switch (skip tower copy)"
         ];
         
@@ -150,7 +150,7 @@ async fn show_switch_menu() -> Result<()> {
         
         match index {
             0 => {
-                println!("{}", "🔄 Switch coming soon...".yellow());
+                println!("{}", "🔄 Switch between primary and backup validators coming soon...".yellow());
                 std::thread::sleep(std::time::Duration::from_secs(1));
             },
             1 => {

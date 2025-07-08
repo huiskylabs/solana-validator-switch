@@ -30,9 +30,6 @@ enum Commands {
         /// Test connections to configured nodes
         #[arg(short, long)]
         test: bool,
-        /// Export configuration to stdout
-        #[arg(long)]
-        export: bool,
     },
     /// Setup initial configuration
     Setup,
@@ -43,8 +40,8 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Config { list, edit, test, export }) => {
-            config_command(list, edit, test, export).await?;
+        Some(Commands::Config { list, edit, test }) => {
+            config_command(list, edit, test).await?;
         }
         Some(Commands::Setup) => {
             setup_command().await?;
@@ -75,7 +72,7 @@ async fn show_interactive_menu() -> Result<()> {
             "🔄 Switch - Switch between validators", 
             "💚 Health - Detailed health check",
             "📊 Monitor - Real-time monitoring dashboard",
-            "⚙️  Config - Manage configuration",
+            "⚙️ Config - Manage configuration",
             "📌 Version - Show version information"
         ];
         
@@ -128,9 +125,7 @@ async fn show_config_menu() -> Result<()> {
         let mut options = vec![
             "📋 List - Show current configuration",
             "✏️  Edit - Edit configuration interactively",
-            "🧪 Test - Test SSH connections",
-            "📤 Export - Export configuration to file",
-            "📥 Import - Import configuration from file"
+            "🧪 Test - Test SSH connections"
         ];
         
         options.push("⬅️  Back to main menu");
@@ -141,15 +136,10 @@ async fn show_config_menu() -> Result<()> {
         let index = options.iter().position(|x| x == &selection).unwrap();
         
         match index {
-            0 => config_command(true, false, false, false).await?,
-            1 => config_command(false, true, false, false).await?,
-            2 => config_command(false, false, true, false).await?,
-            3 => config_command(false, false, false, true).await?,
-            4 => {
-                println!("{}", "📥 Import coming soon...".yellow());
-                std::thread::sleep(std::time::Duration::from_secs(1));
-            },
-            5 => break, // Back to main menu
+            0 => config_command(true, false, false).await?,
+            1 => config_command(false, true, false).await?,
+            2 => config_command(false, false, true).await?,
+            3 => break, // Back to main menu
             _ => unreachable!(),
         }
     }

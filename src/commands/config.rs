@@ -8,7 +8,7 @@ use crate::config::ConfigManager;
 use crate::ssh::{SshManager, validate_node_files};
 use crate::types::Config;
 
-pub async fn config_command(list: bool, edit: bool, test: bool, export: bool) -> Result<()> {
+pub async fn config_command(list: bool, edit: bool, test: bool) -> Result<()> {
     let config_manager = ConfigManager::new()?;
     
     if list {
@@ -23,10 +23,6 @@ pub async fn config_command(list: bool, edit: bool, test: bool, export: bool) ->
         return test_connections(&config_manager).await;
     }
     
-    if export {
-        return export_configuration(&config_manager).await;
-    }
-    
     // Interactive config menu
     show_config_menu(&config_manager).await
 }
@@ -35,11 +31,8 @@ async fn show_config_menu(config_manager: &ConfigManager) -> Result<()> {
     loop {
         let options = vec![
             "📋 List current configuration",
-            "✏️ Edit configuration", 
+            "✏️  Edit configuration", 
             "🔗 Test connections",
-            "📤 Export configuration",
-            "🔄 Reload configuration",
-            "🧹 Validate configuration",
             "🏠 Back to main menu"
         ];
         
@@ -66,13 +59,7 @@ async fn show_config_menu(config_manager: &ConfigManager) -> Result<()> {
                 }
                 // Continue loop to show menu again
             },
-            3 => export_configuration(config_manager).await?,
-            4 => {
-                println!("{}", "✅ Configuration reloaded successfully".green());
-                std::thread::sleep(Duration::from_millis(500));
-            },
-            5 => validate_configuration(config_manager).await?,
-            6 => break,
+            3 => break, // Back to main menu
             _ => unreachable!(),
         }
     }
@@ -294,26 +281,3 @@ async fn show_passed_validations(config: &Config, node: &crate::types::NodeConfi
     Ok(())
 }
 
-async fn export_configuration(config_manager: &ConfigManager) -> Result<()> {
-    let config = config_manager.load()?;
-    
-    let include_sensitive = Confirm::new("Include SSH key paths in export? (Not recommended for sharing)")
-        .with_default(false)
-        .prompt()?;
-        
-    if include_sensitive {
-        println!("\n{}", serde_json::to_string_pretty(&config)?);
-    } else {
-        let mut export_config = config.clone();
-        export_config.ssh.key_path = "[REDACTED]".to_string();
-        println!("\n{}", serde_json::to_string_pretty(&export_config)?);
-    }
-    
-    Ok(())
-}
-
-async fn validate_configuration(_config_manager: &ConfigManager) -> Result<()> {
-    println!("{}", "🧹 Configuration validation coming soon...".yellow());
-    std::thread::sleep(Duration::from_secs(1));
-    Ok(())
-}

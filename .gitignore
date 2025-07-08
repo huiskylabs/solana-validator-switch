@@ -212,3 +212,6 @@ package-lock.json.backup
 .svelte-kit
 
 # End of https://www.toptal.com/developers/gitignore/api/node 
+
+# Claude
+.claude

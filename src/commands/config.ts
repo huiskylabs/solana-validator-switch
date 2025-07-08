@@ -106,8 +106,8 @@ class ConfigCommandHandler {
       basicTable.push(
         ['Version', config.version],
         ['Config File', this.configManager.getConfigPath()],
-        // ['SSH Key', config.ssh?.keyPath || 'Not configured'],
-        // ['SSH Timeout', `${config.ssh?.timeout || 30}s`],
+        ['SSH Key', config.ssh?.keyPath || 'Not configured'],
+        ['SSH Timeout', `${config.ssh?.timeout || 30}s`],
         ['RPC Endpoint', config.rpc?.endpoint || 'Not configured'],
         ['RPC Timeout', `${config.rpc?.timeout || 30000}ms`]
       );
@@ -150,6 +150,45 @@ class ConfigCommandHandler {
         }
 
         console.log(nodesTable.toString());
+
+        // Show validator paths for each node
+        if (config.nodes.primary) {
+          console.log(chalk.green('\n🟢 Primary Node Validator Paths\n'));
+          const primaryPathsTable = new Table({
+            head: [chalk.cyan('Path Type'), chalk.cyan('Location')],
+            style: { head: [], border: [] },
+          });
+
+          primaryPathsTable.push(
+            ['Funded Identity', config.nodes.primary.paths.fundedIdentity],
+            ['Unfunded Identity', config.nodes.primary.paths.unfundedIdentity],
+            ['Vote Keypair', config.nodes.primary.paths.voteKeypair],
+            ['Ledger Directory', config.nodes.primary.paths.ledger],
+            ['Tower File', config.nodes.primary.paths.tower],
+            ['Solana CLI', config.nodes.primary.paths.solanaCliPath]
+          );
+
+          console.log(primaryPathsTable.toString());
+        }
+
+        if (config.nodes.backup) {
+          console.log(chalk.yellow('\n🟡 Backup Node Validator Paths\n'));
+          const backupPathsTable = new Table({
+            head: [chalk.cyan('Path Type'), chalk.cyan('Location')],
+            style: { head: [], border: [] },
+          });
+
+          backupPathsTable.push(
+            ['Funded Identity', config.nodes.backup.paths.fundedIdentity],
+            ['Unfunded Identity', config.nodes.backup.paths.unfundedIdentity],
+            ['Vote Keypair', config.nodes.backup.paths.voteKeypair],
+            ['Ledger Directory', config.nodes.backup.paths.ledger],
+            ['Tower File', config.nodes.backup.paths.tower],
+            ['Solana CLI', config.nodes.backup.paths.solanaCliPath]
+          );
+
+          console.log(backupPathsTable.toString());
+        }
       }
 
       // Monitoring settings

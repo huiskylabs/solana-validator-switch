@@ -267,3 +267,6 @@ rust-test-*
 
 # Claude
 .claude
+
+# refrence docs
+/reference_docs/

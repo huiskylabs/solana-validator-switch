@@ -70,14 +70,16 @@ async fn main() -> Result<()> {
             if let Some(state) = app_state.as_ref() {
                 status_command(state).await?;
             } else {
-                println!("{}", "⚠️ No configuration found. Please run setup first.".yellow());
+                // Startup validation already showed detailed error messages
+                std::process::exit(1);
             }
         }
         Some(Commands::Switch { dry_run }) => {
             if let Some(state) = app_state.as_ref() {
                 switch_command(dry_run, state).await?;
             } else {
-                println!("{}", "⚠️ No configuration found. Please run setup first.".yellow());
+                // Startup validation already showed detailed error messages
+                std::process::exit(1);
             }
         }
         None => {
@@ -85,8 +87,8 @@ async fn main() -> Result<()> {
             if let Some(state) = app_state.as_ref() {
                 show_interactive_menu(Some(state)).await?;
             } else {
-                println!("{}", "❌ Cannot start interactive mode without valid configuration.".red());
-                println!("{}", "Please run 'svs setup' to configure the application first.".yellow());
+                // Startup validation already showed detailed error messages
+                // Exit silently to avoid redundant generic error messages
                 std::process::exit(1);
             }
         }
@@ -125,7 +127,8 @@ async fn show_interactive_menu(app_state: Option<&AppState>) -> Result<()> {
                 if let Some(ref state) = app_state {
                     status_command(state).await?;
                 } else {
-                    println!("{}", "⚠️ No configuration found. Please run setup first.".yellow());
+                    // This should never happen since we only show menu with valid state
+                    std::process::exit(1);
                 }
             },
             1 => show_switch_menu(app_state).await?,
@@ -166,14 +169,16 @@ async fn show_switch_menu(app_state: Option<&AppState>) -> Result<()> {
                 if let Some(state) = app_state {
                     switch_command(false, state).await?;
                 } else {
-                    println!("{}", "⚠️ No configuration found. Please run setup first.".yellow());
+                    // This should never happen since we only show menu with valid state
+                    std::process::exit(1);
                 }
             },
             1 => {
                 if let Some(state) = app_state {
                     switch_command(true, state).await?;
                 } else {
-                    println!("{}", "⚠️ No configuration found. Please run setup first.".yellow());
+                    // This should never happen since we only show menu with valid state
+                    std::process::exit(1);
                 }
             },
             2 => break, // Back to main menu

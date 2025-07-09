@@ -42,10 +42,23 @@ impl SshConnection {
     }
     
     pub fn execute_command(&mut self, command: &str) -> Result<String> {
+        self.execute_command_with_input(command, None)
+    }
+    
+    pub fn execute_command_with_input(&mut self, command: &str, input: Option<&str>) -> Result<String> {
         self.update_last_used();
         
         let mut channel = self.session.channel_session()?;
         channel.exec(command)?;
+        
+        // Write input if provided
+        if let Some(input_data) = input {
+            use std::io::Write;
+            channel.write_all(input_data.as_bytes())?;
+            channel.flush()?;
+            // Close the input stream to signal end of data
+            channel.send_eof()?;
+        }
         
         let mut output = String::new();
         channel.read_to_string(&mut output)?;
@@ -189,6 +202,19 @@ impl SshConnectionPool {
     }
     
     /// Execute command on a node with automatic connection management
+    pub async fn execute_command_with_input(&mut self, node: &NodeConfig, command: &str, input: &str) -> Result<String> {
+        let _node_key = format!("{}@{}:{}", node.user, node.host, node.port);
+        
+        // Get connection and execute command
+        let connection = self.get_connection(node, "").await?;
+        connection.execute_command_with_input(command, Some(input))
+    }
+
+    pub async fn connect(&mut self, node: &NodeConfig, ssh_key_path: &str) -> Result<()> {
+        let _connection = self.get_connection(node, ssh_key_path).await?;
+        Ok(())
+    }
+
     pub async fn execute_command(&mut self, node: &NodeConfig, ssh_key_path: &str, command: &str) -> Result<String> {
         let connection = self.get_connection(node, ssh_key_path).await?;
         connection.execute_command(command)
@@ -283,7 +309,7 @@ pub struct PoolStats {
 
 impl Drop for SshConnectionPool {
     fn drop(&mut self) {
-        self.disconnect_all();
+        // Don't automatically disconnect - let the app manage connection lifecycle
     }
 }
 
@@ -318,6 +344,10 @@ impl SshManager {
         })
     }
     
+    pub async fn execute_command_with_input(&mut self, command: &str, input: &str) -> Result<String> {
+        self.pool.execute_command_with_input(&self.current_node.as_ref().unwrap(), command, input).await
+    }
+
     pub async fn execute_command(&mut self, command: &str) -> Result<String> {
         if let (Some(node), Some(ssh_key)) = (&self.current_node, &self.current_ssh_key) {
             self.pool.execute_command(node, ssh_key, command).await

@@ -358,7 +358,9 @@ async fn configure_node(node_type: &str) -> Result<Option<NodeConfig>> {
             vote_keypair,
             ledger,
             tower,
-            solana_cli_path,
+            solana_cli_path: solana_cli_path.clone(),
+            firedancer_config: Some("firedancer-config.toml".to_string()), // Default value
+            fdctl_path: Some("fdctl".to_string()), // Default value
         },
     }))
 }

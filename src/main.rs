@@ -1,12 +1,15 @@
 use clap::{Parser, Subcommand};
 use anyhow::Result;
+use std::sync::{Arc, Mutex};
 
 mod config;
 mod ssh;
 mod commands;
 mod types;
 
-use commands::{config_command, setup_command, status_command};
+use commands::{config_command, setup_command, status_command, switch_command};
+use ssh::SshConnectionPool;
+use config::ConfigManager;
 
 #[derive(Parser)]
 #[command(name = "svs")]
@@ -33,24 +36,74 @@ enum Commands {
     },
 }
 
+/// Application state that persists throughout the CLI session
+pub struct AppState {
+    pub ssh_pool: Arc<Mutex<SshConnectionPool>>,
+    pub config: types::Config,
+}
+
+impl AppState {
+    async fn new() -> Result<Option<Self>> {
+        let config_manager = ConfigManager::new()?;
+        
+        // Try to load config
+        match config_manager.load() {
+            Ok(config) => {
+                println!("🔌 Establishing SSH connections...");
+                
+                let mut pool = SshConnectionPool::new();
+                
+                // Connect to all configured nodes
+                for (role, node) in &config.nodes {
+                    print!("  Connecting to {} ({})... ", role, node.host);
+                    match pool.connect(node, &config.ssh.key_path).await {
+                        Ok(_) => println!("✅"),
+                        Err(e) => println!("❌ {}", e),
+                    }
+                }
+                
+                println!();
+                
+                Ok(Some(AppState {
+                    ssh_pool: Arc::new(Mutex::new(pool)),
+                    config,
+                }))
+            }
+            Err(_) => {
+                // No config yet, that's fine
+                Ok(None)
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // Initialize app state with persistent SSH connections
+    let app_state = AppState::new().await?;
+
     match cli.command {
         Some(Commands::Config { list, edit, test }) => {
-            config_command(list, edit, test).await?;
+            config_command(list, edit, test, app_state.as_ref()).await?;
         }
         None => {
             // Interactive main menu
-            show_interactive_menu().await?;
+            show_interactive_menu(app_state.as_ref()).await?;
         }
+    }
+
+    // Cleanup connections on exit
+    if let Some(state) = app_state {
+        let pool = state.ssh_pool.lock().unwrap();
+        println!("🔌 Closing {} SSH connections...", pool.get_pool_stats().total_connections);
     }
 
     Ok(())
 }
 
-async fn show_interactive_menu() -> Result<()> {
+async fn show_interactive_menu(app_state: Option<&AppState>) -> Result<()> {
     use inquire::Select;
     use colored::*;
 
@@ -75,9 +128,15 @@ async fn show_interactive_menu() -> Result<()> {
         let index = options.iter().position(|x| x == &selection).unwrap();
         
         match index {
-            0 => show_config_menu().await?,
-            1 => status_command().await?,
-            2 => show_switch_menu().await?,
+            0 => show_config_menu(app_state).await?,
+            1 => {
+                if let Some(ref state) = app_state {
+                    status_command(state).await?;
+                } else {
+                    println!("{}", "⚠️ No configuration found. Please run setup first.".yellow());
+                }
+            },
+            2 => show_switch_menu(app_state).await?,
             3 => { // Exit
                 println!("{}", "👋 Goodbye!".bright_green());
                 break;
@@ -89,7 +148,7 @@ async fn show_interactive_menu() -> Result<()> {
     Ok(())
 }
 
-async fn show_config_menu() -> Result<()> {
+async fn show_config_menu(app_state: Option<&AppState>) -> Result<()> {
     use inquire::Select;
     use colored::*;
     
@@ -113,9 +172,9 @@ async fn show_config_menu() -> Result<()> {
         
         match index {
             0 => setup_command().await?,
-            1 => config_command(true, false, false).await?,
-            2 => config_command(false, true, false).await?,
-            3 => config_command(false, false, true).await?,
+            1 => config_command(true, false, false, app_state).await?,
+            2 => config_command(false, true, false, app_state).await?,
+            3 => config_command(false, false, true, app_state).await?,
             4 => break, // Back to main menu
             _ => unreachable!(),
         }
@@ -124,7 +183,7 @@ async fn show_config_menu() -> Result<()> {
     Ok(())
 }
 
-async fn show_switch_menu() -> Result<()> {
+async fn show_switch_menu(app_state: Option<&AppState>) -> Result<()> {
     use inquire::Select;
     use colored::*;
     
@@ -147,16 +206,25 @@ async fn show_switch_menu() -> Result<()> {
         
         match index {
             0 => {
-                println!("{}", "🔄 Switch between primary and backup validators coming soon...".yellow());
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                if let Some(state) = app_state {
+                    switch_command(false, false, state).await?;
+                } else {
+                    println!("{}", "⚠️ No configuration found. Please run setup first.".yellow());
+                }
             },
             1 => {
-                println!("{}", "🧪 Dry run coming soon...".yellow());
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                if let Some(state) = app_state {
+                    switch_command(true, false, state).await?;
+                } else {
+                    println!("{}", "⚠️ No configuration found. Please run setup first.".yellow());
+                }
             },
             2 => {
-                println!("{}", "⚡ Force switch (skip tower copy) coming soon...".yellow());
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                if let Some(state) = app_state {
+                    switch_command(false, true, state).await?;
+                } else {
+                    println!("{}", "⚠️ No configuration found. Please run setup first.".yellow());
+                }
             },
             3 => break, // Back to main menu
             _ => unreachable!(),

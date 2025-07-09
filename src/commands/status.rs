@@ -1,71 +1,60 @@
 use anyhow::Result;
 use colored::*;
-use indicatif::{ProgressBar, ProgressStyle, MultiProgress};
-use std::time::Duration;
 use std::collections::HashMap;
+use comfy_table::{Table, Cell, Color, Attribute, ContentArrangement, presets::UTF8_BORDERS_ONLY, modifiers::UTF8_ROUND_CORNERS};
 
-use crate::config::ConfigManager;
-use crate::ssh::SshManager;
+use crate::AppState;
 use crate::types::{NodeConfig, Config};
 
-pub async fn status_command() -> Result<()> {
-    let config_manager = ConfigManager::new()?;
-    let config = config_manager.load()?;
-    
-    if config.nodes.is_empty() {
+pub async fn status_command(app_state: &AppState) -> Result<()> {
+    if app_state.config.nodes.is_empty() {
         println!("{}", "⚠️ No nodes configured. Run setup first.".yellow());
         return Ok(());
     }
     
     // Show comprehensive status in one clean view
-    show_comprehensive_status(&config).await
+    show_comprehensive_status(app_state).await
 }
 
-async fn show_comprehensive_status(config: &Config) -> Result<()> {
+async fn show_comprehensive_status(app_state: &AppState) -> Result<()> {
     println!("\n{}", "📋 Validator Status".bright_cyan().bold());
     println!();
     
-    let m = MultiProgress::new();
-    let mut handles = Vec::new();
-    
-    // Create progress bars for each node
-    for (role, _) in &config.nodes {
-        let pb = m.add(ProgressBar::new_spinner());
-        pb.set_style(ProgressStyle::default_spinner()
-            .template(&format!("{{spinner:.green}} Checking {} validator...", role))?);
-        pb.enable_steady_tick(Duration::from_millis(100));
-        handles.push((role.clone(), pb));
-    }
+    // Show simple status message
+    println!("{}", "🔍 Checking validator status...".dimmed());
     
     // Check each node
     let mut results = HashMap::new();
     
-    for (role, node) in &config.nodes {
-        let pb = handles.iter().find(|(r, _)| r == role).unwrap().1.clone();
+    // Get the SSH pool
+    let mut pool = app_state.ssh_pool.lock().unwrap();
+    
+    for (role, node) in &app_state.config.nodes {
+        print!("  Checking {} validator... ", role);
         
-        let mut ssh = SshManager::new();
-        match ssh.connect(node, &config.ssh.key_path).await {
+        // Use existing connection from pool
+        match pool.execute_command(node, &app_state.config.ssh.key_path, "echo 'test'").await {
             Ok(_) => {
-                let status = check_comprehensive_status(&mut ssh, node).await?;
+                let status = check_comprehensive_status(&mut *pool, node, &app_state.config.ssh.key_path).await?;
                 results.insert(role.clone(), status);
-                pb.finish_with_message(format!("✅ {} validator checked", role));
+                println!("{}", "✅ Done".green());
             }
             Err(e) => {
-                pb.finish_with_message(format!("❌ {} connection failed", role));
+                println!("{}", "❌ Failed".red());
                 results.insert(role.clone(), ComprehensiveStatus::connection_failed(e.to_string()));
             }
         }
     }
     
-    m.clear()?;
+    println!();
     
     // Display results in clean table
-    display_status_table(&config, &results);
+    display_status_table(&app_state.config, &results);
     
     Ok(())
 }
 
-async fn check_comprehensive_status(ssh: &mut SshManager, node: &NodeConfig) -> Result<ComprehensiveStatus> {
+async fn check_comprehensive_status(pool: &mut crate::ssh::SshConnectionPool, node: &NodeConfig, ssh_key_path: &str) -> Result<ComprehensiveStatus> {
     let mut status = ComprehensiveStatus {
         connected: true,
         validator_running: None,
@@ -80,7 +69,7 @@ async fn check_comprehensive_status(ssh: &mut SshManager, node: &NodeConfig) -> 
     };
     
     // Check if validator process is running
-    match ssh.execute_command("ps aux | grep -Ei 'solana-validator|agave|fdctl|firedancer'").await {
+    match pool.execute_command(node, ssh_key_path, "ps aux | grep -Ei 'solana-validator|agave|fdctl|firedancer'").await {
         Ok(output) => {
             // Filter out grep process itself and check if any real validator processes exist
             let validator_processes: Vec<&str> = output
@@ -99,7 +88,7 @@ async fn check_comprehensive_status(ssh: &mut SshManager, node: &NodeConfig) -> 
     }
     
     // Check ledger disk usage
-    match ssh.execute_command(&format!("df {} | tail -1 | awk '{{print $5}}' | sed 's/%//'", node.paths.ledger)).await {
+    match pool.execute_command(node, ssh_key_path, &format!("df {} | tail -1 | awk '{{print $5}}' | sed 's/%//'", node.paths.ledger)).await {
         Ok(output) => {
             if let Ok(usage) = output.trim().parse::<u32>() {
                 status.ledger_disk_usage = Some(usage);
@@ -109,7 +98,7 @@ async fn check_comprehensive_status(ssh: &mut SshManager, node: &NodeConfig) -> 
     }
     
     // Check system load
-    match ssh.execute_command("uptime | awk -F'load average:' '{print $2}' | awk '{print $1}' | sed 's/,//'").await {
+    match pool.execute_command(node, ssh_key_path, "uptime | awk -F'load average:' '{print $2}' | awk '{print $1}' | sed 's/,//'").await {
         Ok(output) => {
             if let Ok(load) = output.trim().parse::<f64>() {
                 status.system_load = Some(load);
@@ -120,7 +109,7 @@ async fn check_comprehensive_status(ssh: &mut SshManager, node: &NodeConfig) -> 
     
     // Check sync status using solana catchup
     let solana_cli = &node.paths.solana_cli_path;
-    match ssh.execute_command(&format!("{} catchup --our-localhost", solana_cli)).await {
+    match pool.execute_command(node, ssh_key_path, &format!("{} catchup --our-localhost", solana_cli)).await {
         Ok(output) => {
             if output.contains("behind") {
                 status.sync_status = Some("Behind".to_string());
@@ -134,10 +123,10 @@ async fn check_comprehensive_status(ssh: &mut SshManager, node: &NodeConfig) -> 
     }
     
     // Check version by detecting validator type from process list
-    status.version = detect_validator_version(ssh).await;
+    status.version = detect_validator_version(pool, node, ssh_key_path).await;
     
     // Check swap readiness
-    let (swap_ready, swap_issues, swap_checklist) = check_swap_readiness(ssh, node).await;
+    let (swap_ready, swap_issues, swap_checklist) = check_swap_readiness(pool, node, ssh_key_path).await;
     status.swap_ready = Some(swap_ready);
     status.swap_issues = swap_issues;
     status.swap_checklist = swap_checklist;
@@ -145,7 +134,7 @@ async fn check_comprehensive_status(ssh: &mut SshManager, node: &NodeConfig) -> 
     Ok(status)
 }
 
-async fn check_swap_readiness(ssh: &mut SshManager, node: &NodeConfig) -> (bool, Vec<String>, Vec<(String, bool)>) {
+async fn check_swap_readiness(pool: &mut crate::ssh::SshConnectionPool, node: &NodeConfig, ssh_key_path: &str) -> (bool, Vec<String>, Vec<(String, bool)>) {
     let mut issues = Vec::new();
     let mut checklist = Vec::new();
     let mut all_ready = true;
@@ -159,10 +148,10 @@ async fn check_swap_readiness(ssh: &mut SshManager, node: &NodeConfig) -> (bool,
     ];
     
     for (path, description) in critical_files {
-        match ssh.execute_command(&format!("test -f {}", path)).await {
+        match pool.execute_command(node, ssh_key_path, &format!("test -f {}", path)).await {
             Ok(_) => {
                 // File exists, now check if it's readable
-                match ssh.execute_command(&format!("test -r {}", path)).await {
+                match pool.execute_command(node, ssh_key_path, &format!("test -r {}", path)).await {
                     Ok(_) => {
                         checklist.push((description.to_string(), true));
                     }
@@ -182,10 +171,10 @@ async fn check_swap_readiness(ssh: &mut SshManager, node: &NodeConfig) -> (bool,
     }
     
     // Check critical directories exist and are writable
-    match ssh.execute_command(&format!("test -d {}", node.paths.ledger)).await {
+    match pool.execute_command(node, ssh_key_path, &format!("test -d {}", node.paths.ledger)).await {
         Ok(_) => {
             // Directory exists, check if writable
-            match ssh.execute_command(&format!("test -w {}", node.paths.ledger)).await {
+            match pool.execute_command(node, ssh_key_path, &format!("test -w {}", node.paths.ledger)).await {
                 Ok(_) => {
                     checklist.push(("Ledger Directory".to_string(), true));
                 }
@@ -204,7 +193,7 @@ async fn check_swap_readiness(ssh: &mut SshManager, node: &NodeConfig) -> (bool,
     }
     
     // Check disk space for ledger (should have at least 10GB free)
-    let disk_space_ok = if let Ok(output) = ssh.execute_command(&format!("df {} | tail -1 | awk '{{print $4}}'", node.paths.ledger)).await {
+    let disk_space_ok = if let Ok(output) = pool.execute_command(node, ssh_key_path, &format!("df {} | tail -1 | awk '{{print $4}}'", node.paths.ledger)).await {
         if let Ok(free_kb) = output.trim().parse::<u64>() {
             let free_gb = free_kb / 1024 / 1024;
             if free_gb < 10 {
@@ -223,7 +212,7 @@ async fn check_swap_readiness(ssh: &mut SshManager, node: &NodeConfig) -> (bool,
     checklist.push(("Disk Space (>10GB)".to_string(), disk_space_ok));
     
     // Check if solana CLI is accessible
-    let cli_ok = ssh.execute_command(&format!("test -x {}", node.paths.solana_cli_path)).await.is_ok();
+    let cli_ok = pool.execute_command(node, ssh_key_path, &format!("test -x {}", node.paths.solana_cli_path)).await.is_ok();
     if !cli_ok {
         issues.push(format!("Solana CLI not executable: {}", node.paths.solana_cli_path));
         all_ready = false;
@@ -233,9 +222,9 @@ async fn check_swap_readiness(ssh: &mut SshManager, node: &NodeConfig) -> (bool,
     (all_ready, issues, checklist)
 }
 
-async fn detect_validator_version(ssh: &mut SshManager) -> Option<String> {
+async fn detect_validator_version(pool: &mut crate::ssh::SshConnectionPool, node: &NodeConfig, ssh_key_path: &str) -> Option<String> {
     // Get process list to detect validator type
-    let ps_output = ssh.execute_command("ps aux | grep -Ei 'solana-validator|agave|fdctl|firedancer'").await.ok()?;
+    let ps_output = pool.execute_command(node, ssh_key_path, "ps aux | grep -Ei 'solana-validator|agave|fdctl|firedancer'").await.ok()?;
     
     // Filter out grep process itself and find validator processes
     let validator_processes: Vec<&str> = ps_output
@@ -275,17 +264,17 @@ async fn detect_validator_version(ssh: &mut SshManager) -> Option<String> {
     // Detect validator type and get version based on path patterns
     if executable_path.contains("build/native/gcc/bin/fdctl") {
         // Firedancer
-        get_firedancer_version(ssh, executable_path).await
+        get_firedancer_version(pool, node, ssh_key_path, executable_path).await
     } else if executable_path.contains("target/release/agave-validator") {
         // Jito or Agave
-        get_jito_agave_version(ssh, executable_path).await
+        get_jito_agave_version(pool, node, ssh_key_path, executable_path).await
     } else {
         None
     }
 }
 
-async fn get_firedancer_version(ssh: &mut SshManager, executable_path: &str) -> Option<String> {
-    let version_output = ssh.execute_command(&format!("{} --version", executable_path)).await.ok()?;
+async fn get_firedancer_version(pool: &mut crate::ssh::SshConnectionPool, node: &NodeConfig, ssh_key_path: &str, executable_path: &str) -> Option<String> {
+    let version_output = pool.execute_command(node, ssh_key_path, &format!("{} --version", executable_path)).await.ok()?;
     
     // Parse firedancer version format: "0.505.20216 (44f9f393d167138abe1c819f7424990a56e1913e)"
     for line in version_output.lines() {
@@ -302,9 +291,9 @@ async fn get_firedancer_version(ssh: &mut SshManager, executable_path: &str) -> 
     None
 }
 
-async fn get_jito_agave_version(ssh: &mut SshManager, executable_path: &str) -> Option<String> {
+async fn get_jito_agave_version(pool: &mut crate::ssh::SshConnectionPool, node: &NodeConfig, ssh_key_path: &str, executable_path: &str) -> Option<String> {
     // Try the executable path first
-    if let Ok(version_output) = ssh.execute_command(&format!("{} --version", executable_path)).await {
+    if let Ok(version_output) = pool.execute_command(node, ssh_key_path, &format!("{} --version", executable_path)).await {
         if let Some(version_line) = version_output.lines().next() {
             let version_line = version_line.trim();
             if !version_line.is_empty() {
@@ -314,7 +303,7 @@ async fn get_jito_agave_version(ssh: &mut SshManager, executable_path: &str) -> 
     }
     
     // Fallback to standard commands
-    if let Ok(version_output) = ssh.execute_command("agave-validator --version").await {
+    if let Ok(version_output) = pool.execute_command(node, ssh_key_path, "agave-validator --version").await {
         if let Some(version_line) = version_output.lines().next() {
             let version_line = version_line.trim();
             if !version_line.is_empty() {
@@ -324,7 +313,7 @@ async fn get_jito_agave_version(ssh: &mut SshManager, executable_path: &str) -> 
     }
     
     // Final fallback
-    if let Ok(version_output) = ssh.execute_command("solana-validator --version").await {
+    if let Ok(version_output) = pool.execute_command(node, ssh_key_path, "solana-validator --version").await {
         if let Some(version_line) = version_output.lines().next() {
             let version_line = version_line.trim();
             if !version_line.is_empty() {
@@ -368,8 +357,8 @@ fn parse_agave_version(version_line: &str) -> String {
     }
 }
 
-async fn get_solana_validator_version(ssh: &mut SshManager, executable_path: &str) -> Option<String> {
-    let version_output = ssh.execute_command(&format!("{} --version", executable_path)).await.ok()?;
+async fn get_solana_validator_version(pool: &mut crate::ssh::SshConnectionPool, node: &NodeConfig, ssh_key_path: &str, executable_path: &str) -> Option<String> {
+    let version_output = pool.execute_command(node, ssh_key_path, &format!("{} --version", executable_path)).await.ok()?;
     let version_line = version_output.lines().next()?.trim();
     Some(version_line.to_string())
 }
@@ -387,10 +376,10 @@ fn display_status_table(config: &Config, results: &HashMap<String, Comprehensive
     
     // Display primary and backup side by side
     if let (Some(primary), Some(backup)) = (primary_status, backup_status) {
-        display_side_by_side_comparison(primary_node, primary, backup_node, backup);
+        display_primary_backup_table(primary_node, primary, backup_node, backup);
     } else {
         // Fallback to single column if we don't have both primary and backup
-        display_single_column_view(config, results);
+        display_all_nodes_table(config, results);
     }
     
     // Display any other nodes that aren't primary or backup
@@ -400,259 +389,259 @@ fn display_status_table(config: &Config, results: &HashMap<String, Comprehensive
     
     if !other_nodes.is_empty() {
         println!("\n{}", "🔧 Other Validators".bright_cyan().bold());
-        println!("{}", "─".repeat(150));
-        println!("{:<35} {:<15} {:<15} {:<12} {:<10} {:<15} {:<25} {:<15}", 
-            "Node".bright_cyan(), 
-            "Connection".bright_cyan(), 
-            "Process".bright_cyan(), 
-            "Disk".bright_cyan(),
-            "Load".bright_cyan(),
-            "Sync".bright_cyan(),
-            "Version".bright_cyan(),
-            "Swap Ready".bright_cyan()
-        );
-        println!("{}", "─".repeat(150));
-        
-        for (role, status) in other_nodes {
-            display_node_row(config, role, status);
-        }
-        
-        println!("{}", "─".repeat(150));
+        display_other_nodes_table(config, &other_nodes);
     }
     
     println!();
 }
 
-fn display_side_by_side_comparison(
+fn display_primary_backup_table(
     primary_node: Option<&NodeConfig>, 
     primary_status: &ComprehensiveStatus,
     backup_node: Option<&NodeConfig>,
     backup_status: &ComprehensiveStatus
 ) {
-    // Header
-    println!("{}", "┌─ PRIMARY ─────────────────────────────────────────────────┬─ BACKUP ──────────────────────────────────────────────────┐".bright_cyan());
+    let mut table = Table::new();
     
-    // Node names with IPs - pad manually to account for emoji width
-    let primary_label = primary_node.map(|n| format!("{} ({})", n.label, n.host)).unwrap_or("Primary".to_string());
-    let backup_label = backup_node.map(|n| format!("{} ({})", n.label, n.host)).unwrap_or("Backup".to_string());
+    // Create custom table style with minimal borders
+    table.load_preset(comfy_table::presets::UTF8_BORDERS_ONLY)
+         .apply_modifier(UTF8_ROUND_CORNERS)
+         .set_content_arrangement(ContentArrangement::Dynamic);
     
-    let primary_text = format!("🖥️  {}", primary_label);
-    let backup_text = format!("🖥️  {}", backup_label);
+    // Header row
+    table.add_row(vec![
+        Cell::new("").add_attribute(Attribute::Bold),
+        Cell::new("PRIMARY").add_attribute(Attribute::Bold).fg(Color::Green),
+        Cell::new("BACKUP").add_attribute(Attribute::Bold).fg(Color::Yellow),
+    ]);
     
-    // Pad manually since emojis mess up alignment
-    let primary_padded = format!("{}{}", primary_text, " ".repeat(57_usize.saturating_sub(primary_text.chars().count() + 1))); // +1 for emoji width
-    let backup_padded = format!("{}{}", backup_text, " ".repeat(57_usize.saturating_sub(backup_text.chars().count() + 1)));
+    // Node info as subheader
+    let primary_label = primary_node.map(|n| format!("🖥️ {} ({})", n.label, n.host)).unwrap_or("🖥️ Primary".to_string());
+    let backup_label = backup_node.map(|n| format!("🖥️ {} ({})", n.label, n.host)).unwrap_or("🖥️ Backup".to_string());
     
-    println!("│ {} │ {} │", 
-        primary_padded.bright_green(),
-        backup_padded.bright_yellow()
-    );
+    table.add_row(vec![
+        Cell::new("Node").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        Cell::new(&primary_label).fg(Color::Green),
+        Cell::new(&backup_label).fg(Color::Yellow),
+    ]);
     
-    println!("├───────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────────┤");
+    // Add separator line after subheader
+    table.add_row(vec![
+        Cell::new("─".repeat(15)).fg(Color::DarkGrey),
+        Cell::new("─".repeat(25)).fg(Color::DarkGrey),
+        Cell::new("─".repeat(25)).fg(Color::DarkGrey),
+    ]);
     
-    // Helper function to pad text accounting for emoji width
-    let pad_text = |text: &str, width: usize| -> String {
-        let emoji_count = text.chars().filter(|c| *c as u32 > 127).count();
-        let effective_width = width.saturating_sub(emoji_count);
-        format!("{}{}", text, " ".repeat(effective_width.saturating_sub(text.chars().count().saturating_sub(emoji_count))))
-    };
+    // Status rows with labels on the left
+    table.add_row(vec![
+        Cell::new("Connection").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        Cell::new(format_connection_status_plain(primary_status)),
+        Cell::new(format_connection_status_plain(backup_status)),
+    ]);
     
-    // Connection status
-    let primary_conn = format_connection_status_plain(primary_status);
-    let backup_conn = format_connection_status_plain(backup_status);
-    println!("│ Connection: {} │ Connection: {} │", 
-        pad_text(&primary_conn, 46), 
-        pad_text(&backup_conn, 46));
+    table.add_row(vec![
+        Cell::new("Process").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        Cell::new(format_process_status_plain(primary_status)),
+        Cell::new(format_process_status_plain(backup_status)),
+    ]);
     
-    // Process status
-    let primary_proc = format_process_status_plain(primary_status);
-    let backup_proc = format_process_status_plain(backup_status);
-    println!("│ Process:    {} │ Process:    {} │", 
-        pad_text(&primary_proc, 46), 
-        pad_text(&backup_proc, 46));
+    table.add_row(vec![
+        Cell::new("Disk Usage").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        Cell::new(format_disk_usage_plain(primary_status)),
+        Cell::new(format_disk_usage_plain(backup_status)),
+    ]);
     
-    // Disk usage
-    let primary_disk = format_disk_usage_plain(primary_status);
-    let backup_disk = format_disk_usage_plain(backup_status);
-    println!("│ Disk Usage: {} │ Disk Usage: {} │", 
-        pad_text(&primary_disk, 46), 
-        pad_text(&backup_disk, 46));
+    table.add_row(vec![
+        Cell::new("System Load").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        Cell::new(format_system_load_plain(primary_status)),
+        Cell::new(format_system_load_plain(backup_status)),
+    ]);
     
-    // System load
-    let primary_load = format_system_load_plain(primary_status);
-    let backup_load = format_system_load_plain(backup_status);
-    println!("│ System Load:{} │ System Load:{} │", 
-        pad_text(&primary_load, 46), 
-        pad_text(&backup_load, 46));
+    table.add_row(vec![
+        Cell::new("Sync Status").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        Cell::new(format_sync_status_plain(primary_status)),
+        Cell::new(format_sync_status_plain(backup_status)),
+    ]);
     
-    // Sync status
-    let primary_sync = format_sync_status_plain(primary_status);
-    let backup_sync = format_sync_status_plain(backup_status);
-    println!("│ Sync Status:{} │ Sync Status:{} │", 
-        pad_text(&primary_sync, 46), 
-        pad_text(&backup_sync, 46));
+    table.add_row(vec![
+        Cell::new("Version").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        Cell::new(format_version_plain(primary_status)),
+        Cell::new(format_version_plain(backup_status)),
+    ]);
     
-    // Version
-    let primary_version = format_version_plain(primary_status);
-    let backup_version = format_version_plain(backup_status);
-    println!("│ Version:    {} │ Version:    {} │", 
-        pad_text(&primary_version, 46), 
-        pad_text(&backup_version, 46));
+    table.add_row(vec![
+        Cell::new("Swap Ready").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        Cell::new(format_swap_readiness_plain(primary_status)),
+        Cell::new(format_swap_readiness_plain(backup_status)),
+    ]);
     
-    // Swap readiness with detailed checklist
-    let primary_swap = format_swap_readiness_plain(primary_status);
-    let backup_swap = format_swap_readiness_plain(backup_status);
-    println!("│ Swap Ready: {} │ Swap Ready: {} │", 
-        pad_text(&primary_swap, 46), 
-        pad_text(&backup_swap, 46));
-    
-    // Show detailed swap checklist
-    println!("├───────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────────┤");
-    
+    // Add swap checklist as sub-rows
     let primary_checklist = format_swap_checklist(primary_status);
     let backup_checklist = format_swap_checklist(backup_status);
     
-    let max_lines = primary_checklist.len().max(backup_checklist.len());
-    let empty_string = String::new();
-    for i in 0..max_lines {
-        let primary_item = primary_checklist.get(i).unwrap_or(&empty_string);
-        let backup_item = backup_checklist.get(i).unwrap_or(&empty_string);
-        println!("│ {} │ {} │", 
-            pad_text(primary_item, 57), 
-            pad_text(backup_item, 57));
+    if !primary_checklist.is_empty() || !backup_checklist.is_empty() {
+        let max_lines = primary_checklist.len().max(backup_checklist.len());
+        for i in 0..max_lines {
+            let primary_item = primary_checklist.get(i).cloned().unwrap_or_default();
+            let backup_item = backup_checklist.get(i).cloned().unwrap_or_default();
+            
+            let left_label = if i == 0 { "  └ Checklist" } else { "" };
+            
+            table.add_row(vec![
+                Cell::new(left_label).fg(Color::DarkGrey),
+                Cell::new(primary_item).fg(Color::DarkGrey),
+                Cell::new(backup_item).fg(Color::DarkGrey),
+            ]);
+        }
     }
     
-    // Errors if any
-    if primary_status.error.is_some() || backup_status.error.is_some() || 
-       !primary_status.swap_issues.is_empty() || !backup_status.swap_issues.is_empty() {
-        println!("├───────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────────┤");
+    println!("{}", table);
+}
+
+fn display_all_nodes_table(config: &Config, results: &HashMap<String, ComprehensiveStatus>) {
+    let mut table = Table::new();
+    table.load_preset(UTF8_BORDERS_ONLY)
+         .apply_modifier(UTF8_ROUND_CORNERS)
+         .set_content_arrangement(ContentArrangement::Dynamic);
+    
+    // Create a 3-column layout for single nodes
+    let nodes: Vec<_> = results.iter().collect();
+    
+    if nodes.len() == 1 {
+        // Single node - use the same layout as primary/backup but with one column
+        let (role, status) = nodes[0];
+        let node_config = config.nodes.get(role);
+        let node_label = node_config.map(|n| format!("🖥️ {} ({})", n.label, n.host))
+            .unwrap_or_else(|| format!("🖥️ {}", role.to_uppercase()));
         
-        // Show connection errors
-        if primary_status.error.is_some() || backup_status.error.is_some() {
-            let primary_error = primary_status.error.as_ref().map(|e| e.clone()).unwrap_or("".to_string());
-            let backup_error = backup_status.error.as_ref().map(|e| e.clone()).unwrap_or("".to_string());
-            println!("│ {:<57} │ {:<57} │", primary_error, backup_error);
-        }
+        table.add_row(vec![
+            Cell::new("").add_attribute(Attribute::Bold),
+            Cell::new(role.to_uppercase()).add_attribute(Attribute::Bold).fg(Color::Green),
+        ]);
         
-        // Show swap issues
-        if !primary_status.swap_issues.is_empty() || !backup_status.swap_issues.is_empty() {
-            let max_issues = primary_status.swap_issues.len().max(backup_status.swap_issues.len());
-            for i in 0..max_issues {
-                let primary_issue = primary_status.swap_issues.get(i).map(|s| s.as_str()).unwrap_or("");
-                let backup_issue = backup_status.swap_issues.get(i).map(|s| s.as_str()).unwrap_or("");
-                println!("│ {:<57} │ {:<57} │", primary_issue, backup_issue);
-            }
+        table.add_row(vec![
+            Cell::new("Node").add_attribute(Attribute::Bold).fg(Color::Cyan),
+            Cell::new(&node_label).fg(Color::Green),
+        ]);
+        
+        table.add_row(vec![
+            Cell::new("Connection").add_attribute(Attribute::Bold).fg(Color::Cyan),
+            Cell::new(format_connection_status_plain(status)),
+        ]);
+        
+        table.add_row(vec![
+            Cell::new("Process").add_attribute(Attribute::Bold).fg(Color::Cyan),
+            Cell::new(format_process_status_plain(status)),
+        ]);
+        
+        table.add_row(vec![
+            Cell::new("Disk Usage").add_attribute(Attribute::Bold).fg(Color::Cyan),
+            Cell::new(format_disk_usage_plain(status)),
+        ]);
+        
+        table.add_row(vec![
+            Cell::new("System Load").add_attribute(Attribute::Bold).fg(Color::Cyan),
+            Cell::new(format_system_load_plain(status)),
+        ]);
+        
+        table.add_row(vec![
+            Cell::new("Sync Status").add_attribute(Attribute::Bold).fg(Color::Cyan),
+            Cell::new(format_sync_status_plain(status)),
+        ]);
+        
+        table.add_row(vec![
+            Cell::new("Version").add_attribute(Attribute::Bold).fg(Color::Cyan),
+            Cell::new(format_version_plain(status)),
+        ]);
+        
+        table.add_row(vec![
+            Cell::new("Swap Ready").add_attribute(Attribute::Bold).fg(Color::Cyan),
+            Cell::new(format_swap_readiness_plain(status)),
+        ]);
+        
+        // Add swap checklist as sub-rows
+        let checklist = format_swap_checklist(status);
+        for (i, item) in checklist.iter().enumerate() {
+            let left_label = if i == 0 { "  └ Checklist" } else { "" };
+            table.add_row(vec![
+                Cell::new(left_label).fg(Color::DarkGrey),
+                Cell::new(item).fg(Color::DarkGrey),
+            ]);
+        }
+    } else {
+        // Multiple nodes - use traditional table format
+        table.add_row(vec![
+            Cell::new("Node").add_attribute(Attribute::Bold).fg(Color::Cyan),
+            Cell::new("Connection").add_attribute(Attribute::Bold).fg(Color::Cyan),
+            Cell::new("Process").add_attribute(Attribute::Bold).fg(Color::Cyan),
+            Cell::new("Disk").add_attribute(Attribute::Bold).fg(Color::Cyan),
+            Cell::new("Load").add_attribute(Attribute::Bold).fg(Color::Cyan),
+            Cell::new("Sync").add_attribute(Attribute::Bold).fg(Color::Cyan),
+            Cell::new("Version").add_attribute(Attribute::Bold).fg(Color::Cyan),
+            Cell::new("Swap Ready").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        ]);
+        
+        for (role, status) in results {
+            let node_label = config.nodes.get(role)
+                .map(|node| format!("{} ({} - {})", node.label, node.host, role.to_uppercase()))
+                .unwrap_or_else(|| role.to_string());
+            
+            table.add_row(vec![
+                Cell::new(node_label),
+                Cell::new(format_connection_status_plain(status)),
+                Cell::new(format_process_status_plain(status)),
+                Cell::new(format_disk_usage_plain(status)),
+                Cell::new(format_system_load_plain(status)),
+                Cell::new(format_sync_status_plain(status)),
+                Cell::new(format_version_plain(status)),
+                Cell::new(format_swap_readiness_plain(status)),
+            ]);
         }
     }
     
-    println!("└───────────────────────────────────────────────────────────┴───────────────────────────────────────────────────────────┘");
+    println!("{}", table);
 }
 
-fn display_single_column_view(config: &Config, results: &HashMap<String, ComprehensiveStatus>) {
-    println!("{}", "─".repeat(150));
-    println!("{:<35} {:<15} {:<15} {:<12} {:<10} {:<15} {:<25} {:<15}", 
-        "Node".bright_cyan(), 
-        "Connection".bright_cyan(), 
-        "Process".bright_cyan(), 
-        "Disk".bright_cyan(),
-        "Load".bright_cyan(),
-        "Sync".bright_cyan(),
-        "Version".bright_cyan(),
-        "Swap Ready".bright_cyan()
-    );
-    println!("{}", "─".repeat(150));
+fn display_other_nodes_table(config: &Config, other_nodes: &[(&String, &ComprehensiveStatus)]) {
+    let mut table = Table::new();
+    table.load_preset(UTF8_BORDERS_ONLY)
+         .apply_modifier(UTF8_ROUND_CORNERS)
+         .set_content_arrangement(ContentArrangement::Dynamic);
     
-    for (role, status) in results {
-        display_node_row(config, role, status);
+    // Header
+    table.add_row(vec![
+        Cell::new("Node").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        Cell::new("Connection").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        Cell::new("Process").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        Cell::new("Disk").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        Cell::new("Load").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        Cell::new("Sync").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        Cell::new("Version").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        Cell::new("Swap Ready").add_attribute(Attribute::Bold).fg(Color::Cyan),
+    ]);
+    
+    // Data rows
+    for (role, status) in other_nodes {
+        let node_label = config.nodes.get(*role)
+            .map(|node| format!("{} ({} - {})", node.label, node.host, role.to_uppercase()))
+            .unwrap_or_else(|| role.to_string());
+        
+        table.add_row(vec![
+            Cell::new(node_label),
+            Cell::new(format_connection_status_plain(status)),
+            Cell::new(format_process_status_plain(status)),
+            Cell::new(format_disk_usage_plain(status)),
+            Cell::new(format_system_load_plain(status)),
+            Cell::new(format_sync_status_plain(status)),
+            Cell::new(format_version_plain(status)),
+            Cell::new(format_swap_readiness_plain(status)),
+        ]);
     }
     
-    println!("{}", "─".repeat(150));
+    println!("{}", table);
 }
 
-fn display_node_row(config: &Config, role: &str, status: &ComprehensiveStatus) {
-    let node_label = config.nodes.get(role)
-        .map(|node| format!("{} ({} - {})", node.label, node.host, role.to_uppercase()))
-        .unwrap_or_else(|| role.to_string());
-    
-    println!("{:<35} {:<15} {:<15} {:<12} {:<10} {:<15} {:<25} {:<15}", 
-        node_label,
-        format_connection_status(status),
-        format_process_status(status),
-        format_disk_usage(status),
-        format_system_load(status),
-        format_sync_status(status),
-        format_version(status),
-        format_swap_readiness(status)
-    );
-    
-    if let Some(error) = &status.error {
-        println!("    {}: {}", "Error".red(), error.red());
-    }
-    
-    if !status.swap_issues.is_empty() {
-        for issue in &status.swap_issues {
-            println!("    {}: {}", "Swap Issue".yellow(), issue.yellow());
-        }
-    }
-}
-
-// Helper functions for formatting status fields
-fn format_connection_status(status: &ComprehensiveStatus) -> String {
-    if status.connected { 
-        "✅ Connected".green().to_string()
-    } else { 
-        "❌ Failed".red().to_string()
-    }
-}
-
-fn format_process_status(status: &ComprehensiveStatus) -> String {
-    match &status.validator_running {
-        Some(true) => "✅ Running".green().to_string(),
-        Some(false) => "❌ Stopped".red().to_string(),
-        None => "❓ Unknown".yellow().to_string(),
-    }
-}
-
-fn format_disk_usage(status: &ComprehensiveStatus) -> String {
-    status.ledger_disk_usage
-        .map(|d| {
-            if d > 90 { format!("{}%", d).red().to_string() }
-            else if d > 80 { format!("{}%", d).yellow().to_string() }
-            else { format!("{}%", d).green().to_string() }
-        })
-        .unwrap_or_else(|| "N/A".dimmed().to_string())
-}
-
-fn format_system_load(status: &ComprehensiveStatus) -> String {
-    status.system_load
-        .map(|l| format!(" {:.1}", l))
-        .unwrap_or_else(|| " N/A".to_string())
-}
-
-fn format_sync_status(status: &ComprehensiveStatus) -> String {
-    status.sync_status
-        .as_ref()
-        .map(|s| {
-            if s == "In Sync" { format!(" {}", s).green().to_string() }
-            else if s == "Behind" { format!(" {}", s).red().to_string() }
-            else { format!(" {}", s).yellow().to_string() }
-        })
-        .unwrap_or_else(|| " N/A".dimmed().to_string())
-}
-
-fn format_version(status: &ComprehensiveStatus) -> String {
-    status.version
-        .as_ref()
-        .map(|v| {
-            if v.contains("Jito") { v.bright_magenta().to_string() }
-            else if v.contains("Firedancer") { v.bright_blue().to_string() }
-            else if v.contains("agave") { v.green().to_string() }
-            else { v.to_string() }
-        })
-        .unwrap_or_else(|| "N/A".dimmed().to_string())
-}
-
-// Plain formatting functions for side-by-side display (no colors for alignment)
+// Plain formatting functions for table display
 fn format_connection_status_plain(status: &ComprehensiveStatus) -> String {
     if status.connected { 
         "✅ Connected".to_string()
@@ -693,14 +682,6 @@ fn format_version_plain(status: &ComprehensiveStatus) -> String {
         .as_ref()
         .map(|v| v.clone())
         .unwrap_or_else(|| "N/A".to_string())
-}
-
-fn format_swap_readiness(status: &ComprehensiveStatus) -> String {
-    match status.swap_ready {
-        Some(true) => "✅ Ready".green().to_string(),
-        Some(false) => "❌ Not Ready".red().to_string(),
-        None => "❓ Unknown".yellow().to_string(),
-    }
 }
 
 fn format_swap_readiness_plain(status: &ComprehensiveStatus) -> String {

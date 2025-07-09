@@ -40,6 +40,10 @@ pub struct NodePaths {
     pub tower: String,
     #[serde(rename = "solanaCliPath")]
     pub solana_cli_path: String,
+    #[serde(rename = "firedancerConfig")]
+    pub firedancer_config: Option<String>,
+    #[serde(rename = "fdctlPath")]
+    pub fdctl_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

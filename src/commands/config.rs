@@ -8,7 +8,7 @@ use crate::config::ConfigManager;
 use crate::ssh::{SshManager, validate_node_files};
 use crate::types::Config;
 
-pub async fn config_command(list: bool, edit: bool, test: bool) -> Result<()> {
+pub async fn config_command(list: bool, edit: bool, test: bool, _app_state: Option<&crate::AppState>) -> Result<()> {
     let config_manager = ConfigManager::new()?;
     
     if list {

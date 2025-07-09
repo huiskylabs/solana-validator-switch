@@ -207,25 +207,10 @@ async fn validate_configuration_with_progress(validation: &mut StartupValidation
             progress_bar.set_message("Checking configuration completeness...");
             let needs_migration = check_migration_needed(&config);
             if needs_migration {
-                progress_bar.suspend(|| {
-                    println!("  🔄 Configuration needs migration to include public key identifiers");
-                    println!();
-                });
-                
-                let migrate_now = Confirm::new("Would you like to add the missing public key identifiers now?")
-                    .with_default(true)
-                    .prompt()?;
-                    
-                if migrate_now {
-                    config = migrate_configuration(&config_manager, config).await?;
-                    progress_bar.suspend(|| {
-                        println!("  ✅ Configuration migrated successfully");
-                    });
-                } else {
-                    progress_bar.suspend(|| {
-                        println!("  ⚠️ Migration skipped. Some features may not work correctly.");
-                    });
-                }
+                // Configuration needs migration - stop loading and fail immediately
+                validation.config_valid = false;
+                validation.issues.push("Configuration needs migration to include missing public key identifiers".to_string());
+                return Ok(None); // Stop startup immediately
             }
             
             // Validate configuration completeness
@@ -239,41 +224,10 @@ async fn validate_configuration_with_progress(validation: &mut StartupValidation
                 });
                 Ok(Some(config))
             } else {
-                validation.issues.extend(config_issues.clone());
-                progress_bar.suspend(|| {
-                    println!("  ⚠️ Configuration has issues:");
-                    for issue in &config_issues {
-                        println!("    • {}", issue.yellow());
-                    }
-                    println!();
-                });
-                
-                let fix_now = Confirm::new("Would you like to fix these issues now?")
-                    .with_default(true)
-                    .prompt()?;
-                    
-                if fix_now {
-                    fix_configuration_issues(&config, &config_issues).await?;
-                    // Reload config after fixes
-                    match config_manager.load() {
-                        Ok(fixed_config) => {
-                            validation.config_valid = true;
-                            progress_bar.suspend(|| {
-                                println!("  ✅ Configuration issues resolved");
-                            });
-                            Ok(Some(fixed_config))
-                        }
-                        Err(e) => {
-                            validation.issues.push(format!("Failed to reload configuration: {}", e));
-                            Ok(None)
-                        }
-                    }
-                } else {
-                    progress_bar.suspend(|| {
-                        println!("{}", "Configuration issues not resolved. Some features may not work correctly.".yellow());
-                    });
-                    Ok(Some(config))
-                }
+                // Configuration has issues - stop loading and fail immediately
+                validation.config_valid = false;
+                validation.issues.extend(config_issues);
+                Ok(None) // Return None to stop startup
             }
         }
         Err(e) => {

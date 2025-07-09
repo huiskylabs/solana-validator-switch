@@ -37,20 +37,16 @@ pub async fn setup_command() -> Result<()> {
     let ssh_keys = detect_ssh_keys().await?;
     
     // SSH key path configuration
-    let ssh_key_path = collect_ssh_key_configuration(&ssh_keys).await?;
+    let _ssh_key_path = collect_ssh_key_configuration(&ssh_keys).await?;
     
-    // Node pairs configuration
-    let node_pairs = collect_node_pairs_configuration().await?;
-    
-    // RPC configuration  
-    let rpc_config = collect_rpc_configuration().await?;
+    // Validators configuration
+    let validators = collect_validators_configuration().await?;
     
     // Build final configuration
-    let mut config = ConfigManager::create_default();
-    config.nodes = node_pairs;
-    config.rpc.endpoint = rpc_config.endpoint;
-    config.rpc.timeout = rpc_config.timeout;
-    config.ssh_key_path = ssh_key_path;
+    let config = crate::types::Config {
+        version: "1.0.0".to_string(),
+        validators,
+    };
     
     // Validate and save configuration
     validate_and_save_configuration(&config_manager, &config).await?;
@@ -219,32 +215,32 @@ async fn collect_ssh_key_configuration(ssh_keys: &[SshKey]) -> Result<String> {
     Ok(selected_key.path.clone())
 }
 
-async fn collect_node_pairs_configuration() -> Result<Vec<crate::types::NodePair>> {
+async fn collect_validators_configuration() -> Result<Vec<crate::types::ValidatorPair>> {
     println!();
-    println!("{}", "🖥️ Node Pair Configuration".bright_cyan());
+    println!("{}", "🖥️ Validator Configuration".bright_cyan());
     println!();
-    println!("{}", "Configure validator node pairs. Each pair has a primary and backup node sharing the same validator identity.".dimmed());
+    println!("{}", "Configure validators. Each validator has two nodes that share the same validator identity.".dimmed());
     println!();
     
-    let mut node_pairs = Vec::new();
+    let mut validators = Vec::new();
     
-    // For now, we'll configure one pair, but this can be extended to multiple pairs
-    let add_pair = Confirm::new("Configure a validator node pair?")
+    // For now, we'll configure one validator, but this can be extended to multiple validators
+    let add_validator = Confirm::new("Configure a validator?")
         .with_default(true)
         .prompt()?;
         
-    if add_pair {
-        if let Some(pair) = configure_node_pair().await? {
-            node_pairs.push(pair);
+    if add_validator {
+        if let Some(validator) = configure_validator().await? {
+            validators.push(validator);
         }
     }
     
-    Ok(node_pairs)
+    Ok(validators)
 }
 
-async fn configure_node_pair() -> Result<Option<crate::types::NodePair>> {
+async fn configure_validator() -> Result<Option<crate::types::ValidatorPair>> {
     println!("{}", "🔑 Validator Identity Configuration".bright_cyan());
-    println!("{}", "These public keys identify the validator and are shared between primary and backup nodes.".dimmed());
+    println!("{}", "These public keys identify the validator and are shared between all nodes.".dimmed());
     println!();
     
     let vote_pubkey: String = Text::new("Vote Pubkey:")
@@ -273,20 +269,44 @@ async fn configure_node_pair() -> Result<Option<crate::types::NodePair>> {
         })
         .prompt()?;
     
+    // RPC endpoint configuration
     println!();
-    println!("{}", "🟢 Primary Node Configuration".green().bold());
-    let primary = configure_node("primary").await?;
+    println!("{}", "🌐 RPC Configuration".bright_cyan());
+    let rpc: String = Text::new("RPC endpoint:")
+        .with_default("https://api.mainnet-beta.solana.com")
+        .with_help_message("Solana RPC endpoint for monitoring")
+        .prompt()?;
+    
+    // SSH key configuration
+    println!();
+    println!("{}", "🔐 SSH Configuration".bright_cyan());
+    let local_ssh_key_path: String = Text::new("Local SSH key path:")
+        .with_default("~/.ssh/id_rsa")
+        .with_help_message("Path to your SSH private key for accessing validator nodes")
+        .prompt()?;
+    
+    // Configure nodes
+    let mut nodes = Vec::new();
     
     println!();
-    println!("{}", "🟡 Backup Node Configuration".yellow().bold());
-    let backup = configure_node("backup").await?;
+    println!("{}", "📡 Node 1 Configuration".green().bold());
+    if let Some(node1) = configure_node("Node 1").await? {
+        nodes.push(node1);
+    }
     
-    if let (Some(primary), Some(backup)) = (primary, backup) {
-        Ok(Some(crate::types::NodePair {
+    println!();
+    println!("{}", "📡 Node 2 Configuration".yellow().bold());
+    if let Some(node2) = configure_node("Node 2").await? {
+        nodes.push(node2);
+    }
+    
+    if nodes.len() == 2 {
+        Ok(Some(crate::types::ValidatorPair {
             vote_pubkey,
             identity_pubkey,
-            primary,
-            backup,
+            rpc,
+            local_ssh_key_path,
+            nodes,
         }))
     } else {
         Ok(None)
@@ -386,61 +406,6 @@ async fn configure_node(node_type: &str) -> Result<Option<NodeConfig>> {
     }))
 }
 
-struct RpcConfig {
-    endpoint: String,
-    timeout: u32,
-}
-
-async fn collect_rpc_configuration() -> Result<RpcConfig> {
-    println!();
-    println!("{}", "🌐 RPC Configuration".bright_cyan());
-    println!();
-    
-    let rpc_choices = vec![
-        "Mainnet Beta (Official)",
-        "Testnet (Official)", 
-        "📝 Custom endpoint"
-    ];
-    
-    let rpc_selection = Select::new("Solana RPC endpoint:", rpc_choices.clone())
-        .with_starting_cursor(0)
-        .prompt()?;
-        
-    let rpc_selection_idx = rpc_choices.iter().position(|x| x == &rpc_selection).unwrap();
-        
-    let endpoint = match rpc_selection_idx {
-        0 => "https://api.mainnet-beta.solana.com".to_string(),
-        1 => "https://api.testnet.solana.com".to_string(),
-        2 => {
-            Text::new("Enter custom RPC endpoint:")
-                .with_validator(|input: &str| {
-                    if input.trim().is_empty() {
-                        Ok(Validation::Invalid("RPC endpoint is required".into()))
-                    } else if url::Url::parse(input).is_err() {
-                        Ok(Validation::Invalid("Please enter a valid URL".into()))
-                    } else {
-                        Ok(Validation::Valid)
-                    }
-                })
-                .prompt()?
-        },
-        _ => unreachable!(),
-    };
-    
-    let timeout: u32 = Text::new("RPC request timeout (ms):")
-        .with_default("30000")
-        .with_validator(|input: &str| {
-            match input.parse::<u32>() {
-                Ok(val) if val >= 1000 && val <= 120000 => Ok(Validation::Valid),
-                Ok(_) => Ok(Validation::Invalid("Timeout must be between 1000ms and 120000ms".into())),
-                Err(_) => Ok(Validation::Invalid("Please enter a valid number".into()))
-            }
-        })
-        .prompt()?
-        .parse()?;
-    
-    Ok(RpcConfig { endpoint, timeout })
-}
 
 
 async fn validate_and_save_configuration(config_manager: &ConfigManager, config: &crate::types::Config) -> Result<()> {

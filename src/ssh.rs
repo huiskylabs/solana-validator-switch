@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow};
 use ssh2::Session;
 use std::collections::HashMap;
 use std::net::TcpStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use std::io::Read;
 
@@ -170,6 +170,24 @@ impl SshConnectionPool {
     
     /// Create a new SSH session
     async fn create_session(&self, node: &NodeConfig, ssh_key_path: &str) -> Result<Session> {
+        // Expand the SSH key path (handle ~ for home directory)
+        let expanded_path = if ssh_key_path.starts_with("~") {
+            let home = dirs::home_dir().ok_or_else(|| anyhow!("Could not find home directory"))?;
+            home.join(&ssh_key_path[2..]) // Skip "~/"
+        } else {
+            PathBuf::from(ssh_key_path)
+        };
+        
+        // Check if the SSH key file exists
+        if !expanded_path.exists() {
+            return Err(anyhow!("SSH key file not found: {} (expanded from: {})", expanded_path.display(), ssh_key_path));
+        }
+        
+        // Check if we can read the file
+        if let Err(e) = std::fs::metadata(&expanded_path) {
+            return Err(anyhow!("Cannot access SSH key file {}: {}", expanded_path.display(), e));
+        }
+        
         // Connect to TCP stream with timeout
         let tcp = TcpStream::connect_timeout(
             &format!("{}:{}", node.host, node.port).parse()?,
@@ -186,15 +204,26 @@ impl SshConnectionPool {
         session.handshake()?;
         
         // Authenticate with SSH key
-        session.userauth_pubkey_file(
+        match session.userauth_pubkey_file(
             &node.user,
             None,
-            Path::new(ssh_key_path),
+            &expanded_path,
             None,
-        )?;
+        ) {
+            Ok(_) => {},
+            Err(e) => {
+                return Err(anyhow!(
+                    "SSH authentication failed for user '{}' with key '{}': {}. \
+                    Make sure: 1) The private key file exists and is readable, \
+                    2) The corresponding public key is in ~/.ssh/authorized_keys on the remote host, \
+                    3) The key format is supported (RSA, ED25519, etc.)",
+                    node.user, expanded_path.display(), e
+                ));
+            }
+        }
         
         if !session.authenticated() {
-            return Err(anyhow!("SSH authentication failed for {}", node.user));
+            return Err(anyhow!("SSH authentication failed for {} - key was rejected by server", node.user));
         }
         
         Ok(session)

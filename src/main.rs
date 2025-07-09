@@ -9,7 +9,7 @@ mod commands;
 mod types;
 mod startup;
 
-use commands::{config_command, setup_command, status_command, switch_command};
+use commands::{setup_command, status_command, switch_command};
 use ssh::SshConnectionPool;
 
 #[derive(Parser)]
@@ -23,18 +23,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Manage configuration settings
-    Config {
-        /// List current configuration
-        #[arg(short, long)]
-        list: bool,
-        /// Edit configuration file
-        #[arg(short, long)]
-        edit: bool,
-        /// Test connections to configured nodes
-        #[arg(short, long)]
-        test: bool,
-    },
+    /// Interactive setup wizard for initial configuration
+    Setup,
     /// Check current validator status
     Status,
     /// Switch between primary and backup validators
@@ -42,9 +32,6 @@ enum Commands {
         /// Preview switch without executing
         #[arg(short, long)]
         dry_run: bool,
-        /// Force switch (skip tower copy)
-        #[arg(short, long)]
-        force: bool,
     },
 }
 
@@ -52,6 +39,13 @@ enum Commands {
 pub struct AppState {
     pub ssh_pool: Arc<Mutex<SshConnectionPool>>,
     pub config: types::Config,
+    pub validator_statuses: Vec<ValidatorStatus>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ValidatorStatus {
+    pub validator_pair: types::ValidatorPair,
+    pub nodes_with_status: Vec<types::NodeWithStatus>,
 }
 
 impl AppState {
@@ -69,8 +63,8 @@ async fn main() -> Result<()> {
     let app_state = AppState::new().await?;
 
     match cli.command {
-        Some(Commands::Config { list, edit, test }) => {
-            config_command(list, edit, test, app_state.as_ref()).await?;
+        Some(Commands::Setup) => {
+            setup_command().await?;
         }
         Some(Commands::Status) => {
             if let Some(state) = app_state.as_ref() {
@@ -79,16 +73,22 @@ async fn main() -> Result<()> {
                 println!("{}", "⚠️ No configuration found. Please run setup first.".yellow());
             }
         }
-        Some(Commands::Switch { dry_run, force }) => {
+        Some(Commands::Switch { dry_run }) => {
             if let Some(state) = app_state.as_ref() {
-                switch_command(dry_run, force, state).await?;
+                switch_command(dry_run, state).await?;
             } else {
                 println!("{}", "⚠️ No configuration found. Please run setup first.".yellow());
             }
         }
         None => {
-            // Interactive main menu
-            show_interactive_menu(app_state.as_ref()).await?;
+            // Interactive main menu only if app state is valid
+            if let Some(state) = app_state.as_ref() {
+                show_interactive_menu(Some(state)).await?;
+            } else {
+                println!("{}", "❌ Cannot start interactive mode without valid configuration.".red());
+                println!("{}", "Please run 'svs setup' to configure the application first.".yellow());
+                std::process::exit(1);
+            }
         }
     }
 
@@ -109,7 +109,6 @@ async fn show_interactive_menu(app_state: Option<&AppState>) -> Result<()> {
 
     loop {
         let mut options = vec![
-            "⚙️  Config - Manage configuration",
             "📋 Status - Check current validator status",
             "🔄 Switch - Switch between primary and backup validators"
         ];
@@ -122,16 +121,15 @@ async fn show_interactive_menu(app_state: Option<&AppState>) -> Result<()> {
         let index = options.iter().position(|x| x == &selection).unwrap();
         
         match index {
-            0 => show_config_menu(app_state).await?,
-            1 => {
+            0 => {
                 if let Some(ref state) = app_state {
                     status_command(state).await?;
                 } else {
                     println!("{}", "⚠️ No configuration found. Please run setup first.".yellow());
                 }
             },
-            2 => show_switch_menu(app_state).await?,
-            3 => { // Exit
+            1 => show_switch_menu(app_state).await?,
+            2 => { // Exit
                 println!("{}", "👋 Goodbye!".bright_green());
                 break;
             },
@@ -142,40 +140,6 @@ async fn show_interactive_menu(app_state: Option<&AppState>) -> Result<()> {
     Ok(())
 }
 
-async fn show_config_menu(app_state: Option<&AppState>) -> Result<()> {
-    use inquire::Select;
-    use colored::*;
-    
-    loop {
-        println!("\n{}", "⚙️  Configuration Management".bright_cyan().bold());
-        println!();
-        
-        let mut options = vec![
-            "🔧 Setup - Configure your validator nodes and SSH keys",
-            "📋 List - Show current configuration",
-            "✏️  Edit - Edit configuration interactively",
-            "🧪 Test - Test SSH connections"
-        ];
-        
-        options.push("⬅️  Back to main menu");
-        
-        let selection = Select::new("Select configuration action:", options.clone())
-            .prompt()?;
-            
-        let index = options.iter().position(|x| x == &selection).unwrap();
-        
-        match index {
-            0 => setup_command().await?,
-            1 => config_command(true, false, false, app_state).await?,
-            2 => config_command(false, true, false, app_state).await?,
-            3 => config_command(false, false, true, app_state).await?,
-            4 => break, // Back to main menu
-            _ => unreachable!(),
-        }
-    }
-    
-    Ok(())
-}
 
 async fn show_switch_menu(app_state: Option<&AppState>) -> Result<()> {
     use inquire::Select;
@@ -187,8 +151,7 @@ async fn show_switch_menu(app_state: Option<&AppState>) -> Result<()> {
         
         let mut options = vec![
             "🔄 Switch - Switch between primary and backup validators",
-            "🧪 Dry Run - Preview switch without executing", 
-            "⚡ Force - Force switch (skip tower copy)"
+            "🧪 Dry Run - Preview switch without executing"
         ];
         
         options.push("⬅️  Back to main menu");
@@ -201,26 +164,19 @@ async fn show_switch_menu(app_state: Option<&AppState>) -> Result<()> {
         match index {
             0 => {
                 if let Some(state) = app_state {
-                    switch_command(false, false, state).await?;
+                    switch_command(false, state).await?;
                 } else {
                     println!("{}", "⚠️ No configuration found. Please run setup first.".yellow());
                 }
             },
             1 => {
                 if let Some(state) = app_state {
-                    switch_command(true, false, state).await?;
+                    switch_command(true, state).await?;
                 } else {
                     println!("{}", "⚠️ No configuration found. Please run setup first.".yellow());
                 }
             },
-            2 => {
-                if let Some(state) = app_state {
-                    switch_command(false, true, state).await?;
-                } else {
-                    println!("{}", "⚠️ No configuration found. Please run setup first.".yellow());
-                }
-            },
-            3 => break, // Back to main menu
+            2 => break, // Back to main menu
             _ => unreachable!(),
         }
     }

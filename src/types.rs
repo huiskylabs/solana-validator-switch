@@ -3,23 +3,19 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub version: String,
-    pub nodes: Vec<NodePair>,
-    pub rpc: RpcConfig,
-    pub monitoring: MonitoringConfig,
-    pub security: SecurityConfig,
-    pub display: DisplayConfig,
-    #[serde(rename = "sshKeyPath")]
-    pub ssh_key_path: String,
+    pub validators: Vec<ValidatorPair>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NodePair {
+pub struct ValidatorPair {
     #[serde(rename = "votePubkey")]
     pub vote_pubkey: String,
     #[serde(rename = "identityPubkey")]
     pub identity_pubkey: String,
-    pub primary: NodeConfig,
-    pub backup: NodeConfig,
+    pub rpc: String,
+    #[serde(rename = "localSshKeyPath")]
+    pub local_ssh_key_path: String,
+    pub nodes: Vec<NodeConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,40 +45,34 @@ pub struct NodePaths {
     pub fdctl_path: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RpcConfig {
-    pub endpoint: String,
-    pub timeout: u32,
-    pub retries: u32,
+#[derive(Debug, Clone, PartialEq)]
+pub enum NodeStatus {
+    Active,
+    Standby,
+    Unknown,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MonitoringConfig {
-    pub interval: u32,
-    #[serde(rename = "healthThreshold")]
-    pub health_threshold: u32,
-    #[serde(rename = "readinessThreshold")]
-    pub readiness_threshold: u32,
-    #[serde(rename = "enableMetrics")]
-    pub enable_metrics: bool,
-    #[serde(rename = "metricsRetention")]
-    pub metrics_retention: u32,
+#[derive(Debug, Clone, PartialEq)]
+pub enum ValidatorType {
+    Solana,
+    Agave,
+    Jito,
+    Firedancer,
+    Unknown,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SecurityConfig {
-    #[serde(rename = "confirmSwitches")]
-    pub confirm_switches: bool,
-    #[serde(rename = "maxRetries")]
-    pub max_retries: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DisplayConfig {
-    pub theme: String,
-    pub compact: bool,
-    #[serde(rename = "showTechnicalDetails")]
-    pub show_technical_details: bool,
+#[derive(Debug, Clone)]
+pub struct NodeWithStatus {
+    pub node: NodeConfig,
+    pub status: NodeStatus,
+    pub validator_type: ValidatorType, // Type of validator (Firedancer, Agave, Solana, etc.)
+    pub agave_validator_executable: Option<String>, // Path to agave-validator executable (for catchup check)
+    pub fdctl_executable: Option<String>, // Path to fdctl executable (for firedancer identity set)
+    pub version: Option<String>, // Version information (e.g., "Firedancer 0.505.20216")
+    pub sync_status: Option<String>, // Sync status (e.g., "Caught up (slot: 344297365)")
+    pub current_identity: Option<String>, // Current validator identity
+    pub swap_ready: Option<bool>, // Whether the node is ready for validator switching
+    pub swap_issues: Vec<String>, // Issues preventing swap readiness
 }
 
 #[derive(Debug)]

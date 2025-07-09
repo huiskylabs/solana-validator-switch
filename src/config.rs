@@ -1,5 +1,5 @@
 use anyhow::{Result, anyhow};
-use serde_json;
+use serde_yaml;
 use std::fs;
 use std::path::PathBuf;
 use dirs;
@@ -21,7 +21,7 @@ impl ConfigManager {
             fs::create_dir_all(&config_dir)?;
         }
         
-        let config_path = config_dir.join("config.json");
+        let config_path = config_dir.join("config.yaml");
         
         Ok(ConfigManager { config_path })
     }
@@ -36,12 +36,12 @@ impl ConfigManager {
         }
         
         let content = fs::read_to_string(&self.config_path)?;
-        let config: Config = serde_json::from_str(&content)?;
+        let config: Config = serde_yaml::from_str(&content)?;
         Ok(config)
     }
     
     pub fn save(&self, config: &Config) -> Result<()> {
-        let content = serde_json::to_string_pretty(config)?;
+        let content = serde_yaml::to_string(config)?;
         fs::write(&self.config_path, content)?;
         Ok(())
     }
@@ -55,29 +55,7 @@ impl ConfigManager {
         
         Config {
             version: "1.0.0".to_string(),
-            nodes: Vec::new(),
-            rpc: RpcConfig {
-                endpoint: "https://api.mainnet-beta.solana.com".to_string(),
-                timeout: 30000,
-                retries: 3,
-            },
-            monitoring: MonitoringConfig {
-                interval: 5000,
-                health_threshold: 100,
-                readiness_threshold: 50,
-                enable_metrics: true,
-                metrics_retention: 7,
-            },
-            security: SecurityConfig {
-                confirm_switches: true,
-                max_retries: 3,
-            },
-            display: DisplayConfig {
-                theme: "dark".to_string(),
-                compact: true,
-                show_technical_details: false,
-            },
-            ssh_key_path: "~/.ssh/id_rsa".to_string(),
+            validators: Vec::new(),
         }
     }
 }

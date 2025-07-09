@@ -2,7 +2,7 @@
 
 Professional-grade CLI tool for ultra-fast Solana validator switching with runtime node status detection, built in Rust.
 
-> **Built by validators, for validators** - Stop losing sleep over manual switches. Average switch time: ~1 seconds.
+> **Built by validators, for validators** - Stop losing sleep over manual switches. Average switch time:  ~1 seconds.
 
 ## Installation & Usage
 
@@ -20,7 +20,17 @@ svs switch --dry-run   # Preview switch
 
 ## Configuration
 
-Create `~/.solana-validator-switch/config.yaml`:
+Copy the example config and fill in your details:
+
+```bash
+# Create config directory and copy example
+mkdir -p ~/.solana-validator-switch
+cp config.yaml.example ~/.solana-validator-switch/config.yaml
+# Edit with your validator details
+nano ~/.solana-validator-switch/config.yaml
+```
+
+Example configuration:
 
 ```yaml
 version: "1.0.0"

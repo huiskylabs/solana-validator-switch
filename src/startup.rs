@@ -209,6 +209,7 @@ async fn validate_configuration_with_progress(validation: &mut StartupValidation
             if needs_migration {
                 progress_bar.suspend(|| {
                     println!("  🔄 Configuration needs migration to include public key identifiers");
+                    println!();
                 });
                 
                 let migrate_now = Confirm::new("Would you like to add the missing public key identifiers now?")
@@ -244,6 +245,7 @@ async fn validate_configuration_with_progress(validation: &mut StartupValidation
                     for issue in &config_issues {
                         println!("    • {}", issue.yellow());
                     }
+                    println!();
                 });
                 
                 let fix_now = Confirm::new("Would you like to fix these issues now?")

@@ -153,17 +153,16 @@ impl SshConnectionPool {
             // Remove any existing unhealthy connection
             self.connections.remove(&connection_id);
             
-            // Create new connection
-            println!("🔌 Establishing SSH connection to {}...", connection_id);
-            let start_time = Instant::now();
-            
+            // Create new connection (only print for new connections)
             let session = self.create_session(node, ssh_key_path).await?;
             let connection = SshConnection::new(session, connection_id.clone());
             
-            let latency = start_time.elapsed();
-            println!("✅ Connected to {} ({}ms)", connection_id, latency.as_millis());
-            
             self.connections.insert(connection_id.clone(), connection);
+        } else {
+            // Update last used time for existing connection
+            if let Some(conn) = self.connections.get_mut(&connection_id) {
+                conn.last_used = Instant::now();
+            }
         }
         
         Ok(self.connections.get_mut(&connection_id).unwrap())
@@ -211,6 +210,17 @@ impl SshConnectionPool {
     }
 
     pub async fn connect(&mut self, node: &NodeConfig, ssh_key_path: &str) -> Result<()> {
+        let connection_id = Self::get_connection_id(node);
+        
+        // Check if connection already exists
+        if let Some(conn) = self.connections.get(&connection_id) {
+            if conn.is_connected() {
+                // Connection already exists and is healthy, no need to reconnect
+                return Ok(());
+            }
+        }
+        
+        // Create new connection
         let _connection = self.get_connection(node, ssh_key_path).await?;
         Ok(())
     }
@@ -379,7 +389,50 @@ impl SshManager {
     }
 }
 
-/// Validate validator files on a remote node
+/// Validate validator files on a remote node using SSH pool
+pub async fn validate_node_files_with_pool(ssh_pool: &mut SshConnectionPool, node: &NodeConfig, ssh_key_path: &str) -> Result<ValidationResult> {
+    let mut issues = Vec::new();
+    let mut valid_files = 0;
+    let total_files = 6; // ledger, accounts, tower, funded, unfunded, vote
+    
+    // Check ledger directory
+    match ssh_pool.execute_command(node, ssh_key_path, &format!("test -d \"{}\"", node.paths.ledger)).await {
+        Ok(_) => valid_files += 1,
+        Err(_) => issues.push(format!("Ledger directory missing: {}", node.paths.ledger)),
+    }
+    
+    // Check accounts folder
+    match ssh_pool.execute_command(node, ssh_key_path, &format!("test -d \"{}/accounts\"", node.paths.ledger)).await {
+        Ok(_) => valid_files += 1,
+        Err(_) => issues.push("Accounts folder missing in ledger directory".to_string()),
+    }
+    
+    // Check tower file
+    match ssh_pool.execute_command(node, ssh_key_path, &format!("ls {}/tower-1_9-*.bin 2>/dev/null | head -1", node.paths.ledger)).await {
+        Ok(output) if !output.trim().is_empty() => valid_files += 1,
+        _ => issues.push("Tower file not found in ledger directory (pattern: tower-1_9-*.bin)".to_string()),
+    }
+    
+    // Check keypairs
+    for (name, path) in [
+        ("Funded identity keypair", &node.paths.funded_identity),
+        ("Unfunded identity keypair", &node.paths.unfunded_identity),
+        ("Vote account keypair", &node.paths.vote_keypair),
+    ] {
+        match ssh_pool.execute_command(node, ssh_key_path, &format!("test -f \"{}\"", path)).await {
+            Ok(_) => valid_files += 1,
+            Err(_) => issues.push(format!("{} missing: {}", name, path)),
+        }
+    }
+    
+    Ok(ValidationResult {
+        valid_files,
+        total_files,
+        issues,
+    })
+}
+
+/// Validate validator files on a remote node (legacy version using SshManager)
 pub async fn validate_node_files(ssh_manager: &mut SshManager, node: &NodeConfig) -> Result<ValidationResult> {
     let mut issues = Vec::new();
     let mut valid_files = 0;

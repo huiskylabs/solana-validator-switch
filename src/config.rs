@@ -51,16 +51,11 @@ impl ConfigManager {
     }
     
     pub fn create_default() -> Config {
-        use std::collections::HashMap;
         use crate::types::*;
         
         Config {
             version: "1.0.0".to_string(),
-            ssh: SshConfig {
-                key_path: format!("{}/.ssh/id_rsa", dirs::home_dir().unwrap().display()),
-                timeout: 30,
-            },
-            nodes: HashMap::new(),
+            nodes: Vec::new(),
             rpc: RpcConfig {
                 endpoint: "https://api.mainnet-beta.solana.com".to_string(),
                 timeout: 30000,
@@ -82,6 +77,7 @@ impl ConfigManager {
                 compact: true,
                 show_technical_details: false,
             },
+            ssh_key_path: "~/.ssh/id_rsa".to_string(),
         }
     }
 }

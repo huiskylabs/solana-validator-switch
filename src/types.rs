@@ -1,22 +1,25 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub version: String,
-    pub ssh: SshConfig,
-    pub nodes: HashMap<String, NodeConfig>,
+    pub nodes: Vec<NodePair>,
     pub rpc: RpcConfig,
     pub monitoring: MonitoringConfig,
     pub security: SecurityConfig,
     pub display: DisplayConfig,
+    #[serde(rename = "sshKeyPath")]
+    pub ssh_key_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SshConfig {
-    #[serde(rename = "keyPath")]
-    pub key_path: String,
-    pub timeout: u32,
+pub struct NodePair {
+    #[serde(rename = "votePubkey")]
+    pub vote_pubkey: String,
+    #[serde(rename = "identityPubkey")]
+    pub identity_pubkey: String,
+    pub primary: NodeConfig,
+    pub backup: NodeConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

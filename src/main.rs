@@ -1,15 +1,16 @@
 use clap::{Parser, Subcommand};
 use anyhow::Result;
 use std::sync::{Arc, Mutex};
+use colored::*;
 
 mod config;
 mod ssh;
 mod commands;
 mod types;
+mod startup;
 
 use commands::{config_command, setup_command, status_command, switch_command};
 use ssh::SshConnectionPool;
-use config::ConfigManager;
 
 #[derive(Parser)]
 #[command(name = "svs")]
@@ -34,6 +35,17 @@ enum Commands {
         #[arg(short, long)]
         test: bool,
     },
+    /// Check current validator status
+    Status,
+    /// Switch between primary and backup validators
+    Switch {
+        /// Preview switch without executing
+        #[arg(short, long)]
+        dry_run: bool,
+        /// Force switch (skip tower copy)
+        #[arg(short, long)]
+        force: bool,
+    },
 }
 
 /// Application state that persists throughout the CLI session
@@ -44,36 +56,8 @@ pub struct AppState {
 
 impl AppState {
     async fn new() -> Result<Option<Self>> {
-        let config_manager = ConfigManager::new()?;
-        
-        // Try to load config
-        match config_manager.load() {
-            Ok(config) => {
-                println!("🔌 Establishing SSH connections...");
-                
-                let mut pool = SshConnectionPool::new();
-                
-                // Connect to all configured nodes
-                for (role, node) in &config.nodes {
-                    print!("  Connecting to {} ({})... ", role, node.host);
-                    match pool.connect(node, &config.ssh.key_path).await {
-                        Ok(_) => println!("✅"),
-                        Err(e) => println!("❌ {}", e),
-                    }
-                }
-                
-                println!();
-                
-                Ok(Some(AppState {
-                    ssh_pool: Arc::new(Mutex::new(pool)),
-                    config,
-                }))
-            }
-            Err(_) => {
-                // No config yet, that's fine
-                Ok(None)
-            }
-        }
+        // Use the comprehensive startup checklist
+        startup::run_startup_checklist().await
     }
 }
 
@@ -88,17 +72,27 @@ async fn main() -> Result<()> {
         Some(Commands::Config { list, edit, test }) => {
             config_command(list, edit, test, app_state.as_ref()).await?;
         }
+        Some(Commands::Status) => {
+            if let Some(state) = app_state.as_ref() {
+                status_command(state).await?;
+            } else {
+                println!("{}", "⚠️ No configuration found. Please run setup first.".yellow());
+            }
+        }
+        Some(Commands::Switch { dry_run, force }) => {
+            if let Some(state) = app_state.as_ref() {
+                switch_command(dry_run, force, state).await?;
+            } else {
+                println!("{}", "⚠️ No configuration found. Please run setup first.".yellow());
+            }
+        }
         None => {
             // Interactive main menu
             show_interactive_menu(app_state.as_ref()).await?;
         }
     }
 
-    // Cleanup connections on exit
-    if let Some(state) = app_state {
-        let pool = state.ssh_pool.lock().unwrap();
-        println!("🔌 Closing {} SSH connections...", pool.get_pool_stats().total_connections);
-    }
+    // Note: SSH connections are kept alive for performance - they'll be cleaned up on process exit
 
     Ok(())
 }

@@ -6,11 +6,15 @@ use std::sync::{Arc, Mutex};
 use crate::types::NodeConfig;
 
 pub async fn switch_command(dry_run: bool, force: bool, app_state: &crate::AppState) -> Result<()> {
-    // Validate we have primary and backup configured
-    let primary = app_state.config.nodes.get("primary")
-        .ok_or_else(|| anyhow!("Primary validator not configured"))?;
-    let backup = app_state.config.nodes.get("backup")
-        .ok_or_else(|| anyhow!("Backup validator not configured"))?;
+    // Validate we have at least one node pair configured
+    if app_state.config.nodes.is_empty() {
+        return Err(anyhow!("No node pairs configured"));
+    }
+    
+    // For now, use the first node pair
+    let node_pair = &app_state.config.nodes[0];
+    let primary = &node_pair.primary;
+    let backup = &node_pair.backup;
     
     println!("\n{}", format!("🔄 Validator Switch - {} Mode", if dry_run { "DRY RUN" } else { "LIVE" }).bright_cyan().bold());
     println!("{}", "━".repeat(50).dimmed());

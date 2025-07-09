@@ -1,7 +1,6 @@
 use anyhow::Result;
 use inquire::{Text, Confirm, Select, validator::Validation};
 use colored::*;
-use std::collections::HashMap;
 use indicatif::ProgressBar;
 use figlet_rs::FIGfont;
 
@@ -37,21 +36,21 @@ pub async fn setup_command() -> Result<()> {
     // Detect SSH keys
     let ssh_keys = detect_ssh_keys().await?;
     
-    // SSH configuration
-    let ssh_config = collect_ssh_configuration(&ssh_keys).await?;
+    // SSH key path configuration
+    let ssh_key_path = collect_ssh_key_configuration(&ssh_keys).await?;
     
-    // Node configuration
-    let nodes_config = collect_nodes_configuration().await?;
+    // Node pairs configuration
+    let node_pairs = collect_node_pairs_configuration().await?;
     
     // RPC configuration  
     let rpc_config = collect_rpc_configuration().await?;
     
     // Build final configuration
     let mut config = ConfigManager::create_default();
-    config.ssh = ssh_config;
-    config.nodes = nodes_config;
+    config.nodes = node_pairs;
     config.rpc.endpoint = rpc_config.endpoint;
     config.rpc.timeout = rpc_config.timeout;
+    config.ssh_key_path = ssh_key_path;
     
     // Validate and save configuration
     validate_and_save_configuration(&config_manager, &config).await?;
@@ -179,101 +178,122 @@ async fn detect_ssh_keys() -> Result<Vec<SshKey>> {
     Ok(keys)
 }
 
-async fn collect_ssh_configuration(ssh_keys: &[SshKey]) -> Result<crate::types::SshConfig> {
+async fn collect_ssh_key_configuration(ssh_keys: &[SshKey]) -> Result<String> {
     println!();
-    println!("{}", "🔑 SSH Configuration".bright_cyan());
-    println!();
-    println!("{}", "Configure SSH access for connecting to validator nodes.".dimmed());
+    println!("{}", "🔑 SSH Key Configuration".bright_cyan());
+    println!("{}", "Select the SSH private key to use for connecting to your validator nodes.".dimmed());
     println!();
     
-    // Prepare SSH key choices
-    let mut key_choices = Vec::new();
-    for key in ssh_keys {
-        let display_name = format!("{} - {} {}", 
-            key.key_type.to_uppercase(), 
-            key.path,
-            if !key.comment.is_empty() { 
-                format!("({})", key.comment) 
-            } else { 
-                String::new() 
-            }
-        );
-        key_choices.push(display_name);
-    }
-    key_choices.push("📝 Enter custom path".to_string());
-    
-    // Get recommended key (first ed25519, then first available)
-    let recommended_idx = ssh_keys.iter()
-        .position(|k| k.key_type == "id_ed25519")
-        .unwrap_or(0);
-        
-    if let Some(recommended) = ssh_keys.get(recommended_idx) {
-        println!("{} {}", "✨ Recommended SSH key:".green(), recommended.path);
+    if ssh_keys.is_empty() {
+        return Err(anyhow::anyhow!("No SSH keys found. Please generate SSH keys first."));
     }
     
-    let key_selection = Select::new("SSH private key for validator connections:", key_choices.clone())
-        .with_starting_cursor(recommended_idx)
+    if ssh_keys.len() == 1 {
+        let key = &ssh_keys[0];
+        println!("{}", format!("Using SSH key: {}", key.path).green());
+        return Ok(key.path.clone());
+    }
+    
+    // Multiple keys available, let user choose
+    let key_choices: Vec<String> = ssh_keys.iter()
+        .map(|key| {
+            let key_type_display = key.key_type.to_uppercase();
+            let comment_display = if !key.comment.is_empty() {
+                format!(" ({})", key.comment)
+            } else {
+                String::new()
+            };
+            format!("{:8} {}{}", key_type_display, key.path, comment_display)
+        })
+        .collect();
+    
+    let selection = Select::new("Select SSH private key:", key_choices.clone())
+        .with_starting_cursor(0)
         .prompt()?;
         
-    let key_selection_idx = key_choices.iter().position(|x| x == &key_selection).unwrap();
-        
-    let key_path = if key_selection_idx == ssh_keys.len() {
-        // Custom path selected
-        Text::new("Enter SSH private key path:")
-            .prompt()?
-    } else {
-        ssh_keys[key_selection_idx].path.clone()
-    };
+    let selected_index = key_choices.iter().position(|x| x == &selection).unwrap();
+    let selected_key = &ssh_keys[selected_index];
     
-    let timeout: u32 = Text::new("SSH connection timeout (seconds):")
-        .with_default("30")
-        .with_validator(|input: &str| {
-            match input.parse::<u32>() {
-                Ok(val) if val >= 5 && val <= 300 => Ok(Validation::Valid),
-                Ok(_) => Ok(Validation::Invalid("Timeout must be between 5 and 300 seconds".into())),
-                Err(_) => Ok(Validation::Invalid("Please enter a valid number".into()))
-            }
-        })
-        .prompt()?
-        .parse()?;
+    println!("{}", format!("Selected SSH key: {}", selected_key.path).green());
     
-    Ok(crate::types::SshConfig { key_path, timeout })
+    Ok(selected_key.path.clone())
 }
 
-async fn collect_nodes_configuration() -> Result<HashMap<String, NodeConfig>> {
+async fn collect_node_pairs_configuration() -> Result<Vec<crate::types::NodePair>> {
     println!();
-    println!("{}", "🖥️ Node Configuration".bright_cyan());
+    println!("{}", "🖥️ Node Pair Configuration".bright_cyan());
     println!();
-    println!("{}", "Configure your primary and backup validator nodes.".dimmed());
+    println!("{}", "Configure validator node pairs. Each pair has a primary and backup node sharing the same validator identity.".dimmed());
     println!();
     
-    let mut nodes = HashMap::new();
+    let mut node_pairs = Vec::new();
     
-    // Configure primary node
-    println!("{}", "🟢 Primary Validator Node".green().bold());
-    if let Some(primary) = configure_node("primary").await? {
-        nodes.insert("primary".to_string(), primary);
-    }
-    
-    // Configure backup node  
-    println!();
-    println!("{}", "🟡 Backup Validator Node".yellow().bold());
-    if let Some(backup) = configure_node("backup").await? {
-        nodes.insert("backup".to_string(), backup);
-    }
-    
-    Ok(nodes)
-}
-
-async fn configure_node(node_type: &str) -> Result<Option<NodeConfig>> {
-    let add_node = Confirm::new(&format!("Configure {} node?", node_type))
+    // For now, we'll configure one pair, but this can be extended to multiple pairs
+    let add_pair = Confirm::new("Configure a validator node pair?")
         .with_default(true)
         .prompt()?;
         
-    if !add_node {
-        return Ok(None);
+    if add_pair {
+        if let Some(pair) = configure_node_pair().await? {
+            node_pairs.push(pair);
+        }
     }
     
+    Ok(node_pairs)
+}
+
+async fn configure_node_pair() -> Result<Option<crate::types::NodePair>> {
+    println!("{}", "🔑 Validator Identity Configuration".bright_cyan());
+    println!("{}", "These public keys identify the validator and are shared between primary and backup nodes.".dimmed());
+    println!();
+    
+    let vote_pubkey: String = Text::new("Vote Pubkey:")
+        .with_help_message("Enter the public key for the vote account")
+        .with_validator(|input: &str| {
+            if input.trim().is_empty() {
+                Ok(Validation::Invalid("Vote Pubkey is required".into()))
+            } else if input.len() < 32 || input.len() > 44 {
+                Ok(Validation::Invalid("Vote Pubkey should be a valid base58 public key (32-44 characters)".into()))
+            } else {
+                Ok(Validation::Valid)
+            }
+        })
+        .prompt()?;
+        
+    let identity_pubkey: String = Text::new("Identity Pubkey:")
+        .with_help_message("Enter the public key for the funded validator identity")
+        .with_validator(|input: &str| {
+            if input.trim().is_empty() {
+                Ok(Validation::Invalid("Identity Pubkey is required".into()))
+            } else if input.len() < 32 || input.len() > 44 {
+                Ok(Validation::Invalid("Identity Pubkey should be a valid base58 public key (32-44 characters)".into()))
+            } else {
+                Ok(Validation::Valid)
+            }
+        })
+        .prompt()?;
+    
+    println!();
+    println!("{}", "🟢 Primary Node Configuration".green().bold());
+    let primary = configure_node("primary").await?;
+    
+    println!();
+    println!("{}", "🟡 Backup Node Configuration".yellow().bold());
+    let backup = configure_node("backup").await?;
+    
+    if let (Some(primary), Some(backup)) = (primary, backup) {
+        Ok(Some(crate::types::NodePair {
+            vote_pubkey,
+            identity_pubkey,
+            primary,
+            backup,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+async fn configure_node(node_type: &str) -> Result<Option<NodeConfig>> {
     let label: String = Text::new(&format!("{} node label:", node_type))
         .with_default(&format!("{} validator", node_type))
         .with_validator(|input: &str| {
@@ -284,7 +304,7 @@ async fn configure_node(node_type: &str) -> Result<Option<NodeConfig>> {
             }
         })
         .prompt()?;
-        
+
     let host: String = Text::new(&format!("{} node host (IP or hostname):", node_type))
         .with_validator(|input: &str| {
             if input.trim().is_empty() {
@@ -346,6 +366,7 @@ async fn configure_node(node_type: &str) -> Result<Option<NodeConfig>> {
     let solana_cli_path: String = Text::new("Solana CLI binary path:")
         .with_default("/home/solana/.local/share/solana/install/active_release/bin/solana")
         .prompt()?;
+    
     
     Ok(Some(NodeConfig {
         label,
@@ -420,6 +441,7 @@ async fn collect_rpc_configuration() -> Result<RpcConfig> {
     
     Ok(RpcConfig { endpoint, timeout })
 }
+
 
 async fn validate_and_save_configuration(config_manager: &ConfigManager, config: &crate::types::Config) -> Result<()> {
     let spinner = ProgressBar::new_spinner();

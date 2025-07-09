@@ -377,6 +377,9 @@ impl SwitchManager {
         println!();
         if dry_run {
             println!("✅ Dry run completed successfully");
+            println!();
+            println!("{}", "Press any key to continue...".dimmed());
+            let _ = std::io::stdin().read_line(&mut String::new());
         } else {
             println!("✅ Validator identity switch completed successfully");
         }

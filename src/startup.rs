@@ -55,32 +55,32 @@ pub async fn run_startup_checklist() -> Result<Option<crate::AppState>> {
     progress_bar.set_position(10);
     progress_bar.set_message("Validating configuration...");
     
-    let config = match validate_configuration_with_progress(&mut validation, &progress_bar).await? {
-        Some(config) => config,
-        None => {
-            progress_bar.finish_and_clear();
-            return Ok(None); // User chose to exit or setup
-        }
-    };
+    let config = validate_configuration_with_progress(&mut validation, &progress_bar).await?;
     
-    progress_bar.set_position(30);
-
-    // Phase 2: SSH connection validation (60% of progress)
-    progress_bar.set_message("Establishing SSH connections...");
-    let ssh_pool = validate_ssh_connections_with_progress(&config, &mut validation, &progress_bar).await?;
-    progress_bar.set_position(70);
-
-    // Phase 3: Model verification (80% of progress)
-    progress_bar.set_message("Verifying system readiness...");
-    validate_model_verification_with_progress(&config, &ssh_pool, &mut validation, &progress_bar).await?;
-    progress_bar.set_position(80);
+    // Only continue with SSH and other validation if config is valid
+    let ssh_pool = if validation.config_valid {
+        progress_bar.set_position(30);
+        // Phase 2: SSH connection validation (60% of progress)
+        progress_bar.set_message("Establishing SSH connections...");
+        let pool = validate_ssh_connections_with_progress(&config.as_ref().unwrap(), &mut validation, &progress_bar).await?;
+        progress_bar.set_position(70);
+        
+        // Phase 3: Model verification (80% of progress)
+        progress_bar.set_message("Verifying system readiness...");
+        validate_model_verification_with_progress(&config.as_ref().unwrap(), &pool, &mut validation, &progress_bar).await?;
+        progress_bar.set_position(80);
+        
+        Some(pool)
+    } else {
+        None
+    };
 
     // Phase 4: Comprehensive validator status detection (85-95% of progress)
     let validator_statuses = if validation.config_valid && validation.ssh_connections_valid && validation.model_verification_valid {
         progress_bar.set_message("🔍 Detecting validator statuses...");
         progress_bar.set_position(85);
         
-        let statuses = detect_node_statuses_with_progress(&config, &ssh_pool, &progress_bar).await?;
+        let statuses = detect_node_statuses_with_progress(&config.as_ref().unwrap(), &ssh_pool.as_ref().unwrap(), &progress_bar).await?;
         progress_bar.set_position(95);
         Some(statuses)
     } else {
@@ -95,7 +95,7 @@ pub async fn run_startup_checklist() -> Result<Option<crate::AppState>> {
     progress_bar.finish_and_clear();
 
     if validation.success {
-        if let Some(validator_statuses) = validator_statuses {
+        if let (Some(config), Some(ssh_pool), Some(validator_statuses)) = (config, ssh_pool, validator_statuses) {
             // Show "press any key to continue" prompt
             show_ready_prompt().await;
             
@@ -207,27 +207,26 @@ async fn validate_configuration_with_progress(validation: &mut StartupValidation
             progress_bar.set_message("Checking configuration completeness...");
             let needs_migration = check_migration_needed(&config);
             if needs_migration {
-                // Configuration needs migration - stop loading and fail immediately
+                // Configuration needs migration - mark as invalid but continue to show errors
                 validation.config_valid = false;
                 validation.issues.push("Configuration needs migration to include missing public key identifiers".to_string());
-                return Ok(None); // Stop startup immediately
             }
             
             // Validate configuration completeness
             progress_bar.set_message("Validating configuration structure...");
             let config_issues = validate_config_completeness(&config);
             
-            if config_issues.is_empty() {
+            if config_issues.is_empty() && !needs_migration {
                 validation.config_valid = true;
                 progress_bar.suspend(|| {
                     println!("  ✅ Configuration is complete and valid");
                 });
                 Ok(Some(config))
             } else {
-                // Configuration has issues - stop loading and fail immediately
+                // Configuration has issues - mark as invalid but continue to show errors
                 validation.config_valid = false;
                 validation.issues.extend(config_issues);
-                Ok(None) // Return None to stop startup
+                Ok(None) // Return None to stop startup but continue to error reporting
             }
         }
         Err(e) => {

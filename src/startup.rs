@@ -94,14 +94,8 @@ pub async fn run_startup_checklist() -> Result<Option<crate::AppState>> {
     progress_bar.set_position(100);
     progress_bar.finish_and_clear();
 
-    // Display final startup summary with checkmarks
-    display_startup_summary(&validation);
-
     if validation.success {
         if let Some(validator_statuses) = validator_statuses {
-            println!("\n{}", "🎉 System ready! All validators are accessible.".bright_green().bold());
-            println!();
-            
             // Show "press any key to continue" prompt
             show_ready_prompt().await;
             
@@ -648,51 +642,6 @@ async fn fix_configuration_issues(_config: &Config, issues: &[String]) -> Result
     Ok(())
 }
 
-fn display_startup_summary(validation: &StartupValidation) {
-    println!();
-    println!("{}", "📋 Startup Summary".bright_cyan().bold());
-    println!();
-    
-    // Configuration validation status
-    let config_status = if validation.config_valid {
-        "✅ Configuration validated".green()
-    } else {
-        "❌ Configuration issues found".red()
-    };
-    println!("  {}", config_status);
-    
-    // SSH connection status
-    let ssh_status = if validation.ssh_connections_valid {
-        "✅ SSH connections established".green()
-    } else {
-        "❌ SSH connection failures".red()
-    };
-    println!("  {}", ssh_status);
-    
-    // System readiness status
-    let system_status = if validation.model_verification_valid {
-        "✅ System ready for operation".green()
-    } else {
-        "❌ System readiness issues".red()
-    };
-    println!("  {}", system_status);
-    
-    // Show issues if any
-    if !validation.issues.is_empty() {
-        println!("\n  {} Issues to resolve:", "⚠️".yellow());
-        for issue in &validation.issues {
-            println!("    • {}", issue.red());
-        }
-    }
-    
-    // Show warnings if any
-    if !validation.warnings.is_empty() {
-        println!("\n  {} Warnings:", "⚠️".yellow());
-        for warning in &validation.warnings {
-            println!("    • {}", warning.yellow());
-        }
-    }
-}
 
 fn display_validation_summary(validation: &StartupValidation) {
     println!();

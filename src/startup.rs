@@ -9,7 +9,6 @@ use std::io::{self, Write};
 use crate::config::ConfigManager;
 use crate::ssh::SshConnectionPool;
 use crate::types::{Config, NodeConfig};
-use crate::commands::setup_command;
 use inquire::{Text, validator::Validation};
 
 /// Startup validation result
@@ -143,8 +142,9 @@ pub async fn run_startup_checklist() -> Result<Option<crate::AppState>> {
         // Show helpful resolution steps
         println!("\n{} Suggested actions:", "💡".bright_blue().bold());
         if !validation.config_valid {
-            println!("  • Check your configuration file: ~/.solana-validator-switch/config.yaml");
-            println!("  • Run 'svs setup' to reconfigure");
+            println!("  • Edit your configuration file: ~/.solana-validator-switch/config.yaml");
+            println!("  • Use the example config: https://github.com/your-repo/config.example.yaml");
+            println!("  • Ensure all required fields are filled with correct values");
         }
         if !validation.ssh_connections_valid {
             println!("  • Verify SSH key paths and permissions");
@@ -185,9 +185,8 @@ async fn validate_configuration_with_progress(validation: &mut StartupValidation
             println!("{}", format!("  {}", config_manager.get_config_path().display()).bright_cyan());
             println!();
             println!("{}", "You can either:".dimmed());
-            println!("{}", "  1. Run 'svs setup' to use the interactive wizard".dimmed());
-            println!("{}", "  2. Copy and edit the example config from the project".dimmed());
-            println!("{}", "  3. Create the file manually using the documented format".dimmed());
+            println!("{}", "  1. Copy and edit the example config: config.example.yaml".dimmed());
+            println!("{}", "  2. Create the file manually using the documented YAML format".dimmed());
             println!();
             println!("{}", "Application will exit now.".yellow());
         });
@@ -257,29 +256,8 @@ async fn validate_configuration(validation: &mut StartupValidation) -> Result<Op
         println!("\n{}", "⚠️ No configuration found.".yellow());
         println!("{}", "You need to set up your validator configuration first.".dimmed());
         
-        let setup_now = Confirm::new("Would you like to run the setup wizard now?")
-            .with_default(true)
-            .prompt()?;
-            
-        if setup_now {
-            println!();
-            setup_command().await?;
-            
-            // Try loading config again after setup
-            match config_manager.load() {
-                Ok(config) => {
-                    validation.config_valid = true;
-                    return Ok(Some(config));
-                }
-                Err(_) => {
-                    validation.issues.push("Setup completed but configuration still invalid".to_string());
-                    return Ok(None);
-                }
-            }
-        } else {
-            println!("{}", "Setup cancelled. Run 'svs setup' to configure later.".yellow());
-            return Ok(None);
-        }
+        println!("{}", "Please create your configuration file and restart the application.".yellow());
+        return Ok(None);
     }
 
     // Load and validate configuration
@@ -611,33 +589,11 @@ async fn fix_configuration_issues(_config: &Config, issues: &[String]) -> Result
         println!("  {}. {}", i + 1, issue);
     }
     
-    println!("\n{}", "Resolution options:".bright_cyan());
-    
-    let options = vec![
-        "🔧 Run setup wizard to reconfigure",
-        "✏️ Edit configuration manually",
-        "⏩ Continue with current configuration"
-    ];
-    
-    let selection = Select::new("How would you like to resolve these issues?", options.clone())
-        .prompt()?;
-        
-    let index = options.iter().position(|x| x == &selection).unwrap();
-    
-    match index {
-        0 => {
-            println!("\n{}", "Running setup wizard...".bright_cyan());
-            setup_command().await?;
-        }
-        1 => {
-            println!("{}", "Manual configuration editing not yet implemented.".yellow());
-            println!("{}", "Please use the setup wizard or edit the configuration file directly.".dimmed());
-        }
-        2 => {
-            println!("{}", "Continuing with current configuration...".yellow());
-        }
-        _ => unreachable!(),
-    }
+    println!("\n{}", "To resolve these issues:".bright_cyan());
+    println!("  1. Edit your configuration file: ~/.solana-validator-switch/config.yaml");
+    println!("  2. Use the example config as reference: config.example.yaml");
+    println!("  3. Ensure all required fields are filled with correct values");
+    println!("  4. Restart the application after making changes");
     
     Ok(())
 }

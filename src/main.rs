@@ -9,7 +9,7 @@ mod commands;
 mod types;
 mod startup;
 
-use commands::{setup_command, status_command, switch_command};
+use commands::{status_command, switch_command};
 use ssh::SshConnectionPool;
 
 #[derive(Parser)]
@@ -23,8 +23,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Interactive setup wizard for initial configuration
-    Setup,
     /// Check current validator status
     Status,
     /// Switch between primary and backup validators
@@ -63,9 +61,6 @@ async fn main() -> Result<()> {
     let app_state = AppState::new().await?;
 
     match cli.command {
-        Some(Commands::Setup) => {
-            setup_command().await?;
-        }
         Some(Commands::Status) => {
             if let Some(state) = app_state.as_ref() {
                 status_command(state).await?;

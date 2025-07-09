@@ -250,9 +250,9 @@ impl SwitchManager {
         self.tower_file_name = Some(tower_filename.to_string());
         let dest_path = format!("{}/{}", self.standby_node.paths.ledger, tower_filename);
         
-        println!("Transfer from {}@{}:{} to {}@{}:{}", 
-            self.active_node.user, self.active_node.host, tower_path,
-            self.standby_node.user, self.standby_node.host, dest_path);
+        println!("  📤 {}@{} → {}@{}", 
+            self.active_node.user, self.active_node.host,
+            self.standby_node.user, self.standby_node.host);
         
         let start_time = Instant::now();
         
@@ -282,7 +282,8 @@ impl SwitchManager {
         let file_size = encoded_data.len() as u64 * 3 / 4; // approximate original size from base64
         let speed_mbps = (file_size as f64 / 1024.0 / 1024.0) / transfer_duration.as_secs_f64();
         
-        println!("✅ Transferred in {:.0}ms ({:.2} MB/s)", transfer_duration.as_millis(), speed_mbps);
+        println!("  ✅ Tower transferred in {} ({:.2} MB/s)", 
+            format!("{}ms", transfer_duration.as_millis()).bright_green().bold(), speed_mbps);
         
         if !dry_run {
             // Verify the file on standby

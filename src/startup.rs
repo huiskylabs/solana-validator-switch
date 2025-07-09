@@ -109,7 +109,52 @@ pub async fn run_startup_checklist() -> Result<Option<crate::AppState>> {
             Ok(None)
         }
     } else {
-        println!("\n{}", "❌ Startup validation failed. Please resolve issues and try again.".red().bold());
+        // Show detailed failure information
+        println!("\n{}", "❌ Startup validation failed!".red().bold());
+        println!();
+        
+        // Show what failed
+        if !validation.config_valid {
+            println!("{} Configuration issues:", "❌".red());
+        }
+        if !validation.ssh_connections_valid {
+            println!("{} SSH connection issues:", "❌".red());
+        }
+        if !validation.model_verification_valid {
+            println!("{} System readiness issues:", "❌".red());
+        }
+        
+        // Show specific issues
+        if !validation.issues.is_empty() {
+            println!("\n{} Issues to resolve:", "⚠️".yellow().bold());
+            for (i, issue) in validation.issues.iter().enumerate() {
+                println!("  {}. {}", i + 1, issue.red());
+            }
+        }
+        
+        // Show warnings if any
+        if !validation.warnings.is_empty() {
+            println!("\n{} Warnings:", "⚠️".yellow().bold());
+            for (i, warning) in validation.warnings.iter().enumerate() {
+                println!("  {}. {}", i + 1, warning.yellow());
+            }
+        }
+        
+        // Show helpful resolution steps
+        println!("\n{} Suggested actions:", "💡".bright_blue().bold());
+        if !validation.config_valid {
+            println!("  • Check your configuration file: ~/.solana-validator-switch/config.yaml");
+            println!("  • Run 'svs setup' to reconfigure");
+        }
+        if !validation.ssh_connections_valid {
+            println!("  • Verify SSH key paths and permissions");
+            println!("  • Test SSH connections manually: ssh -i <key> user@host");
+            println!("  • Ensure remote hosts are accessible");
+        }
+        if !validation.model_verification_valid {
+            println!("  • Check validator file paths and permissions");
+            println!("  • Ensure validator processes are running");
+        }
         
         // Show a prompt to acknowledge the error before exiting
         println!();

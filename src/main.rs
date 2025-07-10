@@ -1,13 +1,12 @@
-use clap::{Parser, Subcommand};
 use anyhow::Result;
+use clap::{Parser, Subcommand};
 use std::sync::{Arc, Mutex};
-use colored::*;
 
+mod commands;
 mod config;
 mod ssh;
-mod commands;
-mod types;
 mod startup;
+mod types;
 
 use commands::{status_command, switch_command};
 use ssh::SshConnectionPool;
@@ -95,70 +94,76 @@ async fn main() -> Result<()> {
 }
 
 async fn show_interactive_menu(app_state: Option<&AppState>) -> Result<()> {
-    use inquire::Select;
     use colored::*;
+    use inquire::Select;
 
     // Clear screen and show welcome like original
     println!("\x1B[2J\x1B[1;1H"); // Clear screen
-    println!("{}", "🚀 Welcome to Solana Validator Switch CLI v1.0.0".bright_cyan().bold());
-    println!("{}", "Professional-grade validator switching from your terminal".dimmed());
+    println!(
+        "{}",
+        "🚀 Welcome to Solana Validator Switch CLI v1.0.0"
+            .bright_cyan()
+            .bold()
+    );
+    println!(
+        "{}",
+        "Professional-grade validator switching from your terminal".dimmed()
+    );
     println!();
 
     loop {
         let mut options = vec![
             "📋 Status - Check current validator status",
-            "🔄 Switch - Switch between primary and backup validators"
+            "🔄 Switch - Switch between primary and backup validators",
         ];
-        
+
         options.push("❌ Exit");
-        
-        let selection = Select::new("What would you like to do?", options.clone())
-            .prompt()?;
-            
+
+        let selection = Select::new("What would you like to do?", options.clone()).prompt()?;
+
         let index = options.iter().position(|x| x == &selection).unwrap();
-        
+
         match index {
             0 => {
-                if let Some(ref state) = app_state {
+                if let Some(state) = &app_state {
                     status_command(state).await?;
                 } else {
                     // This should never happen since we only show menu with valid state
                     std::process::exit(1);
                 }
-            },
+            }
             1 => show_switch_menu(app_state).await?,
-            2 => { // Exit
+            2 => {
+                // Exit
                 println!("{}", "👋 Goodbye!".bright_green());
                 break;
-            },
+            }
             _ => unreachable!(),
         }
     }
-    
+
     Ok(())
 }
 
-
 async fn show_switch_menu(app_state: Option<&AppState>) -> Result<()> {
-    use inquire::Select;
     use colored::*;
-    
+    use inquire::Select;
+
     loop {
         println!("\n{}", "🔄 Validator Switching".bright_cyan().bold());
         println!();
-        
+
         let mut options = vec![
             "🔄 Switch - Switch between primary and backup validators",
-            "🧪 Dry Run - Preview switch without executing"
+            "🧪 Dry Run - Preview switch without executing",
         ];
-        
+
         options.push("⬅️  Back to main menu");
-        
-        let selection = Select::new("Select switching action:", options.clone())
-            .prompt()?;
-            
+
+        let selection = Select::new("Select switching action:", options.clone()).prompt()?;
+
         let index = options.iter().position(|x| x == &selection).unwrap();
-        
+
         match index {
             0 => {
                 if let Some(state) = app_state {
@@ -169,7 +174,7 @@ async fn show_switch_menu(app_state: Option<&AppState>) -> Result<()> {
                     // This should never happen since we only show menu with valid state
                     std::process::exit(1);
                 }
-            },
+            }
             1 => {
                 if let Some(state) = app_state {
                     switch_command(true, state).await?;
@@ -177,11 +182,11 @@ async fn show_switch_menu(app_state: Option<&AppState>) -> Result<()> {
                     // This should never happen since we only show menu with valid state
                     std::process::exit(1);
                 }
-            },
+            }
             2 => break, // Back to main menu
             _ => unreachable!(),
         }
     }
-    
+
     Ok(())
 }

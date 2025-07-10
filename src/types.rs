@@ -31,7 +31,7 @@ pub struct NodeConfig {
 pub struct NodePaths {
     #[serde(rename = "fundedIdentity")]
     pub funded_identity: String,
-    #[serde(rename = "unfundedIdentity")]  
+    #[serde(rename = "unfundedIdentity")]
     pub unfunded_identity: String,
     #[serde(rename = "voteKeypair")]
     pub vote_keypair: String,
@@ -68,11 +68,11 @@ pub struct NodeWithStatus {
     pub validator_type: ValidatorType, // Type of validator (Firedancer, Agave, Solana, etc.)
     pub agave_validator_executable: Option<String>, // Path to agave-validator executable (for catchup check)
     pub fdctl_executable: Option<String>, // Path to fdctl executable (for firedancer identity set)
-    pub version: Option<String>, // Version information (e.g., "Firedancer 0.505.20216")
-    pub sync_status: Option<String>, // Sync status (e.g., "Caught up (slot: 344297365)")
+    pub version: Option<String>,          // Version information (e.g., "Firedancer 0.505.20216")
+    pub sync_status: Option<String>,      // Sync status (e.g., "Caught up (slot: 344297365)")
     pub current_identity: Option<String>, // Current validator identity
-    pub swap_ready: Option<bool>, // Whether the node is ready for validator switching
-    pub swap_issues: Vec<String>, // Issues preventing swap readiness
+    pub swap_ready: Option<bool>,         // Whether the node is ready for validator switching
+    pub swap_issues: Vec<String>,         // Issues preventing swap readiness
 }
 
 #[derive(Debug)]

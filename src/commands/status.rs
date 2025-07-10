@@ -1,17 +1,23 @@
 use anyhow::Result;
 use colored::*;
+use comfy_table::{
+    modifiers::UTF8_ROUND_CORNERS, presets::UTF8_BORDERS_ONLY, Attribute, Cell, Color,
+    ContentArrangement, Table,
+};
 use std::collections::HashMap;
-use comfy_table::{Table, Cell, Color, Attribute, ContentArrangement, presets::UTF8_BORDERS_ONLY, modifiers::UTF8_ROUND_CORNERS};
 
+use crate::types::{Config, NodeConfig};
 use crate::AppState;
-use crate::types::{NodeConfig, Config};
 
 pub async fn status_command(app_state: &AppState) -> Result<()> {
     if app_state.config.validators.is_empty() {
-        println!("{}", "⚠️ No validators configured. Run setup first.".yellow());
+        println!(
+            "{}",
+            "⚠️ No validators configured. Run setup first.".yellow()
+        );
         return Ok(());
     }
-    
+
     // Show comprehensive status in one clean view
     show_comprehensive_status(app_state).await
 }
@@ -19,14 +25,20 @@ pub async fn status_command(app_state: &AppState) -> Result<()> {
 async fn show_comprehensive_status(app_state: &AppState) -> Result<()> {
     println!("\n{}", "📋 Validator Status".bright_cyan().bold());
     println!();
-    
+
     // Use the pre-loaded validator statuses from startup - no need to re-detect
     display_status_table_from_app_state(app_state);
-    
+
     Ok(())
 }
 
-async fn check_comprehensive_status(pool: &mut crate::ssh::SshConnectionPool, node: &NodeConfig, ssh_key_path: &str, _validator_pair: &crate::types::ValidatorPair, agave_executable: &Option<String>) -> Result<ComprehensiveStatus> {
+async fn check_comprehensive_status(
+    pool: &mut crate::ssh::SshConnectionPool,
+    node: &NodeConfig,
+    ssh_key_path: &str,
+    _validator_pair: &crate::types::ValidatorPair,
+    agave_executable: &Option<String>,
+) -> Result<ComprehensiveStatus> {
     let mut status = ComprehensiveStatus {
         connected: true,
         validator_running: None,
@@ -43,17 +55,17 @@ async fn check_comprehensive_status(pool: &mut crate::ssh::SshConnectionPool, no
         error: None,
         current_identity: None,
     };
-    
+
     // Create a single batched command to get all basic info efficiently
     let identity_cmd = if let Some(ref exec_path) = agave_executable {
         format!("timeout --kill-after=2 3 bash -c '{} --ledger {} monitor 2>/dev/null | head -3 | grep \"Identity:\" | head -1'", exec_path, node.paths.ledger)
     } else {
         format!("VALIDATOR_EXEC=$(ps aux | grep -Ei 'solana-validator|agave|fdctl|firedancer' | grep -v grep | awk '{{for(i=11;i<=NF;i++) if($i ~ /solana-validator|agave-validator|fdctl/) print $i; exit}}') && if [ -n \"$VALIDATOR_EXEC\" ]; then timeout --kill-after=2 3 bash -c \"$VALIDATOR_EXEC --ledger {} monitor 2>/dev/null | head -3 | grep 'Identity:' | head -1\"; else echo 'no-validator-running'; fi", node.paths.ledger)
     };
-    
+
     let default_path = String::new();
     let agave_exec_path = agave_executable.as_ref().unwrap_or(&default_path);
-    
+
     let batch_cmd = format!(
         "echo '=== PROCESSES ===' && ps aux | grep -Ei 'solana-validator|agave|fdctl|firedancer' | grep -v grep; \
          echo '=== DISK ===' && df {} | tail -1 | awk '{{print $5}}' | sed 's/%//'; \
@@ -67,7 +79,7 @@ async fn check_comprehensive_status(pool: &mut crate::ssh::SshConnectionPool, no
         identity_cmd,
         agave_exec_path
     );
-    
+
     match pool.execute_command(node, ssh_key_path, &batch_cmd).await {
         Ok(output) => {
             parse_batch_output(&output, &mut status);
@@ -76,13 +88,14 @@ async fn check_comprehensive_status(pool: &mut crate::ssh::SshConnectionPool, no
             status.validator_running = Some(false);
         }
     }
-    
+
     // Check swap readiness (this is still separate as it needs multiple file checks)
-    let (swap_ready, swap_issues, swap_checklist) = check_swap_readiness(pool, node, ssh_key_path).await;
+    let (swap_ready, swap_issues, swap_checklist) =
+        check_swap_readiness(pool, node, ssh_key_path).await;
     status.swap_ready = Some(swap_ready);
     status.swap_issues = swap_issues;
     status.swap_checklist = swap_checklist;
-    
+
     // If identity wasn't extracted from the batch command, try a separate command
     if status.current_identity.is_none() {
         let fallback_identity_cmd = if let Some(ref exec_path) = agave_executable {
@@ -90,38 +103,46 @@ async fn check_comprehensive_status(pool: &mut crate::ssh::SshConnectionPool, no
         } else {
             format!("VALIDATOR_EXEC=$(ps aux | grep -Ei 'solana-validator|agave|fdctl|firedancer' | grep -v grep | awk '{{for(i=11;i<=NF;i++) if($i ~ /solana-validator|agave-validator|fdctl/) print $i; exit}}') && if [ -n \"$VALIDATOR_EXEC\" ]; then timeout --kill-after=2 3 bash -c \"$VALIDATOR_EXEC --ledger {} monitor 2>/dev/null | head -3 | grep 'Identity:' | head -1\"; else echo 'no-validator-running'; fi", node.paths.ledger)
         };
-        
-        if let Ok(output) = pool.execute_command(node, ssh_key_path, &fallback_identity_cmd).await {
+
+        if let Ok(output) = pool
+            .execute_command(node, ssh_key_path, &fallback_identity_cmd)
+            .await
+        {
             if let Some(line) = output.lines().next() {
                 if line.starts_with("Identity: ") {
                     let identity = line.replace("Identity: ", "").trim().to_string();
-                    if !identity.is_empty() && identity != "timeout" && identity != "no-validator-running" {
+                    if !identity.is_empty()
+                        && identity != "timeout"
+                        && identity != "no-validator-running"
+                    {
                         status.current_identity = Some(identity);
                     }
                 }
             }
         }
     }
-    
+
     Ok(status)
 }
 
 fn parse_batch_output(output: &str, status: &mut ComprehensiveStatus) {
     let sections: Vec<&str> = output.split("=== ").collect();
-    
+
     for section in sections {
         if section.starts_with("PROCESSES ===") {
             let lines: Vec<&str> = section.lines().skip(1).collect();
             let validator_processes: Vec<&str> = lines
                 .iter()
                 .filter(|line| !line.contains("grep"))
-                .filter(|line| line.contains("solana-validator") || 
-                              line.contains("agave") || 
-                              line.contains("fdctl") || 
-                              line.contains("firedancer"))
+                .filter(|line| {
+                    line.contains("solana-validator")
+                        || line.contains("agave")
+                        || line.contains("fdctl")
+                        || line.contains("firedancer")
+                })
                 .cloned()
                 .collect();
-            
+
             status.validator_running = Some(!validator_processes.is_empty());
         } else if section.starts_with("DISK ===") {
             if let Some(line) = section.lines().nth(1) {
@@ -143,18 +164,26 @@ fn parse_batch_output(output: &str, status: &mut ComprehensiveStatus) {
                     // Extract identity (before "has caught up") and slot information
                     if let Some(caught_up_pos) = sync_output.find(" has caught up") {
                         let identity = sync_output[..caught_up_pos].trim();
-                        
+
                         // Store the identity if we haven't found it yet
                         if status.current_identity.is_none() && !identity.is_empty() {
                             status.current_identity = Some(identity.to_string());
                         }
-                        
+
                         // Extract slot information
                         if let Some(us_start) = sync_output.find("us:") {
                             if let Some(them_start) = sync_output.find("them:") {
-                                let us_end = sync_output[us_start+3..].find(' ').unwrap_or(sync_output.len() - us_start - 3) + us_start + 3;
-                                let them_end = sync_output[them_start+5..].find(')').unwrap_or(sync_output.len() - them_start - 5) + them_start + 5;
-                                let us_slot = &sync_output[us_start+3..us_end];
+                                let us_end = sync_output[us_start + 3..]
+                                    .find(' ')
+                                    .unwrap_or(sync_output.len() - us_start - 3)
+                                    + us_start
+                                    + 3;
+                                let _them_end = sync_output[them_start + 5..]
+                                    .find(')')
+                                    .unwrap_or(sync_output.len() - them_start - 5)
+                                    + them_start
+                                    + 5;
+                                let us_slot = &sync_output[us_start + 3..us_end];
                                 status.sync_status = Some(format!("Caught up (slot: {})", us_slot));
                             } else {
                                 status.sync_status = Some("Caught up".to_string());
@@ -179,11 +208,16 @@ fn parse_batch_output(output: &str, status: &mut ComprehensiveStatus) {
             // Look through all lines in the identity section
             for line in section.lines().skip(1) {
                 let identity_output = line.trim();
-                if identity_output.contains("timeout") || identity_output.contains("no-validator-running") {
+                if identity_output.contains("timeout")
+                    || identity_output.contains("no-validator-running")
+                {
                     break;
                 } else if identity_output.starts_with("Identity: ") {
                     let identity = identity_output.replace("Identity: ", "").trim().to_string();
-                    if !identity.is_empty() && identity != "timeout" && identity != "no-validator-running" {
+                    if !identity.is_empty()
+                        && identity != "timeout"
+                        && identity != "no-validator-running"
+                    {
                         status.current_identity = Some(identity);
                         break;
                     }
@@ -198,12 +232,12 @@ fn parse_batch_output(output: &str, status: &mut ComprehensiveStatus) {
                 } else if version_output.starts_with("solana-cli ") {
                     // Parse version output: "solana-cli 0.505.20216 (src:44f9f393; feat:3073396398, client:Firedancer)"
                     // or "solana-cli 2.1.13 (src:67412607; feat:1725507508, client:Agave)"
-                    
+
                     // Extract version number (second part)
                     let parts: Vec<&str> = version_output.split_whitespace().collect();
                     if parts.len() >= 2 {
                         let version_num = parts[1];
-                        
+
                         // Extract client type from the end
                         if version_output.contains("client:Firedancer") {
                             status.version = Some(format!("Firedancer {}", version_num));
@@ -227,11 +261,15 @@ fn parse_batch_output(output: &str, status: &mut ComprehensiveStatus) {
     }
 }
 
-async fn check_swap_readiness(pool: &mut crate::ssh::SshConnectionPool, node: &NodeConfig, ssh_key_path: &str) -> (bool, Vec<String>, Vec<(String, bool)>) {
+async fn check_swap_readiness(
+    pool: &mut crate::ssh::SshConnectionPool,
+    node: &NodeConfig,
+    ssh_key_path: &str,
+) -> (bool, Vec<String>, Vec<(String, bool)>) {
     let mut issues = Vec::new();
     let mut checklist = Vec::new();
     let mut all_ready = true;
-    
+
     // Batch file checks into single command
     let file_check_cmd = format!(
         "echo '=== FILES ===' && \
@@ -254,8 +292,11 @@ async fn check_swap_readiness(pool: &mut crate::ssh::SshConnectionPool, node: &N
         node.paths.ledger,
         node.paths.solana_cli_path
     );
-    
-    match pool.execute_command(node, ssh_key_path, &file_check_cmd).await {
+
+    match pool
+        .execute_command(node, ssh_key_path, &file_check_cmd)
+        .await
+    {
         Ok(output) => {
             parse_swap_readiness_output(&output, &mut checklist, &mut issues, &mut all_ready);
         }
@@ -264,13 +305,18 @@ async fn check_swap_readiness(pool: &mut crate::ssh::SshConnectionPool, node: &N
             issues.push("Failed to check file readiness".to_string());
         }
     }
-    
+
     (all_ready, issues, checklist)
 }
 
-fn parse_swap_readiness_output(output: &str, checklist: &mut Vec<(String, bool)>, issues: &mut Vec<String>, all_ready: &mut bool) {
+fn parse_swap_readiness_output(
+    output: &str,
+    checklist: &mut Vec<(String, bool)>,
+    issues: &mut Vec<String>,
+    all_ready: &mut bool,
+) {
     let lines: Vec<&str> = output.lines().collect();
-    
+
     for line in lines {
         match line.trim() {
             "funded_ok" => checklist.push(("Funded Identity".to_string(), true)),
@@ -326,45 +372,58 @@ fn parse_swap_readiness_output(output: &str, checklist: &mut Vec<(String, bool)>
     }
 }
 
-async fn detect_validator_version(pool: &mut crate::ssh::SshConnectionPool, node: &NodeConfig, ssh_key_path: &str) -> Option<String> {
+async fn detect_validator_version(
+    pool: &mut crate::ssh::SshConnectionPool,
+    node: &NodeConfig,
+    ssh_key_path: &str,
+) -> Option<String> {
     // Get process list to detect validator type
-    let ps_output = pool.execute_command(node, ssh_key_path, "ps aux | grep -Ei 'solana-validator|agave|fdctl|firedancer'").await.ok()?;
-    
+    let ps_output = pool
+        .execute_command(
+            node,
+            ssh_key_path,
+            "ps aux | grep -Ei 'solana-validator|agave|fdctl|firedancer'",
+        )
+        .await
+        .ok()?;
+
     // Filter out grep process itself and find validator processes
     let validator_processes: Vec<&str> = ps_output
         .lines()
         .filter(|line| !line.contains("grep"))
-        .filter(|line| line.contains("solana-validator") || 
-                      line.contains("agave") || 
-                      line.contains("fdctl") || 
-                      line.contains("firedancer"))
+        .filter(|line| {
+            line.contains("solana-validator")
+                || line.contains("agave")
+                || line.contains("fdctl")
+                || line.contains("firedancer")
+        })
         .collect();
-    
+
     if validator_processes.is_empty() {
         return None;
     }
-    
+
     // Find the process with the exact patterns you specified
-    let process_line = validator_processes.iter()
-        .find(|line| {
-            line.contains("build/native/gcc/bin/fdctl") || 
-            line.contains("target/release/agave-validator")
-        })?;
-    
+    let process_line = validator_processes.iter().find(|line| {
+        line.contains("build/native/gcc/bin/fdctl")
+            || line.contains("target/release/agave-validator")
+    })?;
+
     // Look for executable path in the process line
     let mut executable_path = None;
-    
+
     // Split by whitespace and look for paths containing validator executables
     for part in process_line.split_whitespace() {
-        if part.contains("build/native/gcc/bin/fdctl") || 
-           part.contains("target/release/agave-validator") {
+        if part.contains("build/native/gcc/bin/fdctl")
+            || part.contains("target/release/agave-validator")
+        {
             executable_path = Some(part);
             break;
         }
     }
-    
+
     let executable_path = executable_path?;
-    
+
     // Detect validator type and get version based on path patterns
     if executable_path.contains("build/native/gcc/bin/fdctl") {
         // Firedancer
@@ -377,27 +436,48 @@ async fn detect_validator_version(pool: &mut crate::ssh::SshConnectionPool, node
     }
 }
 
-async fn get_firedancer_version(pool: &mut crate::ssh::SshConnectionPool, node: &NodeConfig, ssh_key_path: &str, executable_path: &str) -> Option<String> {
-    let version_output = pool.execute_command(node, ssh_key_path, &format!("{} --version", executable_path)).await.ok()?;
-    
+async fn get_firedancer_version(
+    pool: &mut crate::ssh::SshConnectionPool,
+    node: &NodeConfig,
+    ssh_key_path: &str,
+    executable_path: &str,
+) -> Option<String> {
+    let version_output = pool
+        .execute_command(
+            node,
+            ssh_key_path,
+            &format!("{} --version", executable_path),
+        )
+        .await
+        .ok()?;
+
     // Parse firedancer version format: "0.505.20216 (44f9f393d167138abe1c819f7424990a56e1913e)"
     for line in version_output.lines() {
         if line.contains('.') && (line.contains('(') || line.chars().any(|c| c.is_ascii_digit())) {
             // Extract just the version number part
-            let version_part = line.trim()
-                .split_whitespace()
-                .next()
-                .unwrap_or(line.trim());
+            let version_part = line.trim().split_whitespace().next().unwrap_or(line.trim());
             return Some(format!("Firedancer {}", version_part));
         }
     }
-    
+
     None
 }
 
-async fn get_jito_agave_version(pool: &mut crate::ssh::SshConnectionPool, node: &NodeConfig, ssh_key_path: &str, executable_path: &str) -> Option<String> {
+async fn get_jito_agave_version(
+    pool: &mut crate::ssh::SshConnectionPool,
+    node: &NodeConfig,
+    ssh_key_path: &str,
+    executable_path: &str,
+) -> Option<String> {
     // Try the executable path first
-    if let Ok(version_output) = pool.execute_command(node, ssh_key_path, &format!("{} --version", executable_path)).await {
+    if let Ok(version_output) = pool
+        .execute_command(
+            node,
+            ssh_key_path,
+            &format!("{} --version", executable_path),
+        )
+        .await
+    {
         if let Some(version_line) = version_output.lines().next() {
             let version_line = version_line.trim();
             if !version_line.is_empty() {
@@ -405,9 +485,12 @@ async fn get_jito_agave_version(pool: &mut crate::ssh::SshConnectionPool, node: 
             }
         }
     }
-    
+
     // Fallback to standard commands
-    if let Ok(version_output) = pool.execute_command(node, ssh_key_path, "agave-validator --version").await {
+    if let Ok(version_output) = pool
+        .execute_command(node, ssh_key_path, "agave-validator --version")
+        .await
+    {
         if let Some(version_line) = version_output.lines().next() {
             let version_line = version_line.trim();
             if !version_line.is_empty() {
@@ -415,9 +498,12 @@ async fn get_jito_agave_version(pool: &mut crate::ssh::SshConnectionPool, node: 
             }
         }
     }
-    
+
     // Final fallback
-    if let Ok(version_output) = pool.execute_command(node, ssh_key_path, "solana-validator --version").await {
+    if let Ok(version_output) = pool
+        .execute_command(node, ssh_key_path, "solana-validator --version")
+        .await
+    {
         if let Some(version_line) = version_output.lines().next() {
             let version_line = version_line.trim();
             if !version_line.is_empty() {
@@ -425,7 +511,7 @@ async fn get_jito_agave_version(pool: &mut crate::ssh::SshConnectionPool, node: 
             }
         }
     }
-    
+
     None
 }
 
@@ -433,7 +519,7 @@ fn parse_agave_version(version_line: &str) -> String {
     // Parse version format examples:
     // Jito: "agave-validator 2.2.16 (src:00000000; feat:3073396398, client:JitoLabs)"
     // Agave: "agave-validator 2.1.5 (src:4da190bd; feat:288566304, client:Agave)"
-    
+
     if version_line.contains("client:JitoLabs") {
         // Extract version number and mark as Jito
         if let Some(version_part) = version_line.split_whitespace().nth(1) {
@@ -461,8 +547,20 @@ fn parse_agave_version(version_line: &str) -> String {
     }
 }
 
-async fn get_solana_validator_version(pool: &mut crate::ssh::SshConnectionPool, node: &NodeConfig, ssh_key_path: &str, executable_path: &str) -> Option<String> {
-    let version_output = pool.execute_command(node, ssh_key_path, &format!("{} --version", executable_path)).await.ok()?;
+async fn get_solana_validator_version(
+    pool: &mut crate::ssh::SshConnectionPool,
+    node: &NodeConfig,
+    ssh_key_path: &str,
+    executable_path: &str,
+) -> Option<String> {
+    let version_output = pool
+        .execute_command(
+            node,
+            ssh_key_path,
+            &format!("{} --version", executable_path),
+        )
+        .await
+        .ok()?;
     let version_line = version_output.lines().next()?.trim();
     Some(version_line.to_string())
 }
@@ -470,27 +568,32 @@ async fn get_solana_validator_version(pool: &mut crate::ssh::SshConnectionPool, 
 fn display_status_table_from_app_state(app_state: &AppState) {
     println!("\n{}", "📋 Validator Status".bright_cyan().bold());
     println!();
-    
+
     for (index, validator_status) in app_state.validator_statuses.iter().enumerate() {
         let validator_pair = &validator_status.validator_pair;
-        println!("{} Validator {} - Vote: {}", "🔗".bright_cyan(), index + 1, validator_pair.vote_pubkey);
+        println!(
+            "{} Validator {} - Vote: {}",
+            "🔗".bright_cyan(),
+            index + 1,
+            validator_pair.vote_pubkey
+        );
         println!();
-        
+
         // Get the two nodes with their statuses
         let nodes_with_status = &validator_status.nodes_with_status;
         if nodes_with_status.len() >= 2 {
             let node_0 = &nodes_with_status[0];
             let node_1 = &nodes_with_status[1];
-            
+
             display_simple_status_table(
                 &node_0.node,
                 &node_0.status,
                 &node_1.node,
                 &node_1.status,
-                validator_status
+                validator_status,
             );
         }
-        
+
         println!();
     }
 }
@@ -500,15 +603,16 @@ fn display_simple_status_table(
     node_0_status: &crate::types::NodeStatus,
     node_1: &crate::types::NodeConfig,
     node_1_status: &crate::types::NodeStatus,
-    validator_status: &crate::ValidatorStatus
+    validator_status: &crate::ValidatorStatus,
 ) {
     let mut table = Table::new();
-    
+
     // Create custom table style with minimal borders
-    table.load_preset(comfy_table::presets::UTF8_BORDERS_ONLY)
-         .apply_modifier(UTF8_ROUND_CORNERS)
-         .set_content_arrangement(ContentArrangement::Dynamic);
-    
+    table
+        .load_preset(comfy_table::presets::UTF8_BORDERS_ONLY)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_content_arrangement(ContentArrangement::Dynamic);
+
     // Header row with dynamic labels
     let node_0_label = match node_0_status {
         crate::types::NodeStatus::Active => "ACTIVE",
@@ -520,155 +624,218 @@ fn display_simple_status_table(
         crate::types::NodeStatus::Standby => "STANDBY",
         crate::types::NodeStatus::Unknown => "UNKNOWN",
     };
-    
-    let node_0_color = if node_0_label == "ACTIVE" { Color::Green } else if node_0_label == "STANDBY" { Color::Yellow } else { Color::DarkGrey };
-    let node_1_color = if node_1_label == "ACTIVE" { Color::Green } else if node_1_label == "STANDBY" { Color::Yellow } else { Color::DarkGrey };
-    
+
+    let node_0_color = if node_0_label == "ACTIVE" {
+        Color::Green
+    } else if node_0_label == "STANDBY" {
+        Color::Yellow
+    } else {
+        Color::DarkGrey
+    };
+    let node_1_color = if node_1_label == "ACTIVE" {
+        Color::Green
+    } else if node_1_label == "STANDBY" {
+        Color::Yellow
+    } else {
+        Color::DarkGrey
+    };
+
     table.add_row(vec![
         Cell::new("").add_attribute(Attribute::Bold),
-        Cell::new(node_0_label).add_attribute(Attribute::Bold).fg(node_0_color),
-        Cell::new(node_1_label).add_attribute(Attribute::Bold).fg(node_1_color),
+        Cell::new(node_0_label)
+            .add_attribute(Attribute::Bold)
+            .fg(node_0_color),
+        Cell::new(node_1_label)
+            .add_attribute(Attribute::Bold)
+            .fg(node_1_color),
     ]);
-    
+
     // Node info as subheader
     let node_0_info = format!("🖥️ {} ({})", node_0.label, node_0.host);
     let node_1_info = format!("🖥️ {} ({})", node_1.label, node_1.host);
-    
+
     table.add_row(vec![
-        Cell::new("Node").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        Cell::new("Node")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
         Cell::new(&node_0_info).fg(Color::Green),
         Cell::new(&node_1_info).fg(Color::Yellow),
     ]);
-    
+
     // Add separator line after subheader
     table.add_row(vec![
         Cell::new("─".repeat(15)).fg(Color::DarkGrey),
         Cell::new("─".repeat(25)).fg(Color::DarkGrey),
         Cell::new("─".repeat(25)).fg(Color::DarkGrey),
     ]);
-    
+
     // Status rows with basic info
     table.add_row(vec![
-        Cell::new("Status").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        Cell::new("Status")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
         Cell::new(node_0_label).fg(node_0_color),
         Cell::new(node_1_label).fg(node_1_color),
     ]);
-    
+
     // Add executable paths
-    let node_0_agave = validator_status.nodes_with_status.get(0)
+    let node_0_agave = validator_status
+        .nodes_with_status
+        .get(0)
         .and_then(|n| n.agave_validator_executable.as_ref())
         .map(|path| truncate_path(path, 30))
         .unwrap_or("N/A".to_string());
-    let node_1_agave = validator_status.nodes_with_status.get(1)
+    let node_1_agave = validator_status
+        .nodes_with_status
+        .get(1)
         .and_then(|n| n.agave_validator_executable.as_ref())
         .map(|path| truncate_path(path, 30))
         .unwrap_or("N/A".to_string());
-    
+
     table.add_row(vec![
-        Cell::new("Agave Executable").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        Cell::new("Agave Executable")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
         Cell::new(node_0_agave),
         Cell::new(node_1_agave),
     ]);
-    
-    let node_0_fdctl = validator_status.nodes_with_status.get(0)
+
+    let node_0_fdctl = validator_status
+        .nodes_with_status
+        .get(0)
         .and_then(|n| n.fdctl_executable.as_ref())
         .map(|path| truncate_path(path, 30))
         .unwrap_or("N/A".to_string());
-    let node_1_fdctl = validator_status.nodes_with_status.get(1)
+    let node_1_fdctl = validator_status
+        .nodes_with_status
+        .get(1)
         .and_then(|n| n.fdctl_executable.as_ref())
         .map(|path| truncate_path(path, 30))
         .unwrap_or("N/A".to_string());
-    
+
     table.add_row(vec![
-        Cell::new("Fdctl Executable").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        Cell::new("Fdctl Executable")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
         Cell::new(node_0_fdctl),
         Cell::new(node_1_fdctl),
     ]);
-    
+
     // Add version information
-    let node_0_version = validator_status.nodes_with_status.get(0)
+    let node_0_version = validator_status
+        .nodes_with_status
+        .get(0)
         .and_then(|n| n.version.as_ref())
         .cloned()
         .unwrap_or("N/A".to_string());
-    let node_1_version = validator_status.nodes_with_status.get(1)
+    let node_1_version = validator_status
+        .nodes_with_status
+        .get(1)
         .and_then(|n| n.version.as_ref())
         .cloned()
         .unwrap_or("N/A".to_string());
-    
+
     table.add_row(vec![
-        Cell::new("Version").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        Cell::new("Version")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
         Cell::new(node_0_version),
         Cell::new(node_1_version),
     ]);
-    
+
     // Add sync status
-    let node_0_sync = validator_status.nodes_with_status.get(0)
+    let node_0_sync = validator_status
+        .nodes_with_status
+        .get(0)
         .and_then(|n| n.sync_status.as_ref())
         .cloned()
         .unwrap_or("Unknown".to_string());
-    let node_1_sync = validator_status.nodes_with_status.get(1)
+    let node_1_sync = validator_status
+        .nodes_with_status
+        .get(1)
         .and_then(|n| n.sync_status.as_ref())
         .cloned()
         .unwrap_or("Unknown".to_string());
-    
+
     table.add_row(vec![
-        Cell::new("Sync Status").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        Cell::new("Sync Status")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
         Cell::new(node_0_sync),
         Cell::new(node_1_sync),
     ]);
-    
+
     // Add swap readiness
-    let node_0_swap = validator_status.nodes_with_status.get(0)
+    let node_0_swap = validator_status
+        .nodes_with_status
+        .get(0)
         .and_then(|n| n.swap_ready)
         .map(|ready| if ready { "✅ Ready" } else { "❌ Not Ready" })
         .unwrap_or("❓ Unknown");
-    let node_1_swap = validator_status.nodes_with_status.get(1)
+    let node_1_swap = validator_status
+        .nodes_with_status
+        .get(1)
         .and_then(|n| n.swap_ready)
         .map(|ready| if ready { "✅ Ready" } else { "❌ Not Ready" })
         .unwrap_or("❓ Unknown");
-    
+
     table.add_row(vec![
-        Cell::new("Swap Ready").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        Cell::new("Swap Ready")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
         Cell::new(node_0_swap),
         Cell::new(node_1_swap),
     ]);
-    
+
     println!("{}", table);
 }
 
-fn display_status_table(config: &Config, results: &HashMap<String, ComprehensiveStatus>, app_state: &AppState) {
+fn display_status_table(
+    config: &Config,
+    results: &HashMap<String, ComprehensiveStatus>,
+    app_state: &AppState,
+) {
     println!("\n{}", "📋 Validator Status".bright_cyan().bold());
     println!();
-    
+
     for (index, validator_pair) in config.validators.iter().enumerate() {
-        println!("{} Validator {} - Vote: {}", "🔗".bright_cyan(), index + 1, validator_pair.vote_pubkey);
+        println!(
+            "{} Validator {} - Vote: {}",
+            "🔗".bright_cyan(),
+            index + 1,
+            validator_pair.vote_pubkey
+        );
         println!();
-        
+
         // Get node statuses (no ordering, just display as configured)
-        let node_0_status = results.get(&format!("validator_{}_node_0 (ACTIVE)", index))
+        let node_0_status = results
+            .get(&format!("validator_{}_node_0 (ACTIVE)", index))
             .or_else(|| results.get(&format!("validator_{}_node_0 (STANDBY)", index)))
             .or_else(|| results.get(&format!("validator_{}_node_0 (UNKNOWN)", index)));
-        let node_1_status = results.get(&format!("validator_{}_node_1 (ACTIVE)", index))
+        let node_1_status = results
+            .get(&format!("validator_{}_node_1 (ACTIVE)", index))
             .or_else(|| results.get(&format!("validator_{}_node_1 (STANDBY)", index)))
             .or_else(|| results.get(&format!("validator_{}_node_1 (UNKNOWN)", index)));
-        
+
         // Determine status labels for each node
-        let node_0_label = if results.contains_key(&format!("validator_{}_node_0 (ACTIVE)", index)) {
+        let node_0_label = if results.contains_key(&format!("validator_{}_node_0 (ACTIVE)", index))
+        {
             "ACTIVE"
         } else if results.contains_key(&format!("validator_{}_node_0 (STANDBY)", index)) {
             "STANDBY"
         } else {
             "UNKNOWN"
         };
-        
-        let node_1_label = if results.contains_key(&format!("validator_{}_node_1 (ACTIVE)", index)) {
+
+        let node_1_label = if results.contains_key(&format!("validator_{}_node_1 (ACTIVE)", index))
+        {
             "ACTIVE"
         } else if results.contains_key(&format!("validator_{}_node_1 (STANDBY)", index)) {
             "STANDBY"
         } else {
             "UNKNOWN"
         };
-        
+
         if let (Some(node_0_status), Some(node_1_status)) = (node_0_status, node_1_status) {
             let validator_status = &app_state.validator_statuses[index];
             display_primary_backup_table(
@@ -678,20 +845,24 @@ fn display_status_table(config: &Config, results: &HashMap<String, Comprehensive
                 node_1_status,
                 node_0_label,
                 node_1_label,
-                validator_status
+                validator_status,
             );
         }
-        
+
         println!();
     }
 }
 
 fn display_node_status(role: &str, node: &NodeConfig, status: &ComprehensiveStatus) {
     // Simplified role display without color conversion
-    let role_display = if role == "Primary" { role.green() } else { role.yellow() };
-    
+    let role_display = if role == "Primary" {
+        role.green()
+    } else {
+        role.yellow()
+    };
+
     println!("  {} {} ({}):", role_display, node.label, node.host);
-    
+
     if !status.connected {
         println!("    ❌ Connection failed");
         if let Some(ref error) = status.error {
@@ -699,7 +870,7 @@ fn display_node_status(role: &str, node: &NodeConfig, status: &ComprehensiveStat
         }
         return;
     }
-    
+
     // Display basic status
     let validator_status = match status.validator_running {
         Some(true) => "✅ Running".green(),
@@ -707,173 +878,224 @@ fn display_node_status(role: &str, node: &NodeConfig, status: &ComprehensiveStat
         None => "❓ Unknown".dimmed(),
     };
     println!("    Validator: {}", validator_status);
-    
+
     if let Some(ref version) = status.version {
         println!("    Version: {}", version);
     }
-    
+
     if let Some(usage) = status.ledger_disk_usage {
-        let usage_display = if usage > 90 { 
+        let usage_display = if usage > 90 {
             format!("{}%", usage).red()
-        } else if usage > 75 { 
+        } else if usage > 75 {
             format!("{}%", usage).yellow()
-        } else { 
+        } else {
             format!("{}%", usage).green()
         };
         println!("    Disk Usage: {}", usage_display);
     }
-    
+
     if let Some(load) = status.system_load {
-        let load_display = if load > 2.0 { 
+        let load_display = if load > 2.0 {
             format!("{:.2}", load).red()
-        } else if load > 1.0 { 
+        } else if load > 1.0 {
             format!("{:.2}", load).yellow()
-        } else { 
+        } else {
             format!("{:.2}", load).green()
         };
         println!("    System Load: {}", load_display);
     }
-    
+
     if let Some(ref sync) = status.sync_status {
         println!("    Sync Status: {}", sync);
     }
 }
 
 fn display_primary_backup_table(
-    node_0: Option<&NodeConfig>, 
+    node_0: Option<&NodeConfig>,
     node_0_status: &ComprehensiveStatus,
     node_1: Option<&NodeConfig>,
     node_1_status: &ComprehensiveStatus,
     node_0_label: &str,
     node_1_label: &str,
-    validator_status: &crate::ValidatorStatus
+    validator_status: &crate::ValidatorStatus,
 ) {
     let mut table = Table::new();
-    
+
     // Create custom table style with minimal borders
-    table.load_preset(comfy_table::presets::UTF8_BORDERS_ONLY)
-         .apply_modifier(UTF8_ROUND_CORNERS)
-         .set_content_arrangement(ContentArrangement::Dynamic);
-    
+    table
+        .load_preset(comfy_table::presets::UTF8_BORDERS_ONLY)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_content_arrangement(ContentArrangement::Dynamic);
+
     // Header row with dynamic labels
-    let node_0_color = if node_0_label == "ACTIVE" { Color::Green } else if node_0_label == "STANDBY" { Color::Yellow } else { Color::DarkGrey };
-    let node_1_color = if node_1_label == "ACTIVE" { Color::Green } else if node_1_label == "STANDBY" { Color::Yellow } else { Color::DarkGrey };
-    
+    let node_0_color = if node_0_label == "ACTIVE" {
+        Color::Green
+    } else if node_0_label == "STANDBY" {
+        Color::Yellow
+    } else {
+        Color::DarkGrey
+    };
+    let node_1_color = if node_1_label == "ACTIVE" {
+        Color::Green
+    } else if node_1_label == "STANDBY" {
+        Color::Yellow
+    } else {
+        Color::DarkGrey
+    };
+
     table.add_row(vec![
         Cell::new("").add_attribute(Attribute::Bold),
-        Cell::new(node_0_label).add_attribute(Attribute::Bold).fg(node_0_color),
-        Cell::new(node_1_label).add_attribute(Attribute::Bold).fg(node_1_color),
+        Cell::new(node_0_label)
+            .add_attribute(Attribute::Bold)
+            .fg(node_0_color),
+        Cell::new(node_1_label)
+            .add_attribute(Attribute::Bold)
+            .fg(node_1_color),
     ]);
-    
+
     // Node info as subheader
-    let node_0_info = node_0.map(|n| format!("🖥️ {} ({})", n.label, n.host)).unwrap_or("🖥️ Node 0".to_string());
-    let node_1_info = node_1.map(|n| format!("🖥️ {} ({})", n.label, n.host)).unwrap_or("🖥️ Node 1".to_string());
-    
+    let node_0_info = node_0
+        .map(|n| format!("🖥️ {} ({})", n.label, n.host))
+        .unwrap_or("🖥️ Node 0".to_string());
+    let node_1_info = node_1
+        .map(|n| format!("🖥️ {} ({})", n.label, n.host))
+        .unwrap_or("🖥️ Node 1".to_string());
+
     table.add_row(vec![
-        Cell::new("Node").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        Cell::new("Node")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
         Cell::new(&node_0_info).fg(Color::Green),
         Cell::new(&node_1_info).fg(Color::Yellow),
     ]);
-    
+
     // Add separator line after subheader
     table.add_row(vec![
         Cell::new("─".repeat(15)).fg(Color::DarkGrey),
         Cell::new("─".repeat(25)).fg(Color::DarkGrey),
         Cell::new("─".repeat(25)).fg(Color::DarkGrey),
     ]);
-    
+
     // Status rows with labels on the left
     table.add_row(vec![
-        Cell::new("Connection").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        Cell::new("Connection")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
         Cell::new(format_connection_status_plain(node_0_status)),
         Cell::new(format_connection_status_plain(node_1_status)),
     ]);
-    
+
     table.add_row(vec![
-        Cell::new("Process").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        Cell::new("Process")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
         Cell::new(format_process_status_plain(node_0_status)),
         Cell::new(format_process_status_plain(node_1_status)),
     ]);
-    
+
     table.add_row(vec![
-        Cell::new("Disk Usage").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        Cell::new("Disk Usage")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
         Cell::new(format_disk_usage_plain(node_0_status)),
         Cell::new(format_disk_usage_plain(node_1_status)),
     ]);
-    
+
     table.add_row(vec![
-        Cell::new("Identity").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        Cell::new("Identity")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
         Cell::new(format_identity_status(&node_0_status.current_identity)),
         Cell::new(format_identity_status(&node_1_status.current_identity)),
     ]);
-    
+
     table.add_row(vec![
-        Cell::new("System Load").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        Cell::new("System Load")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
         Cell::new(format_system_load_plain(node_0_status)),
         Cell::new(format_system_load_plain(node_1_status)),
     ]);
-    
+
     table.add_row(vec![
-        Cell::new("Sync Status").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        Cell::new("Sync Status")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
         Cell::new(format_sync_status_plain(node_0_status)),
         Cell::new(format_sync_status_plain(node_1_status)),
     ]);
-    
+
     table.add_row(vec![
-        Cell::new("Version").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        Cell::new("Version")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
         Cell::new(format_version_plain(node_0_status)),
         Cell::new(format_version_plain(node_1_status)),
     ]);
-    
+
     // Add executable paths
-    let node_0_agave = validator_status.nodes_with_status.get(0)
+    let node_0_agave = validator_status
+        .nodes_with_status
+        .get(0)
         .and_then(|n| n.agave_validator_executable.as_ref())
         .map(|path| truncate_path(path, 30))
         .unwrap_or("N/A".to_string());
-    let node_1_agave = validator_status.nodes_with_status.get(1)
+    let node_1_agave = validator_status
+        .nodes_with_status
+        .get(1)
         .and_then(|n| n.agave_validator_executable.as_ref())
         .map(|path| truncate_path(path, 30))
         .unwrap_or("N/A".to_string());
-    
+
     table.add_row(vec![
-        Cell::new("Agave Executable").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        Cell::new("Agave Executable")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
         Cell::new(node_0_agave),
         Cell::new(node_1_agave),
     ]);
-    
-    let node_0_fdctl = validator_status.nodes_with_status.get(0)
+
+    let node_0_fdctl = validator_status
+        .nodes_with_status
+        .get(0)
         .and_then(|n| n.fdctl_executable.as_ref())
         .map(|path| truncate_path(path, 30))
         .unwrap_or("N/A".to_string());
-    let node_1_fdctl = validator_status.nodes_with_status.get(1)
+    let node_1_fdctl = validator_status
+        .nodes_with_status
+        .get(1)
         .and_then(|n| n.fdctl_executable.as_ref())
         .map(|path| truncate_path(path, 30))
         .unwrap_or("N/A".to_string());
-    
+
     table.add_row(vec![
-        Cell::new("Fdctl Executable").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        Cell::new("Fdctl Executable")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
         Cell::new(node_0_fdctl),
         Cell::new(node_1_fdctl),
     ]);
-    
+
     table.add_row(vec![
-        Cell::new("Swap Ready").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        Cell::new("Swap Ready")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
         Cell::new(format_swap_readiness_plain(node_0_status)),
         Cell::new(format_swap_readiness_plain(node_1_status)),
     ]);
-    
+
     // Add swap checklist as sub-rows
     let node_0_checklist = format_swap_checklist(node_0_status);
     let node_1_checklist = format_swap_checklist(node_1_status);
-    
+
     if !node_0_checklist.is_empty() || !node_1_checklist.is_empty() {
         let max_lines = node_0_checklist.len().max(node_1_checklist.len());
         for i in 0..max_lines {
             let node_0_item = node_0_checklist.get(i).cloned().unwrap_or_default();
             let node_1_item = node_1_checklist.get(i).cloned().unwrap_or_default();
-            
+
             let left_label = if i == 0 { "  └ Checklist" } else { "" };
-            
+
             table.add_row(vec![
                 Cell::new(left_label).fg(Color::DarkGrey),
                 Cell::new(node_0_item).fg(Color::DarkGrey),
@@ -881,9 +1103,9 @@ fn display_primary_backup_table(
             ]);
         }
     }
-    
+
     println!("{}", table);
-    
+
     // Show verification issues if any
     if !node_0_status.verification_issues.is_empty() {
         println!("\n{} Node 0 Verification Issues:", "⚠️".yellow());
@@ -891,7 +1113,7 @@ fn display_primary_backup_table(
             println!("  • {}", issue.yellow());
         }
     }
-    
+
     if !node_1_status.verification_issues.is_empty() {
         println!("\n{} Node 1 Verification Issues:", "⚠️".yellow());
         for issue in &node_1_status.verification_issues {
@@ -900,68 +1122,87 @@ fn display_primary_backup_table(
     }
 }
 
-fn display_all_nodes_table(config: &Config, results: &HashMap<String, ComprehensiveStatus>) {
+fn display_all_nodes_table(_config: &Config, results: &HashMap<String, ComprehensiveStatus>) {
     let mut table = Table::new();
-    table.load_preset(UTF8_BORDERS_ONLY)
-         .apply_modifier(UTF8_ROUND_CORNERS)
-         .set_content_arrangement(ContentArrangement::Dynamic);
-    
+    table
+        .load_preset(UTF8_BORDERS_ONLY)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_content_arrangement(ContentArrangement::Dynamic);
+
     // Create a 3-column layout for single nodes
     let nodes: Vec<_> = results.iter().collect();
-    
+
     if nodes.len() == 1 {
         // Single node - use the same layout as primary/backup but with one column
         let (role, status) = nodes[0];
         // For now, just handle the case where we have a single result
         // This is a temporary fix since we changed the structure
-        let node_config: Option<&crate::types::NodeConfig> = None; // Will be fixed when we fully migrate
+        let _node_config: Option<&crate::types::NodeConfig> = None; // Will be fixed when we fully migrate
         let node_label = "Node".to_string(); // Temporary fix
-        
+
         table.add_row(vec![
             Cell::new("").add_attribute(Attribute::Bold),
-            Cell::new(role.to_uppercase()).add_attribute(Attribute::Bold).fg(Color::Green),
+            Cell::new(role.to_uppercase())
+                .add_attribute(Attribute::Bold)
+                .fg(Color::Green),
         ]);
-        
+
         table.add_row(vec![
-            Cell::new("Node").add_attribute(Attribute::Bold).fg(Color::Cyan),
+            Cell::new("Node")
+                .add_attribute(Attribute::Bold)
+                .fg(Color::Cyan),
             Cell::new(&node_label).fg(Color::Green),
         ]);
-        
+
         table.add_row(vec![
-            Cell::new("Connection").add_attribute(Attribute::Bold).fg(Color::Cyan),
+            Cell::new("Connection")
+                .add_attribute(Attribute::Bold)
+                .fg(Color::Cyan),
             Cell::new(format_connection_status_plain(status)),
         ]);
-        
+
         table.add_row(vec![
-            Cell::new("Process").add_attribute(Attribute::Bold).fg(Color::Cyan),
+            Cell::new("Process")
+                .add_attribute(Attribute::Bold)
+                .fg(Color::Cyan),
             Cell::new(format_process_status_plain(status)),
         ]);
-        
+
         table.add_row(vec![
-            Cell::new("Disk Usage").add_attribute(Attribute::Bold).fg(Color::Cyan),
+            Cell::new("Disk Usage")
+                .add_attribute(Attribute::Bold)
+                .fg(Color::Cyan),
             Cell::new(format_disk_usage_plain(status)),
         ]);
-        
+
         table.add_row(vec![
-            Cell::new("System Load").add_attribute(Attribute::Bold).fg(Color::Cyan),
+            Cell::new("System Load")
+                .add_attribute(Attribute::Bold)
+                .fg(Color::Cyan),
             Cell::new(format_system_load_plain(status)),
         ]);
-        
+
         table.add_row(vec![
-            Cell::new("Sync Status").add_attribute(Attribute::Bold).fg(Color::Cyan),
+            Cell::new("Sync Status")
+                .add_attribute(Attribute::Bold)
+                .fg(Color::Cyan),
             Cell::new(format_sync_status_plain(status)),
         ]);
-        
+
         table.add_row(vec![
-            Cell::new("Version").add_attribute(Attribute::Bold).fg(Color::Cyan),
+            Cell::new("Version")
+                .add_attribute(Attribute::Bold)
+                .fg(Color::Cyan),
             Cell::new(format_version_plain(status)),
         ]);
-        
+
         table.add_row(vec![
-            Cell::new("Swap Ready").add_attribute(Attribute::Bold).fg(Color::Cyan),
+            Cell::new("Swap Ready")
+                .add_attribute(Attribute::Bold)
+                .fg(Color::Cyan),
             Cell::new(format_swap_readiness_plain(status)),
         ]);
-        
+
         // Add swap checklist as sub-rows
         let checklist = format_swap_checklist(status);
         for (i, item) in checklist.iter().enumerate() {
@@ -974,20 +1215,36 @@ fn display_all_nodes_table(config: &Config, results: &HashMap<String, Comprehens
     } else {
         // Multiple nodes - use traditional table format
         table.add_row(vec![
-            Cell::new("Node").add_attribute(Attribute::Bold).fg(Color::Cyan),
-            Cell::new("Connection").add_attribute(Attribute::Bold).fg(Color::Cyan),
-            Cell::new("Process").add_attribute(Attribute::Bold).fg(Color::Cyan),
-            Cell::new("Disk").add_attribute(Attribute::Bold).fg(Color::Cyan),
-            Cell::new("Load").add_attribute(Attribute::Bold).fg(Color::Cyan),
-            Cell::new("Sync").add_attribute(Attribute::Bold).fg(Color::Cyan),
-            Cell::new("Version").add_attribute(Attribute::Bold).fg(Color::Cyan),
-            Cell::new("Swap Ready").add_attribute(Attribute::Bold).fg(Color::Cyan),
+            Cell::new("Node")
+                .add_attribute(Attribute::Bold)
+                .fg(Color::Cyan),
+            Cell::new("Connection")
+                .add_attribute(Attribute::Bold)
+                .fg(Color::Cyan),
+            Cell::new("Process")
+                .add_attribute(Attribute::Bold)
+                .fg(Color::Cyan),
+            Cell::new("Disk")
+                .add_attribute(Attribute::Bold)
+                .fg(Color::Cyan),
+            Cell::new("Load")
+                .add_attribute(Attribute::Bold)
+                .fg(Color::Cyan),
+            Cell::new("Sync")
+                .add_attribute(Attribute::Bold)
+                .fg(Color::Cyan),
+            Cell::new("Version")
+                .add_attribute(Attribute::Bold)
+                .fg(Color::Cyan),
+            Cell::new("Swap Ready")
+                .add_attribute(Attribute::Bold)
+                .fg(Color::Cyan),
         ]);
-        
-        for (role, status) in results {
+
+        for (_role, status) in results {
             // Temporary fix for changed structure
             let node_label = "Node".to_string(); // Temporary fix
-            
+
             table.add_row(vec![
                 Cell::new(node_label),
                 Cell::new(format_connection_status_plain(status)),
@@ -1000,33 +1257,50 @@ fn display_all_nodes_table(config: &Config, results: &HashMap<String, Comprehens
             ]);
         }
     }
-    
+
     println!("{}", table);
 }
 
-fn display_other_nodes_table(config: &Config, other_nodes: &[(&String, &ComprehensiveStatus)]) {
+fn display_other_nodes_table(_config: &Config, other_nodes: &[(&String, &ComprehensiveStatus)]) {
     let mut table = Table::new();
-    table.load_preset(UTF8_BORDERS_ONLY)
-         .apply_modifier(UTF8_ROUND_CORNERS)
-         .set_content_arrangement(ContentArrangement::Dynamic);
-    
+    table
+        .load_preset(UTF8_BORDERS_ONLY)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_content_arrangement(ContentArrangement::Dynamic);
+
     // Header
     table.add_row(vec![
-        Cell::new("Node").add_attribute(Attribute::Bold).fg(Color::Cyan),
-        Cell::new("Connection").add_attribute(Attribute::Bold).fg(Color::Cyan),
-        Cell::new("Process").add_attribute(Attribute::Bold).fg(Color::Cyan),
-        Cell::new("Disk").add_attribute(Attribute::Bold).fg(Color::Cyan),
-        Cell::new("Load").add_attribute(Attribute::Bold).fg(Color::Cyan),
-        Cell::new("Sync").add_attribute(Attribute::Bold).fg(Color::Cyan),
-        Cell::new("Version").add_attribute(Attribute::Bold).fg(Color::Cyan),
-        Cell::new("Swap Ready").add_attribute(Attribute::Bold).fg(Color::Cyan),
+        Cell::new("Node")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
+        Cell::new("Connection")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
+        Cell::new("Process")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
+        Cell::new("Disk")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
+        Cell::new("Load")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
+        Cell::new("Sync")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
+        Cell::new("Version")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
+        Cell::new("Swap Ready")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
     ]);
-    
+
     // Data rows
-    for (role, status) in other_nodes {
+    for (_role, status) in other_nodes {
         // Temporary fix for changed structure
         let node_label = "Node".to_string(); // Temporary fix
-        
+
         table.add_row(vec![
             Cell::new(node_label),
             Cell::new(format_connection_status_plain(status)),
@@ -1038,15 +1312,15 @@ fn display_other_nodes_table(config: &Config, other_nodes: &[(&String, &Comprehe
             Cell::new(format_swap_readiness_plain(status)),
         ]);
     }
-    
+
     println!("{}", table);
 }
 
 // Plain formatting functions for table display
 fn format_connection_status_plain(status: &ComprehensiveStatus) -> String {
-    if status.connected { 
+    if status.connected {
         "✅ Connected".to_string()
-    } else { 
+    } else {
         "❌ Failed".to_string()
     }
 }
@@ -1060,26 +1334,30 @@ fn format_process_status_plain(status: &ComprehensiveStatus) -> String {
 }
 
 fn format_disk_usage_plain(status: &ComprehensiveStatus) -> String {
-    status.ledger_disk_usage
+    status
+        .ledger_disk_usage
         .map(|d| format!("{}%", d))
         .unwrap_or_else(|| "N/A".to_string())
 }
 
 fn format_system_load_plain(status: &ComprehensiveStatus) -> String {
-    status.system_load
+    status
+        .system_load
         .map(|l| format!(" {:.1}", l))
         .unwrap_or_else(|| " N/A".to_string())
 }
 
 fn format_sync_status_plain(status: &ComprehensiveStatus) -> String {
-    status.sync_status
+    status
+        .sync_status
         .as_ref()
         .map(|s| format!(" {}", s))
         .unwrap_or_else(|| " N/A".to_string())
 }
 
 fn format_version_plain(status: &ComprehensiveStatus) -> String {
-    status.version
+    status
+        .version
         .as_ref()
         .map(|v| v.clone())
         .unwrap_or_else(|| "N/A".to_string())
@@ -1105,28 +1383,28 @@ fn format_identity_status(identity: &Option<String>) -> String {
     match identity {
         Some(id) => {
             if id.len() > 20 {
-                format!("{}...{}", &id[..8], &id[id.len()-8..])
+                format!("{}...{}", &id[..8], &id[id.len() - 8..])
             } else {
                 id.clone()
             }
-        },
+        }
         None => "N/A".to_string(),
     }
 }
 
 fn format_swap_checklist(status: &ComprehensiveStatus) -> Vec<String> {
     let mut checklist = Vec::new();
-    
+
     if status.swap_checklist.is_empty() {
         checklist.push("No swap checks available".to_string());
         return checklist;
     }
-    
+
     for (description, is_ready) in &status.swap_checklist {
         let icon = if *is_ready { "✅" } else { "❌" };
         checklist.push(format!("  {} {}", icon, description));
     }
-    
+
     checklist
 }
 
@@ -1169,33 +1447,69 @@ impl ComprehensiveStatus {
     }
 }
 
-async fn verify_public_keys(pool: &mut crate::ssh::SshConnectionPool, node: &NodeConfig, ssh_key_path: &str, validator_pair: &crate::types::ValidatorPair, status: &mut ComprehensiveStatus) {
+async fn verify_public_keys(
+    pool: &mut crate::ssh::SshConnectionPool,
+    node: &NodeConfig,
+    ssh_key_path: &str,
+    validator_pair: &crate::types::ValidatorPair,
+    status: &mut ComprehensiveStatus,
+) {
     // Verify Identity Pubkey (funded account public key)
-    if let Ok(output) = pool.execute_command(node, ssh_key_path, &format!("{} address -k {}", node.paths.solana_cli_path, node.paths.funded_identity)).await {
+    if let Ok(output) = pool
+        .execute_command(
+            node,
+            ssh_key_path,
+            &format!(
+                "{} address -k {}",
+                node.paths.solana_cli_path, node.paths.funded_identity
+            ),
+        )
+        .await
+    {
         let actual_identity = output.trim();
         if actual_identity == validator_pair.identity_pubkey {
             status.identity_verified = Some(true);
         } else {
             status.identity_verified = Some(false);
-            status.verification_issues.push(format!("Identity Pubkey mismatch: expected {}, found {}", validator_pair.identity_pubkey, actual_identity));
+            status.verification_issues.push(format!(
+                "Identity Pubkey mismatch: expected {}, found {}",
+                validator_pair.identity_pubkey, actual_identity
+            ));
         }
     } else {
         status.identity_verified = Some(false);
-        status.verification_issues.push("Could not verify Identity Pubkey - failed to read funded keypair".to_string());
+        status
+            .verification_issues
+            .push("Could not verify Identity Pubkey - failed to read funded keypair".to_string());
     }
-    
+
     // Verify Vote Pubkey
-    if let Ok(output) = pool.execute_command(node, ssh_key_path, &format!("{} address -k {}", node.paths.solana_cli_path, node.paths.vote_keypair)).await {
+    if let Ok(output) = pool
+        .execute_command(
+            node,
+            ssh_key_path,
+            &format!(
+                "{} address -k {}",
+                node.paths.solana_cli_path, node.paths.vote_keypair
+            ),
+        )
+        .await
+    {
         let actual_vote_account = output.trim();
         if actual_vote_account == validator_pair.vote_pubkey {
             status.vote_account_verified = Some(true);
         } else {
             status.vote_account_verified = Some(false);
-            status.verification_issues.push(format!("Vote Pubkey mismatch: expected {}, found {}", validator_pair.vote_pubkey, actual_vote_account));
+            status.verification_issues.push(format!(
+                "Vote Pubkey mismatch: expected {}, found {}",
+                validator_pair.vote_pubkey, actual_vote_account
+            ));
         }
     } else {
         status.vote_account_verified = Some(false);
-        status.verification_issues.push("Could not verify Vote Pubkey - failed to read vote keypair".to_string());
+        status
+            .verification_issues
+            .push("Could not verify Vote Pubkey - failed to read vote keypair".to_string());
     }
 }
 
@@ -1211,4 +1525,3 @@ fn truncate_path(path: &str, max_length: usize) -> String {
         format!("...{}", &path[start..])
     }
 }
-

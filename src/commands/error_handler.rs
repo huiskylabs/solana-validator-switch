@@ -5,14 +5,35 @@ use std::io;
 /// Enhanced error types for better UX messaging
 #[derive(Debug)]
 pub enum SwitchError {
-    SshConnectionFailed { host: String, details: String },
-    TowerFileNotFound { path: String },
-    ExecutableNotFound { name: String, validator_type: String },
-    PermissionDenied { operation: String, path: String },
-    NetworkTimeout { operation: String, elapsed_secs: u64 },
-    PartialSwitch { active_status: String, standby_status: String },
-    ConfigurationError { message: String },
-    ValidationFailed { issues: Vec<String> },
+    SshConnectionFailed {
+        host: String,
+        details: String,
+    },
+    TowerFileNotFound {
+        path: String,
+    },
+    ExecutableNotFound {
+        name: String,
+        validator_type: String,
+    },
+    PermissionDenied {
+        operation: String,
+        path: String,
+    },
+    NetworkTimeout {
+        operation: String,
+        elapsed_secs: u64,
+    },
+    PartialSwitch {
+        active_status: String,
+        standby_status: String,
+    },
+    ConfigurationError {
+        message: String,
+    },
+    ValidationFailed {
+        issues: Vec<String>,
+    },
 }
 
 impl SwitchError {
@@ -27,8 +48,8 @@ impl SwitchError {
                     "💡 Troubleshooting suggestions:".yellow(),
                     "   • Check network connectivity to the host\n   • Verify SSH keys and permissions\n   • Ensure the host is accessible on port 22"
                 )
-            },
-            
+            }
+
             SwitchError::TowerFileNotFound { path } => {
                 format!(
                     "{}\n{}\n{}\n{}",
@@ -37,9 +58,12 @@ impl SwitchError {
                     "💡 Troubleshooting suggestions:".yellow(),
                     "   • Verify the validator has been running and producing blocks\n   • Check the ledger path is correct\n   • Ensure the validator has write permissions to the ledger directory"
                 )
-            },
-            
-            SwitchError::ExecutableNotFound { name, validator_type } => {
+            }
+
+            SwitchError::ExecutableNotFound {
+                name,
+                validator_type,
+            } => {
                 format!(
                     "{}\n{}\n{}\n{}",
                     format!("❌ Required {} executable '{}' not found", validator_type, name).red().bold(),
@@ -50,8 +74,8 @@ impl SwitchError {
                         _ => "   • Verify validator software is installed\n   • Check PATH environment variable\n   • Ensure binary has execute permissions"
                     }
                 )
-            },
-            
+            }
+
             SwitchError::PermissionDenied { operation, path } => {
                 format!(
                     "{}\n{}\n{}\n{}",
@@ -60,9 +84,12 @@ impl SwitchError {
                     "💡 Troubleshooting suggestions:".yellow(),
                     "   • Check file ownership and permissions\n   • Ensure user has sudo privileges if required\n   • Verify SELinux/AppArmor policies if applicable"
                 )
-            },
-            
-            SwitchError::NetworkTimeout { operation, elapsed_secs } => {
+            }
+
+            SwitchError::NetworkTimeout {
+                operation,
+                elapsed_secs,
+            } => {
                 format!(
                     "{}\n{}\n{}\n{}",
                     format!("❌ Network timeout during {}", operation).red().bold(),
@@ -70,9 +97,12 @@ impl SwitchError {
                     "💡 Troubleshooting suggestions:".yellow(),
                     "   • Check network latency between nodes\n   • Verify firewall rules aren't blocking connections\n   • Consider increasing timeout values for high-latency connections"
                 )
-            },
-            
-            SwitchError::PartialSwitch { active_status, standby_status } => {
+            }
+
+            SwitchError::PartialSwitch {
+                active_status,
+                standby_status,
+            } => {
                 format!(
                     "{}\n{}\n{}\n{}\n{}\n{}",
                     "⚠️  Partial switch detected - manual intervention required".yellow().bold(),
@@ -82,8 +112,8 @@ impl SwitchError {
                     "   1. Run 'svs status' to verify current validator states",
                     "   2. Check validator logs on both nodes for errors\n   3. Manually complete the switch or roll back as needed\n   4. Contact support if the issue persists"
                 )
-            },
-            
+            }
+
             SwitchError::ConfigurationError { message } => {
                 format!(
                     "{}\n{}\n{}\n{}",
@@ -92,14 +122,15 @@ impl SwitchError {
                     "💡 Troubleshooting suggestions:".yellow(),
                     "   • Review your config.yaml file\n   • Ensure all paths are absolute and exist\n   • Verify validator public keys are correct"
                 )
-            },
-            
+            }
+
             SwitchError::ValidationFailed { issues } => {
-                let issues_formatted = issues.iter()
+                let issues_formatted = issues
+                    .iter()
                     .map(|issue| format!("   • {}", issue))
                     .collect::<Vec<_>>()
                     .join("\n");
-                
+
                 format!(
                     "{}\n{}\n{}\n{}",
                     "❌ Validation failed".red().bold(),
@@ -107,10 +138,10 @@ impl SwitchError {
                     issues_formatted.red(),
                     "\n💡 Please fix these issues before attempting to switch validators".yellow()
                 )
-            },
+            }
         }
     }
-    
+
     /// Get exit code for this error type
     pub fn exit_code(&self) -> i32 {
         match self {
@@ -129,30 +160,33 @@ impl SwitchError {
 /// Wrap anyhow errors with better context
 pub fn enhance_error_context(error: anyhow::Error) -> anyhow::Error {
     let error_string = error.to_string();
-    
+
     // Map common error patterns to enhanced errors
     if error_string.contains("Connection refused") || error_string.contains("Connection timeout") {
         let host = extract_host_from_error(&error_string).unwrap_or_else(|| "unknown".to_string());
         return anyhow!(SwitchError::SshConnectionFailed {
             host,
             details: error_string.clone(),
-        }.to_user_message());
+        }
+        .to_user_message());
     }
-    
+
     if error_string.contains("Permission denied") {
         let path = extract_path_from_error(&error_string).unwrap_or_else(|| "unknown".to_string());
         return anyhow!(SwitchError::PermissionDenied {
             operation: "accessing file".to_string(),
             path,
-        }.to_user_message());
+        }
+        .to_user_message());
     }
-    
+
     if error_string.contains("No tower file found") {
         return anyhow!(SwitchError::TowerFileNotFound {
             path: "/mnt/solana_ledger".to_string(),
-        }.to_user_message());
+        }
+        .to_user_message());
     }
-    
+
     if error_string.contains("executable path not found") {
         let executable = if error_string.contains("fdctl") {
             ("fdctl".to_string(), "Firedancer".to_string())
@@ -161,13 +195,14 @@ pub fn enhance_error_context(error: anyhow::Error) -> anyhow::Error {
         } else {
             ("validator".to_string(), "Unknown".to_string())
         };
-        
+
         return anyhow!(SwitchError::ExecutableNotFound {
             name: executable.0,
             validator_type: executable.1,
-        }.to_user_message());
+        }
+        .to_user_message());
     }
-    
+
     // Return original error if no enhancement applies
     error
 }
@@ -176,7 +211,7 @@ pub fn enhance_error_context(error: anyhow::Error) -> anyhow::Error {
 fn extract_host_from_error(error: &str) -> Option<String> {
     // Simple extraction - could be enhanced with regex
     if let Some(pos) = error.find('@') {
-        let rest = &error[pos+1..];
+        let rest = &error[pos + 1..];
         if let Some(end) = rest.find(' ') {
             return Some(rest[..end].to_string());
         }
@@ -208,11 +243,11 @@ impl ProgressSpinner {
         let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let running_clone = running.clone();
         let message_clone = message.to_string();
-        
+
         let handle = std::thread::spawn(move || {
-            let spinner_chars = vec!['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+            let spinner_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
             let mut i = 0;
-            
+
             while running_clone.load(std::sync::atomic::Ordering::Relaxed) {
                 print!("\r{} {} ", spinner_chars[i], message_clone);
                 io::Write::flush(&mut io::stdout()).unwrap();
@@ -222,16 +257,17 @@ impl ProgressSpinner {
             print!("\r"); // Clear the line
             io::Write::flush(&mut io::stdout()).unwrap();
         });
-        
+
         Self {
             message: message.to_string(),
             handle: Some(handle),
             running,
         }
     }
-    
+
     pub fn stop_with_message(mut self, message: &str) {
-        self.running.store(false, std::sync::atomic::Ordering::Relaxed);
+        self.running
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         if let Some(handle) = self.handle.take() {
             handle.join().unwrap();
         }
@@ -241,7 +277,8 @@ impl ProgressSpinner {
 
 impl Drop for ProgressSpinner {
     fn drop(&mut self) {
-        self.running.store(false, std::sync::atomic::Ordering::Relaxed);
+        self.running
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         if let Some(handle) = self.handle.take() {
             handle.join().unwrap();
         }

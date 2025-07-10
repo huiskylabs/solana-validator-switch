@@ -4,9 +4,6 @@ Professional-grade CLI tool for ultra-fast Solana validator switching with runti
 
 > **Built by validators, for validators** - Stop losing sleep over manual switches. Get the fastest switch possible.
 
-<p align="center">
-  <strong>⭐ If this tool saves you time, please star the repo to help other validators discover it!</strong>
-</p>
 
 ## Installation
 
@@ -20,10 +17,10 @@ curl -sSL https://raw.githubusercontent.com/huiskylabs/solana-validator-switch/m
 svs
 ```
 
-### Alternative: Build from Source
+### Build from Source
 
 <details>
-<summary><sub>For developers or if the quick install doesn't work (requires Rust and Cargo)</sub></summary>
+<summary>Alternative installation methods (requires Rust and Cargo)</summary>
 
 #### Clone and Run
 ```bash
@@ -88,6 +85,26 @@ If SVS saves you time and SOL, consider:
 - ⭐ Starring this repo to help other validators find it
 - 🗳️ Delegating to [Huisky Labs validators](https://huisky.xyz/) 
 - 🐛 Reporting issues or contributing improvements
+
+## Roadmap
+
+### ✅ Completed
+- [x] **Ultra-fast switching** - Sub-second identity switches with optimized operations
+- [x] **Universal validator support** - Works with Firedancer, Agave, Solana, and Jito
+- [x] **Interactive CLI** - User-friendly menu system with guided workflows  
+- [x] **Dry-run mode** - Test switches without executing for safety
+- [x] **SSH connection pooling** - Persistent connections for instant commands
+- [x] **Auto-detect active/standby** - Runtime detection of validator states
+- [x] **Tower file transfer** - Automated tower synchronization during switch
+- [x] **Cross-platform** - Pre-built binaries for Linux, macOS, and Windows
+
+### 🚧 In Progress
+- [ ] **Continuous monitoring** - Real-time validator health monitoring with configurable alerts
+- [ ] **Auto-switch on failure** - Automatic failover when primary validator goes down
+- [ ] **Multi-validator support** - Manage multiple validator pairs from one interface
+- [ ] **Slack/Discord notifications** - Get alerts when primary node is stopped voting and when switches occur
+
+Have ideas? [Open an issue](https://github.com/huiskylabs/solana-validator-switch/issues) or contribute!
 
 ## License
 

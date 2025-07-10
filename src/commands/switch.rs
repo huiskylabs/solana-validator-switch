@@ -82,7 +82,7 @@ pub async fn switch_command(dry_run: bool, app_state: &crate::AppState) -> Resul
     Ok(())
 }
 
-struct SwitchManager {
+pub(crate) struct SwitchManager {
     active_node_with_status: crate::types::NodeWithStatus,
     standby_node_with_status: crate::types::NodeWithStatus,
     validator_pair: crate::types::ValidatorPair,
@@ -95,7 +95,7 @@ struct SwitchManager {
 }
 
 impl SwitchManager {
-    fn new(active_node_with_status: crate::types::NodeWithStatus, standby_node_with_status: crate::types::NodeWithStatus, validator_pair: crate::types::ValidatorPair, ssh_pool: Arc<Mutex<crate::ssh::SshConnectionPool>>) -> Self {
+    pub(crate) fn new(active_node_with_status: crate::types::NodeWithStatus, standby_node_with_status: crate::types::NodeWithStatus, validator_pair: crate::types::ValidatorPair, ssh_pool: Arc<Mutex<crate::ssh::SshConnectionPool>>) -> Self {
         Self {
             active_node_with_status,
             standby_node_with_status,
@@ -427,3 +427,7 @@ impl SwitchManager {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "switch_scenarios_test.rs"]
+mod switch_scenarios_test;

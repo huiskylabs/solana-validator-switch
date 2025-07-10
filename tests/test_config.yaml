@@ -1,0 +1,33 @@
+version: "1.0.0"
+validators:
+  - votePubkey: "TestVotePubkey123"
+    identityPubkey: "TestIdentityPubkey123"
+    rpc: "https://api.devnet.solana.com"
+    localSshKeyPath: "tests/test_keys/id_rsa"
+    nodes:
+      # Test Agave validator
+      - label: "Test-Agave-Node"
+        host: "127.0.0.1"
+        port: 2222
+        user: "test"
+        paths:
+          fundedIdentity: "/tmp/test/funded-validator-keypair.json"
+          unfundedIdentity: "/tmp/test/unfunded-validator-keypair.json"
+          voteKeypair: "/tmp/test/vote-account-keypair.json"
+          ledger: "/tmp/test/ledger"
+          tower: "/tmp/test/ledger/tower-1_9-*.bin"
+          solanaCliPath: "/tmp/test/bin/solana"
+      # Test Firedancer validator
+      - label: "Test-Firedancer-Node"
+        host: "127.0.0.1"
+        port: 2223
+        user: "test"
+        paths:
+          fundedIdentity: "/tmp/test/funded-validator-keypair.json"
+          unfundedIdentity: "/tmp/test/unfunded-validator-keypair.json"
+          voteKeypair: "/tmp/test/vote-account-keypair.json"
+          ledger: "/tmp/test/ledger"
+          tower: "/tmp/test/ledger/tower-1_9-*.bin"
+          solanaCliPath: "/tmp/test/bin/solana"
+          firedancerConfig: "/tmp/test/firedancer-config.toml"
+          fdctlPath: "/tmp/test/bin/fdctl"

@@ -1168,8 +1168,28 @@ async fn detect_node_status_and_executable(
         
     }
 
-    // Detect version using the agave executable
-    if let Some(ref agave_exec) = agave_validator_executable {
+    // Detect version based on validator type
+    if validator_type == crate::types::ValidatorType::Firedancer {
+        // For Firedancer, use fdctl executable
+        if let Some(ref fdctl_exec) = fdctl_executable {
+            if let Ok(version_output) = ssh_pool
+                .execute_command(
+                    node,
+                    &validator_pair.local_ssh_key_path,
+                    &format!("timeout 5 {} --version 2>/dev/null", fdctl_exec),
+                )
+                .await
+            {
+                // Parse fdctl version output
+                if let Some(line) = version_output.lines().next() {
+                    if let Some(version_match) = line.split_whitespace().nth(1) {
+                        version = Some(format!("Firedancer {}", version_match));
+                    }
+                }
+            }
+        }
+    } else if let Some(ref agave_exec) = agave_validator_executable {
+        // For Agave/Jito, use agave-validator executable
         if let Ok(version_output) = ssh_pool
             .execute_command(
                 node,
@@ -1615,8 +1635,28 @@ async fn detect_node_status_and_executable_with_progress(
         println!("      🔍 Detecting version information...");
     });
 
-    // Detect version using the agave executable
-    if let Some(ref agave_exec) = agave_validator_executable {
+    // Detect version based on validator type
+    if validator_type == crate::types::ValidatorType::Firedancer {
+        // For Firedancer, use fdctl executable
+        if let Some(ref fdctl_exec) = fdctl_executable {
+            if let Ok(version_output) = ssh_pool
+                .execute_command(
+                    node,
+                    &validator_pair.local_ssh_key_path,
+                    &format!("timeout 5 {} --version 2>/dev/null", fdctl_exec),
+                )
+                .await
+            {
+                // Parse fdctl version output
+                if let Some(line) = version_output.lines().next() {
+                    if let Some(version_match) = line.split_whitespace().nth(1) {
+                        version = Some(format!("Firedancer {}", version_match));
+                    }
+                }
+            }
+        }
+    } else if let Some(ref agave_exec) = agave_validator_executable {
+        // For Agave/Jito, use agave-validator executable
         if let Ok(version_output) = ssh_pool
             .execute_command(
                 node,

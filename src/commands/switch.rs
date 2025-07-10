@@ -2,6 +2,7 @@ use anyhow::{Result, anyhow};
 use colored::*;
 use std::time::{Duration, Instant};
 use std::sync::{Arc, Mutex};
+use crate::commands::error_handler::ProgressSpinner;
 
 pub async fn switch_command(dry_run: bool, app_state: &crate::AppState) -> Result<()> {
     // Validate we have at least one validator configured
@@ -61,13 +62,13 @@ pub async fn switch_command(dry_run: bool, app_state: &crate::AppState) -> Resul
             // Show timing breakdown
             println!("\n{}", "📊 Timing breakdown:".dimmed());
             if let Some(active_time) = switch_manager.active_switch_time {
-                println!("   Active → Unfunded:  {}", format!("{}ms", active_time.as_millis()).bright_yellow());
+                println!("   Active → Standby:  {}", format!("{}ms", active_time.as_millis()).bright_yellow());
             }
             if let Some(tower_time) = switch_manager.tower_transfer_time {
-                println!("   Tower transfer:     {}", format!("{}ms", tower_time.as_millis()).bright_yellow());
+                println!("   Tower transfer:    {}", format!("{}ms", tower_time.as_millis()).bright_yellow());
             }
             if let Some(standby_time) = switch_manager.standby_switch_time {
-                println!("   Standby → Funded:   {}", format!("{}ms", standby_time.as_millis()).bright_yellow());
+                println!("   Standby → Active:  {}", format!("{}ms", standby_time.as_millis()).bright_yellow());
             }
         } else {
             println!("\n{}", "✅ Validator swap completed successfully".bright_green().bold());
@@ -247,12 +248,13 @@ impl SwitchManager {
         println!("ssh {}@{} '{}'", self.active_node_with_status.node.user, self.active_node_with_status.node.host, switch_command);
         
         if !dry_run {
+            let spinner = ProgressSpinner::new("Switching active validator to unfunded identity...");
             {
                 let mut pool = self.ssh_pool.lock().unwrap();
                 pool.execute_command(&self.active_node_with_status.node, &self.validator_pair.local_ssh_key_path, &switch_command).await?;
             }
             tokio::time::sleep(Duration::from_secs(3)).await;
-            println!("✅ Active validator switched to unfunded identity");
+            spinner.stop_with_message("✅ Active validator switched to unfunded identity");
         }
         
         Ok(())
@@ -284,22 +286,38 @@ impl SwitchManager {
         
         // Execute the streaming transfer using base64 encoding
         let read_cmd = format!("base64 {}", tower_path);
-        let encoded_data = {
-            let mut pool = self.ssh_pool.lock().unwrap();
-            match pool.execute_command(&self.active_node_with_status.node, &self.validator_pair.local_ssh_key_path, &read_cmd).await {
-                Ok(data) => data,
-                Err(e) => return Err(anyhow!("Failed to read tower file: {}", e)),
+        let encoded_data = if !dry_run {
+            let spinner = ProgressSpinner::new("Reading tower file...");
+            let data = {
+                let mut pool = self.ssh_pool.lock().unwrap();
+                match pool.execute_command(&self.active_node_with_status.node, &self.validator_pair.local_ssh_key_path, &read_cmd).await {
+                    Ok(data) => data,
+                    Err(e) => {
+                        spinner.stop_with_message(&format!("❌ Failed to read tower file: {}", e));
+                        return Err(anyhow!("Failed to read tower file: {}", e));
+                    }
+                }
+            };
+            spinner.stop_with_message("");
+            
+            let write_cmd = format!("base64 -d > {}", dest_path);
+            let spinner = ProgressSpinner::new("Transferring tower file...");
+            {
+                let mut pool = self.ssh_pool.lock().unwrap();
+                match pool.execute_command_with_input(&self.standby_node_with_status.node, &write_cmd, &data).await {
+                    Ok(_) => {},
+                    Err(e) => {
+                        spinner.stop_with_message(&format!("❌ Failed to write tower file: {}", e));
+                        return Err(anyhow!("Failed to write tower file: {}", e));
+                    }
+                }
             }
+            spinner.stop_with_message("");
+            data
+        } else {
+            // For dry run, just use a dummy value
+            String::from("dummy")
         };
-        
-        let write_cmd = format!("base64 -d > {}", dest_path);
-        {
-            let mut pool = self.ssh_pool.lock().unwrap();
-            match pool.execute_command_with_input(&self.standby_node_with_status.node, &write_cmd, &encoded_data).await {
-                Ok(_) => {},
-                Err(e) => return Err(anyhow!("Failed to write tower file: {}", e)),
-            }
-        }
         
         let transfer_duration = start_time.elapsed();
         self.tower_transfer_time = Some(transfer_duration);
@@ -308,7 +326,7 @@ impl SwitchManager {
         let file_size = encoded_data.len() as u64 * 3 / 4; // approximate original size from base64
         let speed_mbps = (file_size as f64 / 1024.0 / 1024.0) / transfer_duration.as_secs_f64();
         
-        println!("  ✅ Tower transferred in {} ({:.2} MB/s)", 
+        println!("  ✅ Transferred in {} ({:.2} MB/s)", 
             format!("{}ms", transfer_duration.as_millis()).bright_green().bold(), speed_mbps);
         
         if !dry_run {
@@ -382,12 +400,13 @@ impl SwitchManager {
         println!("ssh {}@{} '{}'", self.standby_node_with_status.node.user, self.standby_node_with_status.node.host, switch_command);
         
         if !dry_run {
+            let spinner = ProgressSpinner::new("Switching standby validator to funded identity...");
             {
                 let mut pool = self.ssh_pool.lock().unwrap();
                 pool.execute_command(&self.standby_node_with_status.node, &self.validator_pair.local_ssh_key_path, &switch_command).await?;
             }
             tokio::time::sleep(Duration::from_secs(5)).await;
-            println!("✅ Standby validator switched to funded identity");
+            spinner.stop_with_message("✅ Standby validator switched to funded identity");
         }
         
         Ok(())
@@ -400,15 +419,17 @@ impl SwitchManager {
         if !dry_run {
             tokio::time::sleep(Duration::from_secs(10)).await;
             
+            let spinner = ProgressSpinner::new("Verifying standby validator catchup status...");
+            
             let catchup_result = {
                 let mut pool = self.ssh_pool.lock().unwrap();
                 pool.execute_command(&self.standby_node_with_status.node, &self.validator_pair.local_ssh_key_path, &catchup_cmd).await?
             };
             
             if catchup_result.contains("has caught up") || catchup_result.contains("slots behind") {
-                println!("✅ Standby validator is syncing with funded identity");
+                spinner.stop_with_message("✅ Standby validator is syncing with funded identity");
             } else {
-                println!("⚠️  Standby sync status unclear - monitor manually");
+                spinner.stop_with_message("⚠️  Standby sync status unclear - monitor manually");
             }
         }
         

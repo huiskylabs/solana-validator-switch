@@ -97,7 +97,7 @@ mod ux_tests {
         ctx.expect_message("🔄 Switch Active Node to Unfunded Identity");
         ctx.expect_message("✓ Completed in"); // With timing
         ctx.expect_message("📤 Transfer Tower File");
-        ctx.expect_message("✅ Tower transferred in"); // With timing and speed
+        ctx.expect_message("✅ Transferred in"); // With timing and speed
         ctx.expect_message("🚀 Switch Standby Node to Funded Identity");
         ctx.expect_message("✓ Completed in"); // With timing
         ctx.expect_message("✅ Verify Standby Catchup");
@@ -273,7 +273,7 @@ mod ux_tests {
         
         // Verify speed calculation and display
         let mut ctx = UxTestContext::new();
-        ctx.expect_message(&format!("✅ Tower transferred in 100ms ({:.2} MB/s)", expected_speed));
+        ctx.expect_message(&format!("✅ Transferred in 100ms ({:.2} MB/s)", expected_speed));
     }
     
     // Helper functions for test scenarios

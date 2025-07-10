@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow};
 use ssh2::Session;
 use std::collections::HashMap;
 use std::net::TcpStream;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use std::io::Read;
 

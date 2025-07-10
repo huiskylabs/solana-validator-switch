@@ -2,8 +2,14 @@
 name = "solana-validator-switch"
 version = "1.0.0"
 edition = "2021"
-description = "Interactive CLI tool for Solana validator switching and management"
+description = "Professional-grade CLI tool for ultra-fast Solana validator switching"
 authors = ["huisky <huiskylabs@gmail.com>"]
+license = "MIT"
+repository = "https://github.com/huiskylabs/solana-validator-switch"
+homepage = "https://github.com/huiskylabs/solana-validator-switch"
+readme = "README.md"
+keywords = ["solana", "validator", "cli", "blockchain", "devops"]
+categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
 name = "svs"

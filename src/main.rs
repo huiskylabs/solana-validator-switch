@@ -15,7 +15,7 @@ use ssh::SshConnectionPool;
 #[derive(Parser)]
 #[command(name = "svs")]
 #[command(about = "Solana Validator Switch - Interactive CLI for validator management")]
-#[command(version = "1.0.0")]
+#[command(version = env!("CARGO_PKG_VERSION"))]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,

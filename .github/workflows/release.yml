@@ -1,0 +1,124 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create-release.outputs.id }}
+      upload_url: ${{ steps.create-release.outputs.upload_url }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Create Release
+        id: create-release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          draft: false
+          prerelease: false
+
+  build-and-upload:
+    name: Build and Upload
+    needs: create-release
+    strategy:
+      matrix:
+        include:
+          # Linux builds
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            binary: svs
+            archive: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            binary: svs
+            archive: tar.gz
+            cross: true
+          
+          # macOS builds
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            binary: svs
+            archive: tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            binary: svs
+            archive: tar.gz
+          
+          # Windows builds
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            binary: svs.exe
+            archive: zip
+
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      
+      - name: Install cross-compilation tools
+        if: matrix.cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+      
+      - name: Build (native)
+        if: '!matrix.cross'
+        run: cargo build --release --target ${{ matrix.target }}
+      
+      - name: Build (cross)
+        if: matrix.cross
+        run: cross build --release --target ${{ matrix.target }}
+      
+      - name: Prepare artifacts (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf svs-${{ matrix.target }}.tar.gz ${{ matrix.binary }}
+          mv svs-${{ matrix.target }}.tar.gz ../../../
+      
+      - name: Prepare artifacts (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          cd target\${{ matrix.target }}\release
+          Compress-Archive -Path ${{ matrix.binary }} -DestinationPath ..\..\..\svs-${{ matrix.target }}.zip
+      
+      - name: Upload Release Asset (tar.gz)
+        if: matrix.archive == 'tar.gz'
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ./svs-${{ matrix.target }}.tar.gz
+          asset_name: svs-${{ matrix.target }}.tar.gz
+          asset_content_type: application/gzip
+      
+      - name: Upload Release Asset (zip)
+        if: matrix.archive == 'zip'
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ./svs-${{ matrix.target }}.zip
+          asset_name: svs-${{ matrix.target }}.zip
+          asset_content_type: application/zip
+

@@ -2,20 +2,36 @@
 
 Professional-grade CLI tool for ultra-fast Solana validator switching with runtime node status detection, built in Rust.
 
-> **Built by validators, for validators** - Stop losing sleep over manual switches. Average switch time:  ~1 seconds.
+> **Built by validators, for validators** - Stop losing sleep over manual switches. Get the fastest switch possible.
 
-## Installation & Usage
+## Installation
+
+### Option 1: Download Pre-built Binary (Recommended)
+
+Download the latest release for your platform from the [releases page](https://github.com/huiskylabs/solana-validator-switch/releases).
 
 ```bash
-# Build and run
-cargo build --release
-./target/release/svs
+# Linux/macOS
+curl -L https://github.com/huiskylabs/solana-validator-switch/releases/latest/download/svs-$(uname -m)-$(uname -s | tr '[:upper:]' '[:lower:]').tar.gz | tar xz
+sudo mv svs /usr/local/bin/
+```
 
+### Option 2: Build from Source
+
+```bash
+# Requires Rust toolchain
+cargo install --git https://github.com/huiskylabs/solana-validator-switch
+```
+
+## Usage
+
+```bash
 # Available commands
 svs                    # Interactive menu
 svs status             # Check validator status
 svs switch             # Switch validators
 svs switch --dry-run   # Preview switch
+svs --version          # Show version
 ```
 
 ## Configuration

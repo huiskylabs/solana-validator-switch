@@ -711,7 +711,7 @@ async fn show_ready_prompt() {
     io::stdout().flush().unwrap();
 }
 
-async fn detect_node_statuses(config: &Config, _ssh_pool: &SshConnectionPool) -> Result<Vec<crate::ValidatorStatus>> {
+pub async fn detect_node_statuses(config: &Config, ssh_pool: &mut SshConnectionPool) -> Result<Vec<crate::ValidatorStatus>> {
     let mut validator_statuses = Vec::new();
     
     for validator_pair in &config.validators {

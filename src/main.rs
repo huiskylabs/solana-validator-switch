@@ -163,6 +163,8 @@ async fn show_switch_menu(app_state: Option<&AppState>) -> Result<()> {
             0 => {
                 if let Some(state) = app_state {
                     switch_command(false, state).await?;
+                    // After a live switch, return to main menu
+                    break;
                 } else {
                     // This should never happen since we only show menu with valid state
                     std::process::exit(1);

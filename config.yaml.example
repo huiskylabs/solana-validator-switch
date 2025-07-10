@@ -1,0 +1,35 @@
+version: "1.0.0"
+validators:
+  - votePubkey: "YourVotePubkey..."
+    identityPubkey: "YourIdentityPubkey..."
+    rpc: "https://api.mainnet-beta.solana.com"
+    localSshKeyPath: "~/.ssh/id_rsa"
+    nodes:
+      - label: "Node 1"
+        host: "1.2.3.4"
+        port: 22
+        user: "solana"
+        paths:
+          fundedIdentity: "/home/solana/keypairs/funded-validator-keypair.json"
+          unfundedIdentity: "/home/solana/keypairs/unfunded-validator-keypair.json"
+          voteKeypair: "/home/solana/keypairs/vote-account-keypair.json"
+          ledger: "/mnt/solana_ledger"
+          tower: "/mnt/solana_ledger/tower-1_9-*.bin"
+          solanaCliPath: "/home/solana/.local/share/solana/install/active_release/bin/solana"
+          # For Firedancer validators (optional - will be auto-detected from running process):
+          # firedancerConfig: "/home/solana/firedancer/config.toml"
+          # fdctlPath: "/home/solana/firedancer/build/native/gcc/bin/fdctl"
+      - label: "Node 2" 
+        host: "5.6.7.8"
+        port: 22
+        user: "solana"
+        paths:
+          fundedIdentity: "/home/solana/keypairs/funded-validator-keypair.json"
+          unfundedIdentity: "/home/solana/keypairs/unfunded-validator-keypair.json"
+          voteKeypair: "/home/solana/keypairs/vote-account-keypair.json"
+          ledger: "/mnt/solana_ledger"
+          tower: "/mnt/solana_ledger/tower-1_9-*.bin"
+          solanaCliPath: "/home/solana/.local/share/solana/install/active_release/bin/solana"
+          # For Firedancer validators (optional - will be auto-detected from running process):
+          # firedancerConfig: "/home/solana/firedancer/config.toml"
+          # fdctlPath: "/home/solana/firedancer/build/native/gcc/bin/fdctl"

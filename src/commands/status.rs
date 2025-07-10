@@ -58,26 +58,20 @@ async fn check_comprehensive_status(
     };
 
     // Create a single batched command to get all basic info efficiently
-    let identity_cmd = if let Some(ref exec_path) = agave_executable {
-        format!("timeout --kill-after=2 3 bash -c '{} --ledger {} monitor 2>/dev/null | head -3 | grep \"Identity:\" | head -1'", exec_path, node.paths.ledger)
-    } else {
-        format!("VALIDATOR_EXEC=$(ps aux | grep -Ei 'solana-validator|agave|fdctl|firedancer' | grep -v grep | awk '{{for(i=11;i<=NF;i++) if($i ~ /solana-validator|agave-validator|fdctl/) print $i; exit}}') && if [ -n \"$VALIDATOR_EXEC\" ]; then timeout --kill-after=2 3 bash -c \"$VALIDATOR_EXEC --ledger {} monitor 2>/dev/null | head -3 | grep 'Identity:' | head -1\"; else echo 'no-validator-running'; fi", node.paths.ledger)
-    };
+    // Note: We no longer use monitor command for identity extraction
 
     let default_path = String::new();
     let agave_exec_path = agave_executable.as_ref().unwrap_or(&default_path);
 
+    // Use a default ledger path for disk check - this is a dead code function anyway
     let batch_cmd = format!(
         "echo '=== PROCESSES ===' && ps aux | grep -Ei 'solana-validator|agave|fdctl|firedancer' | grep -v grep; \
-         echo '=== DISK ===' && df {} | tail -1 | awk '{{print $5}}' | sed 's/%//'; \
+         echo '=== DISK ===' && df /mnt/solana_ledger | tail -1 | awk '{{print $5}}' | sed 's/%//'; \
          echo '=== LOAD ===' && uptime | awk -F'load average:' '{{print $2}}' | awk '{{print $1}}' | sed 's/,//'; \
          echo '=== SYNC ===' && timeout 10 bash -c 'AGAVE_EXEC=\"{}\"; if [ -n \"$AGAVE_EXEC\" ] && [ -x \"$AGAVE_EXEC\" ]; then \"$AGAVE_EXEC\" catchup --our-localhost 2>&1 | grep -m1 \"has caught up\"; else echo \"no-agave-executable\"; fi' || echo 'sync-timeout'; \
-         echo '=== IDENTITY ===' && {}; \
          echo '=== VERSION ===' && timeout 5 {} --version 2>/dev/null || echo 'version-timeout'; \
          echo '=== END ==='",
-        node.paths.ledger,
         agave_exec_path,
-        identity_cmd,
         agave_exec_path
     );
 
@@ -92,36 +86,12 @@ async fn check_comprehensive_status(
 
     // Check swap readiness (this is still separate as it needs multiple file checks)
     let (swap_ready, swap_issues, swap_checklist) =
-        check_swap_readiness(pool, node, ssh_key_path).await;
+        check_swap_readiness(pool, node, ssh_key_path, None).await;
     status.swap_ready = Some(swap_ready);
     status.swap_issues = swap_issues;
     status.swap_checklist = swap_checklist;
 
-    // If identity wasn't extracted from the batch command, try a separate command
-    if status.current_identity.is_none() {
-        let fallback_identity_cmd = if let Some(ref exec_path) = agave_executable {
-            format!("timeout --kill-after=2 3 bash -c '{} --ledger {} monitor 2>/dev/null | head -3 | grep \"Identity:\" | head -1'", exec_path, node.paths.ledger)
-        } else {
-            format!("VALIDATOR_EXEC=$(ps aux | grep -Ei 'solana-validator|agave|fdctl|firedancer' | grep -v grep | awk '{{for(i=11;i<=NF;i++) if($i ~ /solana-validator|agave-validator|fdctl/) print $i; exit}}') && if [ -n \"$VALIDATOR_EXEC\" ]; then timeout --kill-after=2 3 bash -c \"$VALIDATOR_EXEC --ledger {} monitor 2>/dev/null | head -3 | grep 'Identity:' | head -1\"; else echo 'no-validator-running'; fi", node.paths.ledger)
-        };
-
-        if let Ok(output) = pool
-            .execute_command(node, ssh_key_path, &fallback_identity_cmd)
-            .await
-        {
-            if let Some(line) = output.lines().next() {
-                if line.starts_with("Identity: ") {
-                    let identity = line.replace("Identity: ", "").trim().to_string();
-                    if !identity.is_empty()
-                        && identity != "timeout"
-                        && identity != "no-validator-running"
-                    {
-                        status.current_identity = Some(identity);
-                    }
-                }
-            }
-        }
-    }
+    // Identity is now extracted from catchup command during startup
 
     Ok(status)
 }
@@ -268,11 +238,16 @@ async fn check_swap_readiness(
     pool: &mut crate::ssh::SshConnectionPool,
     node: &NodeConfig,
     ssh_key_path: &str,
+    ledger_path: Option<&String>,
 ) -> (bool, Vec<String>, Vec<(String, bool)>) {
     let mut issues = Vec::new();
     let mut checklist = Vec::new();
     let mut all_ready = true;
 
+    // Use detected ledger path if available, otherwise use a default
+    let ledger = ledger_path.map(|s| s.as_str()).unwrap_or("/mnt/solana_ledger");
+    let tower_pattern = format!("{}/tower-1_9-*.bin", ledger);
+    
     // Batch file checks into single command
     let file_check_cmd = format!(
         "echo '=== FILES ===' && \
@@ -283,17 +258,14 @@ async fn check_swap_readiness(
          echo '=== DIRS ===' && \
          test -d {} && test -w {} && echo 'ledger_ok' || echo 'ledger_fail'; \
          echo '=== DISK ===' && \
-         df {} | tail -1 | awk '{{print $4}}' | head -1; \
-         echo '=== CLI ===' && \
-         test -x {} && echo 'cli_ok' || echo 'cli_fail'",
+         df {} | tail -1 | awk '{{print $4}}' | head -1",
         node.paths.funded_identity,
         node.paths.unfunded_identity,
         node.paths.vote_keypair,
-        node.paths.tower,
-        node.paths.ledger,
-        node.paths.ledger,
-        node.paths.ledger,
-        node.paths.solana_cli_path
+        tower_pattern,
+        ledger,
+        ledger,
+        ledger
     );
 
     match pool
@@ -351,12 +323,6 @@ fn parse_swap_readiness_output(
             "ledger_fail" => {
                 checklist.push(("Ledger Directory".to_string(), false));
                 issues.push("Ledger directory missing or not writable".to_string());
-                *all_ready = false;
-            }
-            "cli_ok" => checklist.push(("Solana CLI".to_string(), true)),
-            "cli_fail" => {
-                checklist.push(("Solana CLI".to_string(), false));
-                issues.push("Solana CLI not executable".to_string());
                 *all_ready = false;
             }
             _ => {
@@ -649,17 +615,7 @@ fn display_simple_status_table(
         Color::DarkGrey
     };
 
-    table.add_row(vec![
-        Cell::new("").add_attribute(Attribute::Bold),
-        Cell::new(node_0_label)
-            .add_attribute(Attribute::Bold)
-            .fg(node_0_color),
-        Cell::new(node_1_label)
-            .add_attribute(Attribute::Bold)
-            .fg(node_1_color),
-    ]);
-
-    // Node info as subheader
+    // Node info as header
     let node_0_info = format!("🖥️ {} ({})", node_0.label, node_0.host);
     let node_1_info = format!("🖥️ {} ({})", node_1.label, node_1.host);
 
@@ -667,8 +623,8 @@ fn display_simple_status_table(
         Cell::new("Node")
             .add_attribute(Attribute::Bold)
             .fg(Color::Cyan),
-        Cell::new(&node_0_info).fg(Color::Green),
-        Cell::new(&node_1_info).fg(Color::Yellow),
+        Cell::new(&node_0_info),
+        Cell::new(&node_1_info),
     ]);
 
     // Add separator line after subheader
@@ -707,6 +663,28 @@ fn display_simple_status_table(
             .fg(Color::Cyan),
         Cell::new(node_0_agave),
         Cell::new(node_1_agave),
+    ]);
+
+    // Add Solana CLI executable row
+    let node_0_solana = validator_status
+        .nodes_with_status
+        .get(0)
+        .and_then(|n| n.solana_cli_executable.as_ref())
+        .map(|path| truncate_path(path, 30))
+        .unwrap_or("N/A".to_string());
+    let node_1_solana = validator_status
+        .nodes_with_status
+        .get(1)
+        .and_then(|n| n.solana_cli_executable.as_ref())
+        .map(|path| truncate_path(path, 30))
+        .unwrap_or("N/A".to_string());
+
+    table.add_row(vec![
+        Cell::new("Solana CLI")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
+        Cell::new(node_0_solana),
+        Cell::new(node_1_solana),
     ]);
 
     let node_0_fdctl = validator_status
@@ -772,6 +750,78 @@ fn display_simple_status_table(
             .fg(Color::Cyan),
         Cell::new(node_0_sync),
         Cell::new(node_1_sync),
+    ]);
+
+    // Add identity pubkey (from current_identity)
+    let node_0_identity = validator_status
+        .nodes_with_status
+        .get(0)
+        .and_then(|n| n.current_identity.as_ref())
+        .cloned()
+        .unwrap_or("Unknown".to_string());
+    let node_1_identity = validator_status
+        .nodes_with_status
+        .get(1)
+        .and_then(|n| n.current_identity.as_ref())
+        .cloned()
+        .unwrap_or("Unknown".to_string());
+
+    table.add_row(vec![
+        Cell::new("Identity")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
+        Cell::new(node_0_identity),
+        Cell::new(node_1_identity),
+    ]);
+
+    // Add ledger path (detected from running process)
+    let node_0_ledger = validator_status
+        .nodes_with_status
+        .get(0)
+        .and_then(|n| n.ledger_path.as_ref())
+        .map(|path| truncate_path(path, 30))
+        .unwrap_or("N/A".to_string());
+    let node_1_ledger = validator_status
+        .nodes_with_status
+        .get(1)
+        .and_then(|n| n.ledger_path.as_ref())
+        .map(|path| truncate_path(path, 30))
+        .unwrap_or("N/A".to_string());
+
+    table.add_row(vec![
+        Cell::new("Ledger Path")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
+        Cell::new(node_0_ledger),
+        Cell::new(node_1_ledger),
+    ]);
+
+    // Add tower path (derived from ledger path and identity)
+    let node_0_tower = validator_status
+        .nodes_with_status
+        .get(0)
+        .and_then(|n| n.tower_path.as_ref())
+        .map(|path| {
+            // Extract just the filename for display
+            path.split('/').last().unwrap_or(path).to_string()
+        })
+        .unwrap_or("N/A".to_string());
+    let node_1_tower = validator_status
+        .nodes_with_status
+        .get(1)
+        .and_then(|n| n.tower_path.as_ref())
+        .map(|path| {
+            // Extract just the filename for display
+            path.split('/').last().unwrap_or(path).to_string()
+        })
+        .unwrap_or("N/A".to_string());
+
+    table.add_row(vec![
+        Cell::new("Tower File")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
+        Cell::new(node_0_tower),
+        Cell::new(node_1_tower),
     ]);
 
     // Add swap readiness
@@ -1065,6 +1115,28 @@ fn display_primary_backup_table(
             .fg(Color::Cyan),
         Cell::new(node_0_agave),
         Cell::new(node_1_agave),
+    ]);
+
+    // Add Solana CLI executable row
+    let node_0_solana = validator_status
+        .nodes_with_status
+        .get(0)
+        .and_then(|n| n.solana_cli_executable.as_ref())
+        .map(|path| truncate_path(path, 30))
+        .unwrap_or("N/A".to_string());
+    let node_1_solana = validator_status
+        .nodes_with_status
+        .get(1)
+        .and_then(|n| n.solana_cli_executable.as_ref())
+        .map(|path| truncate_path(path, 30))
+        .unwrap_or("N/A".to_string());
+
+    table.add_row(vec![
+        Cell::new("Solana CLI")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
+        Cell::new(node_0_solana),
+        Cell::new(node_1_solana),
     ]);
 
     let node_0_fdctl = validator_status
@@ -1448,7 +1520,7 @@ struct ComprehensiveStatus {
     vote_account_verified: Option<bool>,
     verification_issues: Vec<String>,
     error: Option<String>,
-    current_identity: Option<String>, // Identity from monitor command
+    current_identity: Option<String>, // Identity pubkey from catchup command
 }
 
 impl ComprehensiveStatus {
@@ -1488,7 +1560,7 @@ async fn verify_public_keys(
             ssh_key_path,
             &format!(
                 "{} address -k {}",
-                node.paths.solana_cli_path, node.paths.funded_identity
+                "solana", node.paths.funded_identity
             ),
         )
         .await
@@ -1517,7 +1589,7 @@ async fn verify_public_keys(
             ssh_key_path,
             &format!(
                 "{} address -k {}",
-                node.paths.solana_cli_path, node.paths.vote_keypair
+                "solana", node.paths.vote_keypair
             ),
         )
         .await

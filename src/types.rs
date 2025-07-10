@@ -35,10 +35,6 @@ pub struct NodePaths {
     pub unfunded_identity: String,
     #[serde(rename = "voteKeypair")]
     pub vote_keypair: String,
-    pub ledger: String,
-    pub tower: String,
-    #[serde(rename = "solanaCliPath")]
-    pub solana_cli_path: String,
     #[serde(rename = "firedancerConfig")]
     pub firedancer_config: Option<String>,
     #[serde(rename = "fdctlPath")]
@@ -54,7 +50,6 @@ pub enum NodeStatus {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ValidatorType {
-    Solana,
     Agave,
     Jito,
     Firedancer,
@@ -65,12 +60,15 @@ pub enum ValidatorType {
 pub struct NodeWithStatus {
     pub node: NodeConfig,
     pub status: NodeStatus,
-    pub validator_type: ValidatorType, // Type of validator (Firedancer, Agave, Solana, etc.)
+    pub validator_type: ValidatorType, // Type of validator (Firedancer, Agave, Jito, etc.)
     pub agave_validator_executable: Option<String>, // Path to agave-validator executable (for catchup check)
     pub fdctl_executable: Option<String>, // Path to fdctl executable (for firedancer identity set)
+    pub solana_cli_executable: Option<String>, // Path to solana CLI executable
     pub version: Option<String>,          // Version information (e.g., "Firedancer 0.505.20216")
     pub sync_status: Option<String>,      // Sync status (e.g., "Caught up (slot: 344297365)")
-    pub current_identity: Option<String>, // Current validator identity
+    pub current_identity: Option<String>, // Current validator identity (from catchup command)
+    pub ledger_path: Option<String>,      // Ledger path extracted from running process or config
+    pub tower_path: Option<String>,       // Tower file path derived from ledger path and identity
     pub swap_ready: Option<bool>,         // Whether the node is ready for validator switching
     pub swap_issues: Vec<String>,         // Issues preventing swap readiness
 }

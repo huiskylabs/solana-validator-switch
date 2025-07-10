@@ -46,17 +46,8 @@ validators:
           # Path to vote account keypair
           voteKeypair: /home/solana/keypairs/vote-account-keypair.json
 
-          # Path to validator ledger directory
-          ledger: /mnt/solana_ledger
-
-          # Tower file pattern (supports wildcards)
-          # Examples:
-          #   - /mnt/ledger/tower-1_9-*.bin (Solana 1.9+)
-          #   - /mnt/ledger/tower.bin (older versions)
-          tower: /mnt/solana_ledger/tower-1_9-*.bin
-
-          # Path to Solana CLI binary
-          solanaCliPath: /home/solana/.local/share/solana/install/active_release/bin/solana
+          # Note: ledger path and tower file are automatically detected from running processes
+          # No need to specify them in the configuration
 
       # Second node configuration
       - label: validator-node-2
@@ -67,9 +58,6 @@ validators:
           fundedIdentity: /home/solana/keypairs/funded-validator-keypair.json
           unfundedIdentity: /home/solana/keypairs/unfunded-validator-keypair.json
           voteKeypair: /home/solana/keypairs/vote-account-keypair.json
-          ledger: /mnt/solana_ledger
-          tower: /mnt/solana_ledger/tower-1_9-*.bin
-          solanaCliPath: /home/solana/.local/share/solana/install/active_release/bin/solana
 # Example: Multiple validator pairs (uncomment if needed)
 # - votePubkey: SECOND_VOTE_ACCOUNT_PUBKEY
 #   identityPubkey: SECOND_VALIDATOR_IDENTITY_PUBKEY
@@ -84,9 +72,6 @@ validators:
 #         fundedIdentity: /home/solana/.secrets/funded-validator-keypair.json
 #         unfundedIdentity: /home/solana/.secrets/unfunded-validator-keypair.json
 #         voteKeypair: /home/solana/.secrets/vote-account-keypair.json
-#         ledger: /mnt/solana_ledger
-#         tower: /mnt/solana_ledger/tower-1_9-*.bin
-#         solanaCliPath: /home/solana/.local/share/solana/install/active_release/bin/solana
 #     - label: second-validator-node-2
 #       host: 10.0.1.2
 #       port: 22
@@ -95,17 +80,5 @@ validators:
 #         fundedIdentity: /home/solana/.secrets/funded-validator-keypair.json
 #         unfundedIdentity: /home/solana/.secrets/unfunded-validator-keypair.json
 #         voteKeypair: /home/solana/.secrets/vote-account-keypair.json
-#         ledger: /mnt/solana_ledger
-#         tower: /mnt/solana_ledger/tower-1_9-*.bin
-#         solanaCliPath: /home/solana/.local/share/solana/install/active_release/bin/solana
 
-# Notes:
-# 1. Ensure SSH key authentication is set up for both nodes
-# 2. The user specified must have permissions to:
-#    - Read/write validator keypair files
-#    - Execute solana CLI commands
-#    - Access the ledger directory
-#    - Read/write tower files
-# 3. Both nodes should have identical file paths for seamless switching
-# 4. Test SSH connectivity before running: ssh -i <localSshKeyPath> <user>@<host>
-# 5. Verify paths exist on both nodes before configuring
+# Ensure SSH key authentication is set up for both nodes

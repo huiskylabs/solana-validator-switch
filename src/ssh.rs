@@ -6,7 +6,7 @@ use std::net::TcpStream;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crate::types::{ConnectionStatus, NodeConfig, ValidationResult};
+use crate::types::{ConnectionStatus, NodeConfig};
 
 /// Individual SSH connection with health tracking
 pub struct SshConnection {
@@ -466,6 +466,10 @@ impl SshManager {
     }
 }
 
+// NOTE: These validation functions are commented out as ledger path is now dynamically detected
+// and would require refactoring to accept ledger path as a parameter
+
+/*
 /// Validate validator files on a remote node using SSH pool
 #[allow(dead_code)]
 pub async fn validate_node_files_with_pool(
@@ -473,136 +477,19 @@ pub async fn validate_node_files_with_pool(
     node: &NodeConfig,
     ssh_key_path: &str,
 ) -> Result<ValidationResult> {
-    let mut issues = Vec::new();
-    let mut valid_files = 0;
-    let total_files = 6; // ledger, accounts, tower, funded, unfunded, vote
-
-    // Check ledger directory
-    match ssh_pool
-        .execute_command(
-            node,
-            ssh_key_path,
-            &format!("test -d \"{}\"", node.paths.ledger),
-        )
-        .await
-    {
-        Ok(_) => valid_files += 1,
-        Err(_) => issues.push(format!("Ledger directory missing: {}", node.paths.ledger)),
-    }
-
-    // Check accounts folder
-    match ssh_pool
-        .execute_command(
-            node,
-            ssh_key_path,
-            &format!("test -d \"{}/accounts\"", node.paths.ledger),
-        )
-        .await
-    {
-        Ok(_) => valid_files += 1,
-        Err(_) => issues.push("Accounts folder missing in ledger directory".to_string()),
-    }
-
-    // Check tower file
-    match ssh_pool
-        .execute_command(
-            node,
-            ssh_key_path,
-            &format!(
-                "ls {}/tower-1_9-*.bin 2>/dev/null | head -1",
-                node.paths.ledger
-            ),
-        )
-        .await
-    {
-        Ok(output) if !output.trim().is_empty() => valid_files += 1,
-        _ => issues.push(
-            "Tower file not found in ledger directory (pattern: tower-1_9-*.bin)".to_string(),
-        ),
-    }
-
-    // Check keypairs
-    for (name, path) in [
-        ("Funded identity keypair", &node.paths.funded_identity),
-        ("Unfunded identity keypair", &node.paths.unfunded_identity),
-        ("Vote account keypair", &node.paths.vote_keypair),
-    ] {
-        match ssh_pool
-            .execute_command(node, ssh_key_path, &format!("test -f \"{}\"", path))
-            .await
-        {
-            Ok(_) => valid_files += 1,
-            Err(_) => issues.push(format!("{} missing: {}", name, path)),
-        }
-    }
-
-    Ok(ValidationResult {
-        valid_files,
-        total_files,
-        issues,
-    })
+    // Implementation commented out - would need ledger path parameter
+    unimplemented!("This function needs to be updated to accept ledger path as parameter")
 }
+*/
 
+/*
 /// Validate validator files on a remote node (legacy version using SshManager)
 #[allow(dead_code)]
 pub async fn validate_node_files(
     ssh_manager: &mut SshManager,
     node: &NodeConfig,
 ) -> Result<ValidationResult> {
-    let mut issues = Vec::new();
-    let mut valid_files = 0;
-    let total_files = 6; // ledger, accounts, tower, funded, unfunded, vote
-
-    // Check ledger directory
-    match ssh_manager
-        .execute_command(&format!("test -d \"{}\"", node.paths.ledger))
-        .await
-    {
-        Ok(_) => valid_files += 1,
-        Err(_) => issues.push(format!("Ledger directory missing: {}", node.paths.ledger)),
-    }
-
-    // Check accounts folder
-    match ssh_manager
-        .execute_command(&format!("test -d \"{}/accounts\"", node.paths.ledger))
-        .await
-    {
-        Ok(_) => valid_files += 1,
-        Err(_) => issues.push("Accounts folder missing in ledger directory".to_string()),
-    }
-
-    // Check tower file
-    match ssh_manager
-        .execute_command(&format!(
-            "ls {}/tower-1_9-*.bin 2>/dev/null | head -1",
-            node.paths.ledger
-        ))
-        .await
-    {
-        Ok(output) if !output.trim().is_empty() => valid_files += 1,
-        _ => issues.push(
-            "Tower file not found in ledger directory (pattern: tower-1_9-*.bin)".to_string(),
-        ),
-    }
-
-    // Check keypairs
-    for (name, path) in [
-        ("Funded identity keypair", &node.paths.funded_identity),
-        ("Unfunded identity keypair", &node.paths.unfunded_identity),
-        ("Vote account keypair", &node.paths.vote_keypair),
-    ] {
-        match ssh_manager
-            .execute_command(&format!("test -f \"{}\"", path))
-            .await
-        {
-            Ok(_) => valid_files += 1,
-            Err(_) => issues.push(format!("{} missing: {}", name, path)),
-        }
-    }
-
-    Ok(ValidationResult {
-        valid_files,
-        total_files,
-        issues,
-    })
+    // Implementation commented out - would need ledger path parameter
+    unimplemented!("This function needs to be updated to accept ledger path as parameter")
 }
+*/

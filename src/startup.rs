@@ -172,7 +172,6 @@ pub async fn run_startup_checklist() -> Result<Option<crate::AppState>> {
             println!("  • Ensure all required fields are filled with correct values");
         }
         if !validation.ssh_connections_valid {
-            println!("  • Verify SSH key paths and permissions");
             println!("  • Test SSH connections manually: ssh -i <key> user@host");
             println!("  • Ensure remote hosts are accessible");
         }
@@ -592,60 +591,11 @@ async fn verify_public_key_matches(
 #[allow(dead_code)]
 async fn verify_validator_paths(
     _ssh_pool: &SshConnectionPool,
-    node: &NodeConfig,
-    ssh_key_path: &str,
+    _node: &NodeConfig,
+    _ssh_key_path: &str,
 ) -> Vec<String> {
-    let mut issues = Vec::new();
-
-    // Create a temporary SSH connection for verification
-    let mut temp_pool = SshConnectionPool::new();
-    let _ = temp_pool.connect(node, ssh_key_path).await;
-
-    // Check ledger directory
-    if let Err(_) = temp_pool
-        .execute_command(
-            node,
-            ssh_key_path,
-            &format!("test -d '{}'", node.paths.ledger),
-        )
-        .await
-    {
-        issues.push(format!("Ledger directory missing: {}", node.paths.ledger));
-    }
-
-    // Check if Solana CLI is executable
-    if let Err(_) = temp_pool
-        .execute_command(
-            node,
-            ssh_key_path,
-            &format!("test -x '{}'", node.paths.solana_cli_path),
-        )
-        .await
-    {
-        issues.push(format!(
-            "Solana CLI not executable: {}",
-            node.paths.solana_cli_path
-        ));
-    }
-
-    // Check tower file pattern
-    if let Ok(output) = temp_pool
-        .execute_command(
-            node,
-            ssh_key_path,
-            &format!("ls {} 2>/dev/null | head -1", node.paths.tower),
-        )
-        .await
-    {
-        if output.trim().is_empty() {
-            issues.push(format!(
-                "No tower files found matching: {}",
-                node.paths.tower
-            ));
-        }
-    }
-
-    issues
+    // This function is deprecated as paths are now detected dynamically
+    Vec::new()
 }
 
 fn validate_config_completeness(config: &Config) -> Vec<String> {
@@ -717,14 +667,6 @@ fn validate_node_config(
 
     if node.paths.vote_keypair.is_empty() {
         issues.push(format!("{} vote keypair path is empty", node_name));
-    }
-
-    if node.paths.ledger.is_empty() {
-        issues.push(format!("{} ledger path is empty", node_name));
-    }
-
-    if node.paths.solana_cli_path.is_empty() {
-        issues.push(format!("{} solana CLI path is empty", node_name));
     }
 }
 
@@ -940,21 +882,33 @@ pub async fn detect_node_statuses(
                 validator_type,
                 agave_validator_executable,
                 fdctl_executable,
+                solana_cli_executable,
                 version,
                 sync_status,
                 current_identity,
+                ledger_path,
                 swap_ready,
                 swap_issues,
             ) = detect_node_status_and_executable(node, validator_pair, &mut temp_pool).await?;
+            // Derive tower path from ledger path and validator pair identity
+            let tower_path = if let Some(ref ledger) = ledger_path {
+                Some(format!("{}/tower-1_9-{}.bin", ledger, validator_pair.identity_pubkey))
+            } else {
+                None
+            };
+            
             nodes_with_status.push(crate::types::NodeWithStatus {
                 node: node.clone(),
                 status,
                 validator_type,
                 agave_validator_executable,
                 fdctl_executable,
+                solana_cli_executable,
                 version,
                 sync_status,
                 current_identity,
+                ledger_path,
+                tower_path,
                 swap_ready,
                 swap_issues,
             });
@@ -1007,9 +961,11 @@ async fn detect_node_statuses_with_progress(
                 validator_type,
                 agave_validator_executable,
                 fdctl_executable,
+                solana_cli_executable,
                 version,
                 sync_status,
                 current_identity,
+                ledger_path,
                 swap_ready,
                 swap_issues,
             ) = detect_node_status_and_executable_with_progress(
@@ -1020,15 +976,25 @@ async fn detect_node_statuses_with_progress(
             )
             .await?;
 
+            // Derive tower path from ledger path and validator pair identity
+            let tower_path = if let Some(ref ledger) = ledger_path {
+                Some(format!("{}/tower-1_9-{}.bin", ledger, validator_pair.identity_pubkey))
+            } else {
+                None
+            };
+            
             nodes_with_status.push(crate::types::NodeWithStatus {
                 node: node.clone(),
                 status: status.clone(),
                 validator_type: validator_type.clone(),
                 agave_validator_executable,
                 fdctl_executable,
+                solana_cli_executable,
                 version: version.clone(),
                 sync_status: sync_status.clone(),
                 current_identity: current_identity.clone(),
+                ledger_path,
+                tower_path,
                 swap_ready,
                 swap_issues,
             });
@@ -1086,13 +1052,15 @@ async fn detect_node_status_and_executable(
 ) -> Result<(
     crate::types::NodeStatus,
     crate::types::ValidatorType,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<bool>,
-    Vec<String>,
+    Option<String>,  // agave_validator_executable
+    Option<String>,  // fdctl_executable
+    Option<String>,  // solana_cli_executable
+    Option<String>,  // version
+    Option<String>,  // sync_status
+    Option<String>,  // current_identity
+    Option<String>,  // ledger_path
+    Option<bool>,    // swap_ready
+    Vec<String>,     // swap_issues
 )> {
     // Try to connect to the node
     if let Err(_) = ssh_pool
@@ -1102,13 +1070,15 @@ async fn detect_node_status_and_executable(
         return Ok((
             crate::types::NodeStatus::Unknown,
             crate::types::ValidatorType::Unknown,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some(false),
-            vec!["SSH connection failed".to_string()],
+            None,  // agave_validator_executable
+            None,  // fdctl_executable
+            None,  // solana_cli_executable
+            None,  // version
+            None,  // sync_status
+            None,  // current_identity
+            None,  // ledger_path
+            Some(false),  // swap_ready
+            vec!["SSH connection failed".to_string()],  // swap_issues
         ));
     }
 
@@ -1116,111 +1086,86 @@ async fn detect_node_status_and_executable(
     let mut validator_type = crate::types::ValidatorType::Unknown;
     let mut agave_validator_executable = None;
     let mut fdctl_executable = None;
-    let mut main_validator_executable = None;
+    let mut solana_cli_executable = None;
+    let mut _main_validator_executable = None;
     let mut version = None;
     let mut sync_status = None;
     let mut current_identity = None;
+    let mut ledger_path = None;
+    let mut firedancer_config_path = None;
 
-    // Get the process list
+    // First, check what validator is actually running
+    let ps_cmd = "ps aux | grep -E 'bin/fdctl|bin/agave-validator|release/agave-validator' | grep -v grep";
     if let Ok(output) = ssh_pool
-        .execute_command(
-            node,
-            &validator_pair.local_ssh_key_path,
-            "ps aux | grep -Ei 'solana-validator|agave|fdctl|firedancer' | grep -v grep",
-        )
+        .execute_command(node, &validator_pair.local_ssh_key_path, ps_cmd)
         .await
     {
         let lines: Vec<&str> = output.lines().collect();
         for line in lines {
             let parts: Vec<&str> = line.split_whitespace().collect();
-            for part in parts.iter() {
-                // Firedancer: .../build/native/gcc/bin/fdctl
-                if part.contains("fdctl") && part.contains("/build/native/gcc/bin/fdctl") {
-                    main_validator_executable = Some(part.to_string());
-                    fdctl_executable = Some(part.to_string());
-                    validator_type = crate::types::ValidatorType::Firedancer;
-
-                    // For Firedancer, agave executable is ../build/native/gcc/bin/solana
-                    if let Some(fdctl_dir) = std::path::Path::new(part).parent() {
-                        let solana_path = fdctl_dir.join("solana");
-                        agave_validator_executable =
-                            Some(solana_path.to_string_lossy().to_string());
+            
+            // Check if this is a Firedancer process
+            if line.contains("bin/fdctl") {
+                validator_type = crate::types::ValidatorType::Firedancer;
+                
+                // Extract fdctl executable and config path
+                for (i, part) in parts.iter().enumerate() {
+                    if part.contains("bin/fdctl") {
+                        fdctl_executable = Some(part.to_string());
+                        _main_validator_executable = Some(part.to_string());
+                        
+                        // For Firedancer, solana CLI is in the same directory as fdctl
+                        if let Some(fdctl_dir) = std::path::Path::new(part).parent() {
+                            let solana_path = fdctl_dir.join("solana");
+                            solana_cli_executable = Some(solana_path.to_string_lossy().to_string());
+                        }
+                    } else if part == &"--config" && i + 1 < parts.len() {
+                        firedancer_config_path = Some(parts[i + 1].to_string());
                     }
                 }
-                // Agave: .../target/release/agave-validator
-                else if part.contains("agave-validator")
-                    && part.contains("/target/release/agave-validator")
-                {
-                    if main_validator_executable.is_none() {
-                        main_validator_executable = Some(part.to_string());
-                        validator_type = if line.contains("jito") || line.contains("Jito") {
-                            crate::types::ValidatorType::Jito
-                        } else {
-                            crate::types::ValidatorType::Agave
-                        };
-                    }
-                    agave_validator_executable = Some(part.to_string());
-                }
-                // Legacy solana-validator
-                else if part.contains("solana-validator") {
-                    if main_validator_executable.is_none() {
-                        main_validator_executable = Some(part.to_string());
-                        validator_type = crate::types::ValidatorType::Solana;
-                    }
-                    // For solana-validator, it can also be used for catchup
-                    if agave_validator_executable.is_none() {
-                        agave_validator_executable = Some(part.to_string());
+                break;
+            }
+            // Check if this is an Agave/Jito process
+            else if line.contains("agave-validator") {
+                validator_type = crate::types::ValidatorType::Agave;
+                
+                // Extract agave executable and ledger path
+                for (i, part) in parts.iter().enumerate() {
+                    if part.contains("agave-validator") && (part.contains("bin/agave-validator") || part.contains("release/agave-validator")) {
+                        if agave_validator_executable.is_none() {
+                            agave_validator_executable = Some(part.to_string());
+                            _main_validator_executable = Some(part.to_string());
+                            // Derive solana CLI path from agave-validator path
+                            solana_cli_executable = Some(part.replace("agave-validator", "solana"));
+                        }
+                    } else if part == &"--ledger" && i + 1 < parts.len() {
+                        ledger_path = Some(parts[i + 1].to_string());
                     }
                 }
             }
         }
     }
 
-    // Try to find fdctl executable for firedancer nodes with proper path format
-    if fdctl_executable.is_none() {
-        let fdctl_search_cmd =
-            "find /opt /home /usr -path '*/build/native/gcc/bin/fdctl' 2>/dev/null | head -1";
+    // If no running validator found, search for executables on disk as fallback
+    if _main_validator_executable.is_none() {
+        // Search for agave-validator in either release or bin directories
+        let agave_search_cmd = "find /opt /home /usr \\( -path '*/release/agave-validator' -o -path '*/bin/agave-validator' \\) 2>/dev/null | head -1";
         if let Ok(output) = ssh_pool
-            .execute_command(node, &validator_pair.local_ssh_key_path, fdctl_search_cmd)
+            .execute_command(node, &validator_pair.local_ssh_key_path, agave_search_cmd)
             .await
         {
             let path = output.trim();
-            if !path.is_empty() && path.contains("/build/native/gcc/bin/fdctl") {
-                fdctl_executable = Some(path.to_string());
-
-                // If we found fdctl but no agave executable yet, set the solana path
-                if agave_validator_executable.is_none() {
-                    if let Some(fdctl_dir) = std::path::Path::new(path).parent() {
-                        let solana_path = fdctl_dir.join("solana");
-                        agave_validator_executable =
-                            Some(solana_path.to_string_lossy().to_string());
-                    }
-                }
+            if !path.is_empty() && path.contains("agave-validator") {
+                agave_validator_executable = Some(path.to_string());
+                _main_validator_executable = Some(path.to_string());
+                // Derive solana CLI path from agave-validator path
+                solana_cli_executable = Some(path.replace("agave-validator", "solana"));
+                
+                // We'll determine if it's Jito or Agave later using --version
+                validator_type = crate::types::ValidatorType::Agave;
             }
         }
-    }
-
-    // Try to find agave-validator executable if not already found
-    if agave_validator_executable.is_none() {
-        // For Firedancer, the agave executable is in the same directory as fdctl (solana)
-        if let Some(ref fdctl_path) = fdctl_executable {
-            if let Some(dir) = std::path::Path::new(fdctl_path).parent() {
-                let solana_path = dir.join("solana");
-                agave_validator_executable = Some(solana_path.to_string_lossy().to_string());
-            }
-        } else {
-            // Search for agave-validator with proper path format: .../target/release/agave-validator
-            let agave_search_cmd = "find /opt /home /usr -path '*/target/release/agave-validator' 2>/dev/null | head -1";
-            if let Ok(output) = ssh_pool
-                .execute_command(node, &validator_pair.local_ssh_key_path, agave_search_cmd)
-                .await
-            {
-                let path = output.trim();
-                if !path.is_empty() && path.contains("/target/release/agave-validator") {
-                    agave_validator_executable = Some(path.to_string());
-                }
-            }
-        }
+        
     }
 
     // Detect version using the agave executable
@@ -1234,7 +1179,8 @@ async fn detect_node_status_and_executable(
             .await
         {
             if let Some(line) = version_output.lines().next() {
-                if line.starts_with("solana-cli ") {
+                // Handle both agave-validator and solana-cli output formats
+                if line.starts_with("agave-validator ") || line.starts_with("solana-cli ") {
                     let parts: Vec<&str> = line.split_whitespace().collect();
                     if parts.len() >= 2 {
                         let version_num = parts[1];
@@ -1249,15 +1195,36 @@ async fn detect_node_status_and_executable(
                         }
                     }
                 }
+                // Check if it's Jito by looking for "jito" in the version output
+                if validator_type == crate::types::ValidatorType::Agave {
+                    if version_output.to_lowercase().contains("jito") {
+                        validator_type = crate::types::ValidatorType::Jito;
+                        // Update version string to indicate Jito
+                        if let Some(ref mut v) = version {
+                            *v = v.replace("Agave", "Jito");
+                        }
+                    }
+                }
             }
         }
     }
 
     // Detect sync status using catchup command
-    if let Some(ref agave_exec) = agave_validator_executable {
+    // Derive solana CLI from agave-validator path or use existing solana_cli_executable
+    let solana_cli = if let Some(ref cli) = solana_cli_executable {
+        cli.clone()
+    } else if let Some(ref agave_exec) = agave_validator_executable {
+        // For non-Firedancer, derive solana CLI from agave-validator path
+        agave_exec.replace("agave-validator", "solana")
+    } else {
+        // If no solana CLI found, use empty string and skip
+        String::new()
+    };
+    
+    if !solana_cli.is_empty() {
         let catchup_cmd = format!(
             "timeout 10 {} catchup --our-localhost 2>&1 | grep -m1 'has caught up' | head -1",
-            agave_exec
+            solana_cli
         );
         if let Ok(catchup_output) = ssh_pool
             .execute_command(node, &validator_pair.local_ssh_key_path, &catchup_cmd)
@@ -1297,99 +1264,62 @@ async fn detect_node_status_and_executable(
 
     // Check swap readiness
     let (swap_ready, swap_issues) =
-        check_node_swap_readiness(ssh_pool, node, &validator_pair.local_ssh_key_path).await;
+        check_node_swap_readiness(ssh_pool, node, &validator_pair.local_ssh_key_path, ledger_path.as_ref()).await;
 
-    // Use the validator monitor command to get the active identity
-    // We'll use timeout to get just the initial output and then kill the process
-    let monitor_cmd = if let Some(ref exec_path) = main_validator_executable {
-        format!("timeout --kill-after=2 3 bash -c '{} --ledger {} monitor 2>/dev/null | head -3 | grep \"Identity:\" | head -1'", exec_path, node.paths.ledger)
+    // Use catchup command to get the active identity
+    // Derive solana CLI from agave-validator path
+    let solana_cli_path = if let Some(ref agave_exec) = agave_validator_executable {
+        // Replace agave-validator with solana in the path
+        agave_exec.replace("agave-validator", "solana")
     } else {
-        // Fallback to dynamic detection if executable wasn't found
-        format!("VALIDATOR_EXEC=$(ps aux | grep -Ei 'solana-validator|agave|fdctl|firedancer' | grep -v grep | awk '{{for(i=11;i<=NF;i++) if($i ~ /solana-validator|agave-validator|fdctl/) print $i; exit}}') && if [ -n \"$VALIDATOR_EXEC\" ]; then timeout --kill-after=2 3 bash -c \"$VALIDATOR_EXEC --ledger {} monitor 2>/dev/null | head -3 | grep 'Identity:' | head -1\"; else echo 'no-validator-running'; fi", node.paths.ledger)
+        // Fallback to empty string if no agave executable found
+        String::new()
     };
 
+    let catchup_cmd = format!("timeout 10 {} catchup --our-localhost 2>&1", solana_cli_path);
+
     match ssh_pool
-        .execute_command(node, &validator_pair.local_ssh_key_path, &monitor_cmd)
+        .execute_command(node, &validator_pair.local_ssh_key_path, &catchup_cmd)
         .await
     {
         Ok(output) => {
-            // Parse the output to find the Identity line
+            // Parse the catchup output to find identity
             for line in output.lines() {
-                if line.starts_with("Identity: ") {
-                    let identity = line.replace("Identity: ", "").trim().to_string();
-                    // Store the current identity for status tracking
-                    if current_identity.is_none() {
-                        current_identity = Some(identity.clone());
-                    }
-
-                    // Check if this identity matches the validator's funded identity
-                    if identity == validator_pair.identity_pubkey {
-                        return Ok((
-                            crate::types::NodeStatus::Active,
-                            validator_type,
-                            agave_validator_executable,
-                            fdctl_executable,
-                            version,
-                            sync_status,
-                            current_identity,
-                            Some(swap_ready),
-                            swap_issues,
-                        ));
-                    } else {
-                        return Ok((
-                            crate::types::NodeStatus::Standby,
-                            validator_type,
-                            agave_validator_executable,
-                            fdctl_executable,
-                            version,
-                            sync_status,
-                            current_identity,
-                            Some(swap_ready),
-                            swap_issues,
-                        ));
-                    }
-                }
-            }
-
-            // Fallback: try catchup command to get identity
-            if let Some(ref agave_exec) = agave_validator_executable {
-                let catchup_cmd = format!("timeout 10 {} catchup --our-localhost 2>&1 | grep -m1 'has caught up' | head -1", agave_exec);
-                if let Ok(catchup_output) = ssh_pool
-                    .execute_command(node, &validator_pair.local_ssh_key_path, &catchup_cmd)
-                    .await
-                {
-                    for line in catchup_output.lines() {
-                        if line.contains("has caught up") {
-                            if let Some(caught_up_pos) = line.find(" has caught up") {
-                                let identity = line[..caught_up_pos].trim();
-                                if current_identity.is_none() {
-                                    current_identity = Some(identity.to_string());
-                                }
-                                if identity == validator_pair.identity_pubkey {
-                                    return Ok((
-                                        crate::types::NodeStatus::Active,
-                                        validator_type,
-                                        agave_validator_executable,
-                                        fdctl_executable,
-                                        version,
-                                        sync_status,
-                                        current_identity,
-                                        Some(swap_ready),
-                                        swap_issues,
-                                    ));
-                                } else if !identity.is_empty() {
-                                    return Ok((
-                                        crate::types::NodeStatus::Standby,
-                                        validator_type,
-                                        agave_validator_executable,
-                                        fdctl_executable,
-                                        version,
-                                        sync_status,
-                                        current_identity,
-                                        Some(swap_ready),
-                                        swap_issues,
-                                    ));
-                                }
+                if line.contains("has caught up") {
+                    if let Some(caught_up_pos) = line.find(" has caught up") {
+                        let identity = line[..caught_up_pos].trim();
+                        if !identity.is_empty() {
+                            current_identity = Some(identity.to_string());
+                            
+                            // Check if this identity matches the validator's funded identity
+                            if identity == validator_pair.identity_pubkey {
+                                return Ok((
+                                    crate::types::NodeStatus::Active,
+                                    validator_type,
+                                    agave_validator_executable,
+                                    fdctl_executable,
+                                    solana_cli_executable,
+                                    version,
+                                    sync_status,
+                                    current_identity,
+                                    ledger_path,
+                                    Some(swap_ready),
+                                    swap_issues,
+                                ));
+                            } else {
+                                return Ok((
+                                    crate::types::NodeStatus::Standby,
+                                    validator_type,
+                                    agave_validator_executable,
+                                    fdctl_executable,
+                                    solana_cli_executable,
+                                    version,
+                                    sync_status,
+                                    current_identity,
+                                    ledger_path,
+                                    Some(swap_ready),
+                                    swap_issues,
+                                ));
                             }
                         }
                     }
@@ -1402,9 +1332,11 @@ async fn detect_node_status_and_executable(
                 validator_type,
                 agave_validator_executable,
                 fdctl_executable,
+                solana_cli_executable,
                 version,
                 sync_status,
                 current_identity,
+                ledger_path,
                 Some(swap_ready),
                 swap_issues,
             ))
@@ -1414,9 +1346,11 @@ async fn detect_node_status_and_executable(
             validator_type,
             agave_validator_executable,
             fdctl_executable,
+            solana_cli_executable,
             version,
             sync_status,
             current_identity,
+            ledger_path,
             Some(swap_ready),
             swap_issues,
         )),
@@ -1428,25 +1362,27 @@ async fn check_node_swap_readiness(
     ssh_pool: &mut SshConnectionPool,
     node: &crate::types::NodeConfig,
     ssh_key_path: &str,
+    ledger_path: Option<&String>,
 ) -> (bool, Vec<String>) {
     let mut issues = Vec::new();
     let mut all_ready = true;
 
+    // Use detected ledger path if available, otherwise use a default
+    let ledger = ledger_path.map(|s| s.as_str()).unwrap_or("/mnt/solana_ledger");
+    
     // Batch file checks into single command
     let file_check_cmd = format!(
         "test -r {} && echo 'funded_ok' || echo 'funded_fail'; \
          test -r {} && echo 'unfunded_ok' || echo 'unfunded_fail'; \
          test -r {} && echo 'vote_ok' || echo 'vote_fail'; \
          ls {}/tower-1_9-*.bin >/dev/null 2>&1 && echo 'tower_ok' || echo 'tower_fail'; \
-         test -d {} && test -w {} && echo 'ledger_ok' || echo 'ledger_fail'; \
-         test -x {} && echo 'cli_ok' || echo 'cli_fail'",
+         test -d {} && test -w {} && echo 'ledger_ok' || echo 'ledger_fail'",
         node.paths.funded_identity,
         node.paths.unfunded_identity,
         node.paths.vote_keypair,
-        node.paths.ledger,
-        node.paths.ledger,
-        node.paths.ledger,
-        node.paths.solana_cli_path
+        ledger,
+        ledger,
+        ledger
     );
 
     match ssh_pool
@@ -1477,10 +1413,6 @@ async fn check_node_swap_readiness(
                         issues.push("Ledger directory missing or not writable".to_string());
                         all_ready = false;
                     }
-                    "cli_fail" => {
-                        issues.push("Solana CLI not executable".to_string());
-                        all_ready = false;
-                    }
                     _ => {}
                 }
             }
@@ -1503,13 +1435,15 @@ async fn detect_node_status_and_executable_with_progress(
 ) -> Result<(
     crate::types::NodeStatus,
     crate::types::ValidatorType,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<bool>,
-    Vec<String>,
+    Option<String>,  // agave_validator_executable
+    Option<String>,  // fdctl_executable
+    Option<String>,  // solana_cli_executable
+    Option<String>,  // version
+    Option<String>,  // sync_status
+    Option<String>,  // current_identity
+    Option<String>,  // ledger_path
+    Option<bool>,    // swap_ready
+    Vec<String>,     // swap_issues
 )> {
     // Try to connect to the node
     if let Err(_) = ssh_pool
@@ -1522,13 +1456,15 @@ async fn detect_node_status_and_executable_with_progress(
         return Ok((
             crate::types::NodeStatus::Unknown,
             crate::types::ValidatorType::Unknown,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some(false),
-            vec!["SSH connection failed".to_string()],
+            None,  // agave_validator_executable
+            None,  // fdctl_executable
+            None,  // solana_cli_executable
+            None,  // version
+            None,  // sync_status
+            None,  // current_identity
+            None,  // ledger_path
+            Some(false),  // swap_ready
+            vec!["SSH connection failed".to_string()],  // swap_issues
         ));
     }
 
@@ -1540,76 +1476,97 @@ async fn detect_node_status_and_executable_with_progress(
     let mut validator_type = crate::types::ValidatorType::Unknown;
     let mut agave_validator_executable = None;
     let mut fdctl_executable = None;
-    let mut main_validator_executable = None;
+    let mut solana_cli_executable = None;
+    let mut _main_validator_executable = None;
     let mut version = None;
     let mut sync_status = None;
     let mut current_identity = None;
+    let mut ledger_path = None;
+    let mut firedancer_config_path = None;
 
-    // Step 2: Process Detection
+    // Step 2: Executable Detection
     progress_bar.suspend(|| {
-        println!("      🔍 Detecting validator processes...");
+        println!("      🔍 Detecting validator executables...");
     });
 
-    // Get the process list
+    // First, check what validator is actually running
+    let ps_cmd = "ps aux | grep -E 'bin/fdctl|bin/agave-validator|release/agave-validator' | grep -v grep";
     if let Ok(output) = ssh_pool
-        .execute_command(
-            node,
-            &validator_pair.local_ssh_key_path,
-            "ps aux | grep -Ei 'solana-validator|agave|fdctl|firedancer' | grep -v grep",
-        )
+        .execute_command(node, &validator_pair.local_ssh_key_path, ps_cmd)
         .await
     {
         let lines: Vec<&str> = output.lines().collect();
         for line in lines {
             let parts: Vec<&str> = line.split_whitespace().collect();
-            for part in parts.iter() {
-                // Firedancer: .../build/native/gcc/bin/fdctl
-                if part.contains("fdctl") && part.contains("/build/native/gcc/bin/fdctl") {
-                    main_validator_executable = Some(part.to_string());
-                    fdctl_executable = Some(part.to_string());
-                    validator_type = crate::types::ValidatorType::Firedancer;
-
-                    // For Firedancer, agave executable is ../build/native/gcc/bin/solana
-                    if let Some(fdctl_dir) = std::path::Path::new(part).parent() {
-                        let solana_path = fdctl_dir.join("solana");
-                        agave_validator_executable =
-                            Some(solana_path.to_string_lossy().to_string());
+            
+            // Check if this is a Firedancer process
+            if line.contains("bin/fdctl") {
+                validator_type = crate::types::ValidatorType::Firedancer;
+                
+                // Extract fdctl executable and config path
+                for (i, part) in parts.iter().enumerate() {
+                    if part.contains("bin/fdctl") {
+                        fdctl_executable = Some(part.to_string());
+                        _main_validator_executable = Some(part.to_string());
+                        
+                        // For Firedancer, solana CLI is in the same directory as fdctl
+                        if let Some(fdctl_dir) = std::path::Path::new(part).parent() {
+                            let solana_path = fdctl_dir.join("solana");
+                            solana_cli_executable = Some(solana_path.to_string_lossy().to_string());
+                        }
+                    } else if part == &"--config" && i + 1 < parts.len() {
+                        firedancer_config_path = Some(parts[i + 1].to_string());
                     }
                 }
-                // Agave: .../target/release/agave-validator
-                else if part.contains("agave-validator")
-                    && part.contains("/target/release/agave-validator")
-                {
-                    if main_validator_executable.is_none() {
-                        main_validator_executable = Some(part.to_string());
-                        validator_type = if line.contains("jito") || line.contains("Jito") {
-                            crate::types::ValidatorType::Jito
-                        } else {
-                            crate::types::ValidatorType::Agave
-                        };
-                    }
-                    agave_validator_executable = Some(part.to_string());
-                }
-                // Legacy solana-validator
-                else if part.contains("solana-validator") {
-                    if main_validator_executable.is_none() {
-                        main_validator_executable = Some(part.to_string());
-                        validator_type = crate::types::ValidatorType::Solana;
-                    }
-                    // For solana-validator, it can also be used for catchup
-                    if agave_validator_executable.is_none() {
-                        agave_validator_executable = Some(part.to_string());
+                break;
+            }
+            // Check if this is an Agave/Jito process
+            else if line.contains("agave-validator") {
+                validator_type = crate::types::ValidatorType::Agave;
+                
+                // Extract agave executable and ledger path
+                for (i, part) in parts.iter().enumerate() {
+                    if part.contains("agave-validator") && (part.contains("bin/agave-validator") || part.contains("release/agave-validator")) {
+                        if agave_validator_executable.is_none() {
+                            agave_validator_executable = Some(part.to_string());
+                            _main_validator_executable = Some(part.to_string());
+                            // Derive solana CLI path from agave-validator path
+                            solana_cli_executable = Some(part.replace("agave-validator", "solana"));
+                        }
+                    } else if part == &"--ledger" && i + 1 < parts.len() {
+                        ledger_path = Some(parts[i + 1].to_string());
                     }
                 }
             }
         }
     }
 
+    // If no running validator found, search for executables on disk as fallback
+    if _main_validator_executable.is_none() {
+        // Search for agave-validator in either release or bin directories
+        let agave_search_cmd = "find /opt /home /usr \\( -path '*/release/agave-validator' -o -path '*/bin/agave-validator' \\) 2>/dev/null | head -1";
+        if let Ok(output) = ssh_pool
+            .execute_command(node, &validator_pair.local_ssh_key_path, agave_search_cmd)
+            .await
+        {
+            let path = output.trim();
+            if !path.is_empty() && path.contains("agave-validator") {
+                agave_validator_executable = Some(path.to_string());
+                _main_validator_executable = Some(path.to_string());
+                // Derive solana CLI path from agave-validator path
+                solana_cli_executable = Some(path.replace("agave-validator", "solana"));
+                
+                // We'll determine if it's Jito or Agave later using --version
+                validator_type = crate::types::ValidatorType::Agave;
+            }
+        }
+        
+    }
+
     let validator_type_name = match validator_type {
         crate::types::ValidatorType::Firedancer => "Firedancer",
         crate::types::ValidatorType::Agave => "Agave",
         crate::types::ValidatorType::Jito => "Jito",
-        crate::types::ValidatorType::Solana => "Solana",
         crate::types::ValidatorType::Unknown => "Unknown",
     };
 
@@ -1620,48 +1577,34 @@ async fn detect_node_status_and_executable_with_progress(
         );
     });
 
-    // Try to find fdctl executable for firedancer nodes with proper path format
-    if fdctl_executable.is_none() {
-        let fdctl_search_cmd =
-            "find /opt /home /usr -path '*/build/native/gcc/bin/fdctl' 2>/dev/null | head -1";
-        if let Ok(output) = ssh_pool
-            .execute_command(node, &validator_pair.local_ssh_key_path, fdctl_search_cmd)
-            .await
-        {
-            let path = output.trim();
-            if !path.is_empty() && path.contains("/build/native/gcc/bin/fdctl") {
-                fdctl_executable = Some(path.to_string());
-
-                // If we found fdctl but no agave executable yet, set the solana path
-                if agave_validator_executable.is_none() {
-                    if let Some(fdctl_dir) = std::path::Path::new(path).parent() {
-                        let solana_path = fdctl_dir.join("solana");
-                        agave_validator_executable =
-                            Some(solana_path.to_string_lossy().to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    // Try to find agave-validator executable if not already found
-    if agave_validator_executable.is_none() {
-        // For Firedancer, the agave executable is in the same directory as fdctl (solana)
-        if let Some(ref fdctl_path) = fdctl_executable {
-            if let Some(dir) = std::path::Path::new(fdctl_path).parent() {
-                let solana_path = dir.join("solana");
-                agave_validator_executable = Some(solana_path.to_string_lossy().to_string());
-            }
-        } else {
-            // Search for agave-validator with proper path format: .../target/release/agave-validator
-            let agave_search_cmd = "find /opt /home /usr -path '*/target/release/agave-validator' 2>/dev/null | head -1";
-            if let Ok(output) = ssh_pool
-                .execute_command(node, &validator_pair.local_ssh_key_path, agave_search_cmd)
+    // For Firedancer, extract ledger path from config file if we have it
+    if validator_type == crate::types::ValidatorType::Firedancer && firedancer_config_path.is_some() && ledger_path.is_none() {
+        if let Some(ref config_path) = firedancer_config_path {
+            progress_bar.suspend(|| {
+                println!("      🔍 Reading Firedancer config for ledger path...");
+            });
+            
+            // Read the config file and extract ledger path
+            let cat_cmd = format!("cat {} 2>/dev/null | grep -A 5 '\\[ledger\\]' | grep 'path' | head -1", config_path);
+            if let Ok(config_output) = ssh_pool
+                .execute_command(node, &validator_pair.local_ssh_key_path, &cat_cmd)
                 .await
             {
-                let path = output.trim();
-                if !path.is_empty() && path.contains("/target/release/agave-validator") {
-                    agave_validator_executable = Some(path.to_string());
+                // Parse something like: path = "/mnt/solana_ledger"
+                for line in config_output.lines() {
+                    if line.contains("path") && line.contains("=") {
+                        let parts: Vec<&str> = line.split('=').collect();
+                        if parts.len() >= 2 {
+                            let path = parts[1].trim().trim_matches('"').trim_matches('\'');
+                            if !path.is_empty() {
+                                ledger_path = Some(path.to_string());
+                                progress_bar.suspend(|| {
+                                    println!("      ✅ Ledger path: {}", path.bright_cyan());
+                                });
+                                break;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1683,7 +1626,8 @@ async fn detect_node_status_and_executable_with_progress(
             .await
         {
             if let Some(line) = version_output.lines().next() {
-                if line.starts_with("solana-cli ") {
+                // Handle both agave-validator and solana-cli output formats
+                if line.starts_with("agave-validator ") || line.starts_with("solana-cli ") {
                     let parts: Vec<&str> = line.split_whitespace().collect();
                     if parts.len() >= 2 {
                         let version_num = parts[1];
@@ -1695,6 +1639,16 @@ async fn detect_node_status_and_executable_with_progress(
                             version = Some(format!("Firedancer {}", version_num));
                         } else if version_num.starts_with("2.") {
                             version = Some(format!("Agave {}", version_num));
+                        }
+                    }
+                }
+                // Check if it's Jito by looking for "jito" in the version output
+                if validator_type == crate::types::ValidatorType::Agave {
+                    if version_output.to_lowercase().contains("jito") {
+                        validator_type = crate::types::ValidatorType::Jito;
+                        // Update version string to indicate Jito
+                        if let Some(ref mut v) = version {
+                            *v = v.replace("Agave", "Jito");
                         }
                     }
                 }
@@ -1714,10 +1668,21 @@ async fn detect_node_status_and_executable_with_progress(
     });
 
     // Detect sync status using catchup command
-    if let Some(ref agave_exec) = agave_validator_executable {
+    // Derive solana CLI from agave-validator path or use existing solana_cli_executable
+    let solana_cli = if let Some(ref cli) = solana_cli_executable {
+        cli.clone()
+    } else if let Some(ref agave_exec) = agave_validator_executable {
+        // For non-Firedancer, derive solana CLI from agave-validator path
+        agave_exec.replace("agave-validator", "solana")
+    } else {
+        // If no solana CLI found, use empty string and skip
+        String::new()
+    };
+    
+    if !solana_cli.is_empty() {
         let catchup_cmd = format!(
             "timeout 10 {} catchup --our-localhost 2>&1 | grep -m1 'has caught up' | head -1",
-            agave_exec
+            solana_cli
         );
         if let Ok(catchup_output) = ssh_pool
             .execute_command(node, &validator_pair.local_ssh_key_path, &catchup_cmd)
@@ -1761,7 +1726,7 @@ async fn detect_node_status_and_executable_with_progress(
     });
 
     let (swap_ready, swap_issues) =
-        check_node_swap_readiness(ssh_pool, node, &validator_pair.local_ssh_key_path).await;
+        check_node_swap_readiness(ssh_pool, node, &validator_pair.local_ssh_key_path, ledger_path.as_ref()).await;
 
     progress_bar.suspend(|| {
         if swap_ready {
@@ -1774,72 +1739,22 @@ async fn detect_node_status_and_executable_with_progress(
         }
     });
 
-    // Step 6: Identity Detection
+    // Step 6: Identity Detection using catchup command
     progress_bar.suspend(|| {
         println!("      🔍 Detecting active identity...");
     });
 
-    // Use the validator monitor command to get the active identity
-    // We'll use timeout to get just the initial output and then kill the process
-    let monitor_cmd = if let Some(ref exec_path) = main_validator_executable {
-        format!("timeout --kill-after=2 3 bash -c '{} --ledger {} monitor 2>/dev/null | head -3 | grep \"Identity:\" | head -1'", exec_path, node.paths.ledger)
-    } else {
-        // Fallback to dynamic detection if executable wasn't found
-        format!("VALIDATOR_EXEC=$(ps aux | grep -Ei 'solana-validator|agave|fdctl|firedancer' | grep -v grep | awk '{{for(i=11;i<=NF;i++) if($i ~ /solana-validator|agave-validator|fdctl/) print $i; exit}}') && if [ -n \"$VALIDATOR_EXEC\" ]; then timeout --kill-after=2 3 bash -c \"$VALIDATOR_EXEC --ledger {} monitor 2>/dev/null | head -3 | grep 'Identity:' | head -1\"; else echo 'no-validator-running'; fi", node.paths.ledger)
-    };
-
-    match ssh_pool
-        .execute_command(node, &validator_pair.local_ssh_key_path, &monitor_cmd)
-        .await
-    {
-        Ok(output) => {
-            // Parse the output to find the Identity line
-            for line in output.lines() {
-                if line.starts_with("Identity: ") {
-                    let identity = line.replace("Identity: ", "").trim().to_string();
-                    // Store the current identity for status tracking
-                    if current_identity.is_none() {
-                        current_identity = Some(identity.clone());
-                    }
-
-                    // Check if this identity matches the validator's funded identity
-                    if identity == validator_pair.identity_pubkey {
-                        progress_bar.suspend(|| {
-                            println!("      ✅ Identity: {} (ACTIVE)", identity.bright_green());
-                        });
-                        return Ok((
-                            crate::types::NodeStatus::Active,
-                            validator_type,
-                            agave_validator_executable,
-                            fdctl_executable,
-                            version,
-                            sync_status,
-                            current_identity,
-                            Some(swap_ready),
-                            swap_issues,
-                        ));
-                    } else {
-                        progress_bar.suspend(|| {
-                            println!("      ✅ Identity: {} (STANDBY)", identity.bright_yellow());
-                        });
-                        return Ok((
-                            crate::types::NodeStatus::Standby,
-                            validator_type,
-                            agave_validator_executable,
-                            fdctl_executable,
-                            version,
-                            sync_status,
-                            current_identity,
-                            Some(swap_ready),
-                            swap_issues,
-                        ));
-                    }
-                }
-            }
-
-            // Fallback: try catchup command to get identity
-            if let Some(ref agave_exec) = agave_validator_executable {
-                let catchup_cmd = format!("timeout 10 {} catchup --our-localhost 2>&1 | grep -m1 'has caught up' | head -1", agave_exec);
+    // Use catchup command to get identity
+            let solana_cli_fallback = if let Some(ref cli) = solana_cli_executable {
+                cli.clone()
+            } else if let Some(ref agave_exec) = agave_validator_executable {
+                agave_exec.replace("agave-validator", "solana")
+            } else {
+                String::new()
+            };
+            
+            if !solana_cli_fallback.is_empty() {
+                let catchup_cmd = format!("timeout 10 {} catchup --our-localhost 2>&1 | grep -m1 'has caught up' | head -1", solana_cli_fallback);
                 if let Ok(catchup_output) = ssh_pool
                     .execute_command(node, &validator_pair.local_ssh_key_path, &catchup_cmd)
                     .await
@@ -1863,9 +1778,11 @@ async fn detect_node_status_and_executable_with_progress(
                                         validator_type,
                                         agave_validator_executable,
                                         fdctl_executable,
+                                        solana_cli_executable,
                                         version,
                                         sync_status,
                                         current_identity,
+                                        ledger_path,
                                         Some(swap_ready),
                                         swap_issues,
                                     ));
@@ -1881,9 +1798,11 @@ async fn detect_node_status_and_executable_with_progress(
                                         validator_type,
                                         agave_validator_executable,
                                         fdctl_executable,
+                                        solana_cli_executable,
                                         version,
                                         sync_status,
                                         current_identity,
+                                        ledger_path,
                                         Some(swap_ready),
                                         swap_issues,
                                     ));
@@ -1894,7 +1813,7 @@ async fn detect_node_status_and_executable_with_progress(
                 }
             }
 
-            // If we can't find the Identity line from either method, assume unknown
+            // If we can't find the identity from catchup, assume unknown
             progress_bar.suspend(|| {
                 println!("      ❌ Identity: Unable to determine");
             });
@@ -1903,28 +1822,12 @@ async fn detect_node_status_and_executable_with_progress(
                 validator_type,
                 agave_validator_executable,
                 fdctl_executable,
+                solana_cli_executable,
                 version,
                 sync_status,
                 current_identity,
+                ledger_path,
                 Some(swap_ready),
                 swap_issues,
             ))
-        }
-        Err(_) => {
-            progress_bar.suspend(|| {
-                println!("      ❌ Identity: Command failed");
-            });
-            Ok((
-                crate::types::NodeStatus::Unknown,
-                validator_type,
-                agave_validator_executable,
-                fdctl_executable,
-                version,
-                sync_status,
-                current_identity,
-                Some(swap_ready),
-                swap_issues,
-            ))
-        }
-    }
 }

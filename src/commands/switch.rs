@@ -336,22 +336,44 @@ impl SwitchManager {
                 ),
             )
         } else if process_info.contains("agave-validator") {
+            // Use detected agave executable path if available
+            let agave_path = self
+                .active_node_with_status
+                .agave_validator_executable
+                .as_ref()
+                .ok_or_else(|| anyhow!("Agave validator executable path not found"))?;
+            
+            // Use detected ledger path if available, otherwise error
+            let ledger_path = self
+                .active_node_with_status
+                .ledger_path
+                .as_ref()
+                .ok_or_else(|| anyhow!("Ledger path not detected for active node"))?;
+            
             (
                 "Using Agave validator set-identity",
                 format!(
-                    "agave-validator -l {} set-identity --require-tower {}",
-                    self.active_node_with_status.node.paths.ledger,
+                    "{} -l {} set-identity --require-tower {}",
+                    agave_path,
+                    ledger_path,
                     self.active_node_with_status.node.paths.unfunded_identity
                 ),
             )
         } else {
+            // Use detected ledger path if available, otherwise error
+            let ledger_path = self
+                .active_node_with_status
+                .ledger_path
+                .as_ref()
+                .ok_or_else(|| anyhow!("Ledger path not detected for active node"))?;
+            
             (
                 "Using Solana validator restart",
                 format!("{} exit && sleep 2 && solana-validator --identity {} --vote-account {} --ledger {} --limit-ledger-size 100000000 --log - &", 
-                    self.active_node_with_status.node.paths.solana_cli_path,
+                    "solana-validator",  // Using validator binary directly instead of solana CLI
                     self.active_node_with_status.node.paths.unfunded_identity,
                     self.active_node_with_status.node.paths.vote_keypair,
-                    self.active_node_with_status.node.paths.ledger)
+                    ledger_path)
             )
         };
 
@@ -383,32 +405,42 @@ impl SwitchManager {
     }
 
     async fn transfer_tower_file(&mut self, dry_run: bool) -> Result<()> {
-        // Find the latest tower file
-        let find_tower_cmd = format!(
-            "ls -t {}/tower-1_9-*.bin 2>/dev/null | head -1",
-            self.active_node_with_status.node.paths.ledger
-        );
-
-        let tower_path = {
+        // Use the derived tower path from active node
+        let tower_path = self
+            .active_node_with_status
+            .tower_path
+            .as_ref()
+            .ok_or_else(|| anyhow!("Tower path not available for active node"))?;
+        
+        // Verify the tower file exists
+        let check_tower_cmd = format!("test -f {} && echo 'exists' || echo 'missing'", tower_path);
+        let tower_exists = {
             let mut pool = self.ssh_pool.lock().unwrap();
             pool.execute_command(
                 &self.active_node_with_status.node,
                 &self.validator_pair.local_ssh_key_path,
-                &find_tower_cmd,
+                &check_tower_cmd,
             )
             .await?
         };
-        let tower_path = tower_path.trim();
-
-        if tower_path.is_empty() {
-            return Err(anyhow!("No tower file found on active node"));
+        
+        if tower_exists.trim() != "exists" {
+            return Err(anyhow!("Tower file not found on active node: {}", tower_path));
         }
 
         let tower_filename = tower_path.split('/').last().unwrap_or("tower.bin");
         self.tower_file_name = Some(tower_filename.to_string());
+        
+        // Use detected ledger path if available, otherwise error
+        let standby_ledger_path = self
+            .standby_node_with_status
+            .ledger_path
+            .as_ref()
+            .ok_or_else(|| anyhow!("Ledger path not detected for standby node"))?;
+        
         let dest_path = format!(
             "{}/{}",
-            self.standby_node_with_status.node.paths.ledger, tower_filename
+            standby_ledger_path, tower_filename
         );
 
         println!(
@@ -563,22 +595,44 @@ impl SwitchManager {
                 ),
             )
         } else if process_info.contains("agave-validator") {
+            // Use detected agave executable path if available
+            let agave_path = self
+                .standby_node_with_status
+                .agave_validator_executable
+                .as_ref()
+                .ok_or_else(|| anyhow!("Agave validator executable path not found"))?;
+            
+            // Use detected ledger path if available, otherwise error
+            let ledger_path = self
+                .standby_node_with_status
+                .ledger_path
+                .as_ref()
+                .ok_or_else(|| anyhow!("Ledger path not detected for standby node"))?;
+            
             (
                 "Using Agave validator set-identity",
                 format!(
-                    "agave-validator -l {} set-identity --require-tower {}",
-                    self.standby_node_with_status.node.paths.ledger,
+                    "{} -l {} set-identity --require-tower {}",
+                    agave_path,
+                    ledger_path,
                     self.standby_node_with_status.node.paths.funded_identity
                 ),
             )
         } else {
+            // Use detected ledger path if available, otherwise error
+            let ledger_path = self
+                .standby_node_with_status
+                .ledger_path
+                .as_ref()
+                .ok_or_else(|| anyhow!("Ledger path not detected for standby node"))?;
+            
             (
                 "Using Solana validator restart",
                 format!("{} exit && sleep 2 && solana-validator --identity {} --vote-account {} --ledger {} --limit-ledger-size 100000000 --log - &", 
-                    self.standby_node_with_status.node.paths.solana_cli_path,
+                    "solana-validator",  // Using validator binary directly instead of solana CLI
                     self.standby_node_with_status.node.paths.funded_identity,
                     self.standby_node_with_status.node.paths.vote_keypair,
-                    self.standby_node_with_status.node.paths.ledger)
+                    ledger_path)
             )
         };
 
@@ -609,9 +663,16 @@ impl SwitchManager {
     }
 
     async fn verify_backup_catchup(&mut self, dry_run: bool) -> Result<()> {
+        // Use detected solana CLI or fall back to default
+        let default_solana = "solana".to_string();
+        let solana_cli = self.standby_node_with_status
+            .solana_cli_executable
+            .as_ref()
+            .unwrap_or(&default_solana);
+            
         let catchup_cmd = format!(
             "{} catchup --our-localhost",
-            self.standby_node_with_status.node.paths.solana_cli_path
+            solana_cli
         );
         println!(
             "ssh {}@{} '{}'",
@@ -638,7 +699,7 @@ impl SwitchManager {
             if catchup_result.contains("has caught up") || catchup_result.contains("slots behind") {
                 spinner.stop_with_message("✅ Standby validator is syncing with funded identity");
             } else {
-                spinner.stop_with_message("⚠️  Standby sync status unclear - monitor manually");
+                spinner.stop_with_message("⚠️  Standby sync status unclear - check manually");
             }
         }
 

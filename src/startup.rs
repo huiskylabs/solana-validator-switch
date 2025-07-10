@@ -862,7 +862,6 @@ async fn migrate_configuration(
 }
 
 async fn show_ready_prompt() {
-
     // Show animated ready message
     println!(
         "{}",

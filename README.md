@@ -17,8 +17,6 @@ curl -sSL https://raw.githubusercontent.com/huiskylabs/solana-validator-switch/m
 svs
 ```
 
-### Build from Source
-
 <details>
 <summary>Alternative installation methods (requires Rust and Cargo)</summary>
 
@@ -95,8 +93,7 @@ If SVS saves you time and SOL, consider:
 - [x] **Dry-run mode** - Test switches without executing for safety
 - [x] **SSH connection pooling** - Persistent connections for instant commands
 - [x] **Auto-detect active/standby** - Runtime detection of validator states
-- [x] **Tower file transfer** - Automated tower synchronization during switch
-- [x] **Cross-platform** - Pre-built binaries for Linux, macOS, and Windows
+- [x] **Tower file transfer** - Automated tower synchronization with progress tracking
 
 ### 🚧 In Progress
 - [ ] **Continuous monitoring** - Real-time validator health monitoring with configurable alerts

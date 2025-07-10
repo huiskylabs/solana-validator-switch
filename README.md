@@ -20,10 +20,10 @@ curl -sSL https://raw.githubusercontent.com/huiskylabs/solana-validator-switch/m
 svs
 ```
 
-### Build from Source
+### Alternative: Build from Source
 
 <details>
-<summary>Alternative installation methods (requires Rust and Cargo)</summary>
+<summary><sub>For developers or if the quick install doesn't work (requires Rust and Cargo)</sub></summary>
 
 #### Clone and Run
 ```bash

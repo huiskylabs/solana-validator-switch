@@ -4,79 +4,68 @@ Professional-grade CLI tool for ultra-fast Solana validator switching with runti
 
 > **Built by validators, for validators** - Stop losing sleep over manual switches. Get the fastest switch possible.
 
+<p align="center">
+  <strong>⭐ If this tool saves you time, please star the repo to help other validators discover it!</strong>
+</p>
+
 ## Installation
 
-### Option 1: Download Pre-built Binary (Recommended)
-
-Download the latest release for your platform from the [releases page](https://github.com/huiskylabs/solana-validator-switch/releases).
+### Quick Install (Recommended)
 
 ```bash
-# Linux/macOS
-curl -L https://github.com/huiskylabs/solana-validator-switch/releases/latest/download/svs-$(uname -m)-$(uname -s | tr '[:upper:]' '[:lower:]').tar.gz | tar xz
-sudo mv svs /usr/local/bin/
+# Auto-detects your platform and installs the latest version
+curl -sSL https://raw.githubusercontent.com/huiskylabs/solana-validator-switch/main/install.sh | bash
+
+# After installation, 'svs' is available immediately
+svs
 ```
 
-### Option 2: Build from Source
+### Build from Source
 
+<details>
+<summary>Alternative installation methods (requires Rust and Cargo)</summary>
+
+#### Clone and Run
 ```bash
-# Requires Rust toolchain
+git clone https://github.com/huiskylabs/solana-validator-switch
+cd solana-validator-switch
+cargo run --release
+```
+
+#### Install with Cargo
+```bash
 cargo install --git https://github.com/huiskylabs/solana-validator-switch
+
+# Add to PATH if not already there
+export PATH="$HOME/.cargo/bin:$PATH"
+svs
 ```
+</details>
 
 ## Usage
 
 ```bash
-# Available commands
-svs                    # Interactive menu
-svs status             # Check validator status
-svs switch             # Switch validators
-svs switch --dry-run   # Preview switch
-svs --version          # Show version
+svs           # Opens interactive menu
+svs --version # Show version
 ```
+
 
 ## Configuration
 
-Copy the example config and fill in your details:
-
 ```bash
-# Create config directory and copy example
 mkdir -p ~/.solana-validator-switch
 cp config.yaml.example ~/.solana-validator-switch/config.yaml
-# Edit with your validator details
 nano ~/.solana-validator-switch/config.yaml
 ```
 
-Example configuration:
-
-```yaml
-version: "1.0.0"
-validators:
-  - votePubkey: "YourVotePubkey..."
-    identityPubkey: "YourIdentityPubkey..."
-    rpc: "https://api.mainnet-beta.solana.com"
-    localSshKeyPath: "~/.ssh/id_rsa"
-    nodes:
-      - label: "Node 1"
-        host: "1.2.3.4"
-        port: 22
-        user: "solana"
-        paths:
-          fundedIdentity: "/home/solana/keypairs/funded-validator-keypair.json"
-          unfundedIdentity: "/home/solana/keypairs/unfunded-validator-keypair.json"
-          voteKeypair: "/home/solana/keypairs/vote-account-keypair.json"
-          ledger: "/mnt/solana_ledger"
-          tower: "/mnt/solana_ledger/tower-1_9-*.bin"
-          solanaCliPath: "/home/solana/.local/share/solana/install/active_release/bin/solana"
-```
+See [config.yaml.example](config.yaml.example) for the full configuration template.
 
 ## Key Features
 
-- **Ultra-Fast Switching**: Complete validator failover under 1 seconds
+- **Ultra-Fast Switching**: Get the fastest switch possible with optimized operations
 - **Runtime Status Detection**: Automatic active/standby node detection using validator monitor
 - **SSH Connection Pooling**: Persistent connections for ultra-fast operations
 - **Universal Support**: Works with Firedancer, Agave, Solana, and Jito validators
-- **Instant Status Commands**: Uses cached startup data for immediate responses
-- **Production Ready**: Built for 24/7 validator operations with robust error handling
 
 ## Security
 
@@ -84,22 +73,28 @@ validators:
 - **Path-only configuration**: Only file paths and hostnames stored in config files
 - **No network exposure**: Tool operates through SSH connections only
 - **Local execution**: All operations run locally, no external services
-- **Secure defaults**: Conservative security settings, requires explicit SSH key paths
-
-## Development
-
-```bash
-cargo build          # Build project
-cargo run            # Run in development
-cargo test           # Run tests
-cargo fmt            # Format code
-cargo clippy         # Lint code
-```
 
 ## Why SVS?
 
-Built by [huisky staking](https://huisky.xyz/), an active validator who needed reliable switching tools. Open-source, transparent, and focused on what validators actually need: fast, secure, and reliable operations.
+Built by [Huisky Labs](https://huisky.xyz/) validator team who needed reliable switching tools for our own operations. After countless manual switches and near-misses, we built what we wished existed.
+
+- **Battle-tested**: Used in production by Huisky Labs validators
+- **Community-driven**: We actively use and improve this tool daily
+- **Open source**: Transparency and security through open development
+
+### Support Development
+
+If SVS saves you time and SOL, consider:
+- ⭐ Starring this repo to help other validators find it
+- 🗳️ Delegating to [Huisky Labs validators](https://huisky.xyz/) 
+- 🐛 Reporting issues or contributing improvements
 
 ## License
 
 MIT License
+
+---
+
+<div align="center">
+Built with ❤️ by <a href="https://huisky.xyz/">Huisky Labs</a> • <a href="https://github.com/huiskylabs">GitHub</a> • <a href="https://twitter.com/huiskylabs">Twitter</a>
+</div>

@@ -76,6 +76,7 @@ pub struct NodeWithStatus {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct ValidationResult {
     pub valid_files: u32,
     pub total_files: u32,

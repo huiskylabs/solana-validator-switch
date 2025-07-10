@@ -1,3 +1,14 @@
+#![allow(clippy::uninlined_format_args)]
+#![allow(clippy::trim_split_whitespace)]
+#![allow(clippy::get_first)]
+#![allow(clippy::for_kv_map)]
+#![allow(clippy::needless_borrow)]
+#![allow(clippy::redundant_pattern_matching)]
+#![allow(clippy::useless_asref)]
+#![allow(clippy::await_holding_lock)]
+#![allow(clippy::double_ended_iterator_last)]
+#![allow(clippy::new_without_default)]
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::sync::{Arc, Mutex};

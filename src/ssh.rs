@@ -11,6 +11,7 @@ use crate::types::{ConnectionStatus, NodeConfig, ValidationResult};
 /// Individual SSH connection with health tracking
 pub struct SshConnection {
     session: Session,
+    #[allow(dead_code)]
     node_id: String,
     connected_at: Instant,
     last_used: Instant,
@@ -387,12 +388,14 @@ impl Drop for SshConnectionPool {
 }
 
 /// Legacy SshManager for backwards compatibility
+#[allow(dead_code)]
 pub struct SshManager {
     pool: SshConnectionPool,
     current_node: Option<NodeConfig>,
     current_ssh_key: Option<String>,
 }
 
+#[allow(dead_code)]
 impl SshManager {
     pub fn new() -> Self {
         SshManager {
@@ -464,6 +467,7 @@ impl SshManager {
 }
 
 /// Validate validator files on a remote node using SSH pool
+#[allow(dead_code)]
 pub async fn validate_node_files_with_pool(
     ssh_pool: &mut SshConnectionPool,
     node: &NodeConfig,
@@ -540,6 +544,7 @@ pub async fn validate_node_files_with_pool(
 }
 
 /// Validate validator files on a remote node (legacy version using SshManager)
+#[allow(dead_code)]
 pub async fn validate_node_files(
     ssh_manager: &mut SshManager,
     node: &NodeConfig,

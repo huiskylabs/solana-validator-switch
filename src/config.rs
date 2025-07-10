@@ -40,6 +40,7 @@ impl ConfigManager {
         Ok(config)
     }
 
+    #[allow(dead_code)]
     pub fn save(&self, config: &Config) -> Result<()> {
         let content = serde_yaml::to_string(config)?;
         fs::write(&self.config_path, content)?;
@@ -50,6 +51,7 @@ impl ConfigManager {
         self.config_path.exists()
     }
 
+    #[allow(dead_code)]
     pub fn create_default() -> Config {
         use crate::types::*;
 

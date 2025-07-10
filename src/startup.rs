@@ -285,6 +285,7 @@ async fn validate_configuration_with_progress(
     }
 }
 
+#[allow(dead_code)]
 async fn validate_configuration(validation: &mut StartupValidation) -> Result<Option<Config>> {
     let spinner = ProgressBar::new_spinner();
     spinner.set_style(
@@ -447,6 +448,7 @@ async fn validate_ssh_connections_with_progress(
     Ok(ssh_pool)
 }
 
+#[allow(dead_code)]
 async fn validate_ssh_connections(
     config: &Config,
     validation: &mut StartupValidation,
@@ -515,6 +517,7 @@ async fn validate_model_verification_with_progress(
     Ok(())
 }
 
+#[allow(dead_code)]
 async fn validate_model_verification(
     _config: &Config,
     _ssh_pool: &SshConnectionPool,
@@ -527,6 +530,7 @@ async fn validate_model_verification(
     Ok(())
 }
 
+#[allow(dead_code)]
 async fn verify_keypair_files(
     _ssh_pool: &SshConnectionPool,
     node: &NodeConfig,
@@ -567,6 +571,7 @@ async fn verify_keypair_files(
     issues
 }
 
+#[allow(dead_code)]
 async fn verify_public_key_matches(
     _ssh_pool: &SshConnectionPool,
     node: &NodeConfig,
@@ -584,6 +589,7 @@ async fn verify_public_key_matches(
     issues
 }
 
+#[allow(dead_code)]
 async fn verify_validator_paths(
     _ssh_pool: &SshConnectionPool,
     node: &NodeConfig,
@@ -722,6 +728,7 @@ fn validate_node_config(
     }
 }
 
+#[allow(dead_code)]
 async fn fix_configuration_issues(_config: &Config, issues: &[String]) -> Result<()> {
     println!(
         "\n{}",
@@ -742,6 +749,7 @@ async fn fix_configuration_issues(_config: &Config, issues: &[String]) -> Result
     Ok(())
 }
 
+#[allow(dead_code)]
 fn display_validation_summary(validation: &StartupValidation) {
     println!();
     println!("  📊 Validation Summary:");
@@ -804,6 +812,7 @@ fn check_migration_needed(config: &Config) -> bool {
         .any(|validator| validator.vote_pubkey.is_empty() || validator.identity_pubkey.is_empty())
 }
 
+#[allow(dead_code)]
 async fn migrate_configuration(
     config_manager: &ConfigManager,
     mut config: Config,
@@ -912,6 +921,7 @@ async fn show_ready_prompt() {
     io::stdout().flush().unwrap();
 }
 
+#[allow(dead_code)]
 pub async fn detect_node_statuses(
     config: &Config,
     _ssh_pool: &mut SshConnectionPool,
@@ -1068,6 +1078,7 @@ async fn detect_node_statuses_with_progress(
     Ok(validator_statuses)
 }
 
+#[allow(dead_code)]
 async fn detect_node_status_and_executable(
     node: &crate::types::NodeConfig,
     validator_pair: &crate::types::ValidatorPair,

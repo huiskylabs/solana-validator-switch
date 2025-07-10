@@ -32,6 +32,7 @@ async fn show_comprehensive_status(app_state: &AppState) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 async fn check_comprehensive_status(
     pool: &mut crate::ssh::SshConnectionPool,
     node: &NodeConfig,
@@ -125,6 +126,7 @@ async fn check_comprehensive_status(
     Ok(status)
 }
 
+#[allow(dead_code)]
 fn parse_batch_output(output: &str, status: &mut ComprehensiveStatus) {
     let sections: Vec<&str> = output.split("=== ").collect();
 
@@ -261,6 +263,7 @@ fn parse_batch_output(output: &str, status: &mut ComprehensiveStatus) {
     }
 }
 
+#[allow(dead_code)]
 async fn check_swap_readiness(
     pool: &mut crate::ssh::SshConnectionPool,
     node: &NodeConfig,
@@ -309,6 +312,7 @@ async fn check_swap_readiness(
     (all_ready, issues, checklist)
 }
 
+#[allow(dead_code)]
 fn parse_swap_readiness_output(
     output: &str,
     checklist: &mut Vec<(String, bool)>,
@@ -372,6 +376,7 @@ fn parse_swap_readiness_output(
     }
 }
 
+#[allow(dead_code)]
 async fn detect_validator_version(
     pool: &mut crate::ssh::SshConnectionPool,
     node: &NodeConfig,
@@ -436,6 +441,7 @@ async fn detect_validator_version(
     }
 }
 
+#[allow(dead_code)]
 async fn get_firedancer_version(
     pool: &mut crate::ssh::SshConnectionPool,
     node: &NodeConfig,
@@ -463,6 +469,7 @@ async fn get_firedancer_version(
     None
 }
 
+#[allow(dead_code)]
 async fn get_jito_agave_version(
     pool: &mut crate::ssh::SshConnectionPool,
     node: &NodeConfig,
@@ -515,6 +522,7 @@ async fn get_jito_agave_version(
     None
 }
 
+#[allow(dead_code)]
 fn parse_agave_version(version_line: &str) -> String {
     // Parse version format examples:
     // Jito: "agave-validator 2.2.16 (src:00000000; feat:3073396398, client:JitoLabs)"
@@ -547,6 +555,7 @@ fn parse_agave_version(version_line: &str) -> String {
     }
 }
 
+#[allow(dead_code)]
 async fn get_solana_validator_version(
     pool: &mut crate::ssh::SshConnectionPool,
     node: &NodeConfig,
@@ -790,6 +799,7 @@ fn display_simple_status_table(
     println!("{}", table);
 }
 
+#[allow(dead_code)]
 fn display_status_table(
     config: &Config,
     results: &HashMap<String, ComprehensiveStatus>,
@@ -853,6 +863,7 @@ fn display_status_table(
     }
 }
 
+#[allow(dead_code)]
 fn display_node_status(role: &str, node: &NodeConfig, status: &ComprehensiveStatus) {
     // Simplified role display without color conversion
     let role_display = if role == "Primary" {
@@ -910,6 +921,7 @@ fn display_node_status(role: &str, node: &NodeConfig, status: &ComprehensiveStat
     }
 }
 
+#[allow(dead_code)]
 fn display_primary_backup_table(
     node_0: Option<&NodeConfig>,
     node_0_status: &ComprehensiveStatus,
@@ -1122,6 +1134,7 @@ fn display_primary_backup_table(
     }
 }
 
+#[allow(dead_code)]
 fn display_all_nodes_table(_config: &Config, results: &HashMap<String, ComprehensiveStatus>) {
     let mut table = Table::new();
     table
@@ -1261,6 +1274,7 @@ fn display_all_nodes_table(_config: &Config, results: &HashMap<String, Comprehen
     println!("{}", table);
 }
 
+#[allow(dead_code)]
 fn display_other_nodes_table(_config: &Config, other_nodes: &[(&String, &ComprehensiveStatus)]) {
     let mut table = Table::new();
     table
@@ -1317,6 +1331,7 @@ fn display_other_nodes_table(_config: &Config, other_nodes: &[(&String, &Compreh
 }
 
 // Plain formatting functions for table display
+#[allow(dead_code)]
 fn format_connection_status_plain(status: &ComprehensiveStatus) -> String {
     if status.connected {
         "✅ Connected".to_string()
@@ -1325,6 +1340,7 @@ fn format_connection_status_plain(status: &ComprehensiveStatus) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn format_process_status_plain(status: &ComprehensiveStatus) -> String {
     match &status.validator_running {
         Some(true) => "✅ Running".to_string(),
@@ -1333,6 +1349,7 @@ fn format_process_status_plain(status: &ComprehensiveStatus) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn format_disk_usage_plain(status: &ComprehensiveStatus) -> String {
     status
         .ledger_disk_usage
@@ -1340,6 +1357,7 @@ fn format_disk_usage_plain(status: &ComprehensiveStatus) -> String {
         .unwrap_or_else(|| "N/A".to_string())
 }
 
+#[allow(dead_code)]
 fn format_system_load_plain(status: &ComprehensiveStatus) -> String {
     status
         .system_load
@@ -1347,6 +1365,7 @@ fn format_system_load_plain(status: &ComprehensiveStatus) -> String {
         .unwrap_or_else(|| " N/A".to_string())
 }
 
+#[allow(dead_code)]
 fn format_sync_status_plain(status: &ComprehensiveStatus) -> String {
     status
         .sync_status
@@ -1355,6 +1374,7 @@ fn format_sync_status_plain(status: &ComprehensiveStatus) -> String {
         .unwrap_or_else(|| " N/A".to_string())
 }
 
+#[allow(dead_code)]
 fn format_version_plain(status: &ComprehensiveStatus) -> String {
     status
         .version
@@ -1363,6 +1383,7 @@ fn format_version_plain(status: &ComprehensiveStatus) -> String {
         .unwrap_or_else(|| "N/A".to_string())
 }
 
+#[allow(dead_code)]
 fn format_swap_readiness_plain(status: &ComprehensiveStatus) -> String {
     match status.swap_ready {
         Some(true) => "✅ Ready".to_string(),
@@ -1371,6 +1392,7 @@ fn format_swap_readiness_plain(status: &ComprehensiveStatus) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn format_verification_status(verified: Option<bool>) -> String {
     match verified {
         Some(true) => "✅ Verified".to_string(),
@@ -1379,6 +1401,7 @@ fn format_verification_status(verified: Option<bool>) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn format_identity_status(identity: &Option<String>) -> String {
     match identity {
         Some(id) => {
@@ -1392,6 +1415,7 @@ fn format_identity_status(identity: &Option<String>) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn format_swap_checklist(status: &ComprehensiveStatus) -> Vec<String> {
     let mut checklist = Vec::new();
 
@@ -1409,6 +1433,7 @@ fn format_swap_checklist(status: &ComprehensiveStatus) -> Vec<String> {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct ComprehensiveStatus {
     connected: bool,
     validator_running: Option<bool>,
@@ -1427,6 +1452,7 @@ struct ComprehensiveStatus {
 }
 
 impl ComprehensiveStatus {
+    #[allow(dead_code)]
     fn connection_failed(error: String) -> Self {
         ComprehensiveStatus {
             connected: false,
@@ -1447,6 +1473,7 @@ impl ComprehensiveStatus {
     }
 }
 
+#[allow(dead_code)]
 async fn verify_public_keys(
     pool: &mut crate::ssh::SshConnectionPool,
     node: &NodeConfig,

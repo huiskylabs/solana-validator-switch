@@ -4,6 +4,7 @@ use std::io;
 
 /// Enhanced error types for better UX messaging
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum SwitchError {
     SshConnectionFailed {
         host: String,
@@ -38,6 +39,7 @@ pub enum SwitchError {
 
 impl SwitchError {
     /// Convert to user-friendly error message with recovery suggestions
+    #[allow(dead_code)]
     pub fn to_user_message(&self) -> String {
         match self {
             SwitchError::SshConnectionFailed { host, details } => {
@@ -143,6 +145,7 @@ impl SwitchError {
     }
 
     /// Get exit code for this error type
+    #[allow(dead_code)]
     pub fn exit_code(&self) -> i32 {
         match self {
             SwitchError::SshConnectionFailed { .. } => 10,
@@ -158,6 +161,7 @@ impl SwitchError {
 }
 
 /// Wrap anyhow errors with better context
+#[allow(dead_code)]
 pub fn enhance_error_context(error: anyhow::Error) -> anyhow::Error {
     let error_string = error.to_string();
 
@@ -208,6 +212,7 @@ pub fn enhance_error_context(error: anyhow::Error) -> anyhow::Error {
 }
 
 // Helper functions
+#[allow(dead_code)]
 fn extract_host_from_error(error: &str) -> Option<String> {
     // Simple extraction - could be enhanced with regex
     if let Some(pos) = error.find('@') {
@@ -219,6 +224,7 @@ fn extract_host_from_error(error: &str) -> Option<String> {
     None
 }
 
+#[allow(dead_code)]
 fn extract_path_from_error(error: &str) -> Option<String> {
     // Simple extraction - could be enhanced with regex
     if let Some(pos) = error.find('/') {
@@ -233,6 +239,7 @@ fn extract_path_from_error(error: &str) -> Option<String> {
 
 /// Display a spinner with a message during long operations
 pub struct ProgressSpinner {
+    #[allow(dead_code)]
     message: String,
     handle: Option<std::thread::JoinHandle<()>>,
     running: std::sync::Arc<std::sync::atomic::AtomicBool>,

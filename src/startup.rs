@@ -93,13 +93,26 @@ pub async fn run_startup_checklist() -> Result<Option<crate::AppState>> {
         progress_bar.set_message("🔍 Detecting validator statuses...");
         progress_bar.set_position(85);
 
-        let statuses = detect_node_statuses_with_progress(
+        let mut statuses = detect_node_statuses_with_progress(
             &config.as_ref().unwrap(),
             &ssh_pool.as_ref().unwrap(),
             &progress_bar,
         )
         .await?;
         progress_bar.set_position(95);
+        
+        // Fetch validator metadata
+        progress_bar.set_message("🔍 Fetching validator metadata...");
+        for status in &mut statuses {
+            if let Ok(metadata) = crate::validator_metadata::fetch_validator_metadata(
+                &status.validator_pair.rpc,
+                &status.validator_pair.identity_pubkey,
+            ).await {
+                status.metadata = metadata;
+            }
+        }
+        progress_bar.set_position(98);
+        
         Some(statuses)
     } else {
         None
@@ -121,10 +134,14 @@ pub async fn run_startup_checklist() -> Result<Option<crate::AppState>> {
             // Show "press any key to continue" prompt
             show_ready_prompt().await;
 
+            // Create metadata cache
+            let metadata_cache = Arc::new(Mutex::new(crate::validator_metadata::MetadataCache::new()));
+            
             Ok(Some(crate::AppState {
                 ssh_pool: Arc::new(Mutex::new(ssh_pool)),
                 config,
                 validator_statuses,
+                metadata_cache,
             }))
         } else {
             println!("\n{}", "❌ Validator status detection failed.".red().bold());
@@ -917,6 +934,7 @@ pub async fn detect_node_statuses(
         validator_statuses.push(crate::ValidatorStatus {
             validator_pair: validator_pair.clone(),
             nodes_with_status,
+            metadata: None, // Will be fetched later
         });
     }
 
@@ -1038,6 +1056,7 @@ async fn detect_node_statuses_with_progress(
         validator_statuses.push(crate::ValidatorStatus {
             validator_pair: validator_pair.clone(),
             nodes_with_status,
+            metadata: None, // Will be fetched later
         });
     }
 

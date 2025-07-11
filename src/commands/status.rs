@@ -546,12 +546,41 @@ fn display_status_table_from_app_state(app_state: &AppState) {
 
     for (index, validator_status) in app_state.validator_statuses.iter().enumerate() {
         let validator_pair = &validator_status.validator_pair;
-        println!(
-            "{} Validator {} - Vote: {}",
-            "🔗".bright_cyan(),
-            index + 1,
-            validator_pair.vote_pubkey
-        );
+        
+        // Display validator info with name if available
+        if let Some(ref metadata) = validator_status.metadata {
+            if let Some(ref name) = metadata.name {
+                println!(
+                    "{} Validator: {}",
+                    "🔗".bright_cyan(),
+                    name.bright_white().bold()
+                );
+                println!(
+                    "   Vote: {}",
+                    validator_pair.vote_pubkey.dimmed()
+                );
+                println!(
+                    "   Identity: {}",
+                    validator_pair.identity_pubkey.dimmed()
+                );
+            } else {
+                // No name in metadata
+                println!(
+                    "{} Validator {} - Vote: {}",
+                    "🔗".bright_cyan(),
+                    index + 1,
+                    validator_pair.vote_pubkey
+                );
+            }
+        } else {
+            // No metadata available
+            println!(
+                "{} Validator {} - Vote: {}",
+                "🔗".bright_cyan(),
+                index + 1,
+                validator_pair.vote_pubkey
+            );
+        }
         println!();
 
         // Get the two nodes with their statuses

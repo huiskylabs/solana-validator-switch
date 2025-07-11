@@ -18,6 +18,7 @@ mod config;
 mod ssh;
 mod startup;
 mod types;
+mod validator_metadata;
 
 use commands::{status_command, switch_command};
 use ssh::SshConnectionPool;
@@ -48,12 +49,14 @@ pub struct AppState {
     pub ssh_pool: Arc<Mutex<SshConnectionPool>>,
     pub config: types::Config,
     pub validator_statuses: Vec<ValidatorStatus>,
+    pub metadata_cache: Arc<Mutex<validator_metadata::MetadataCache>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ValidatorStatus {
     pub validator_pair: types::ValidatorPair,
     pub nodes_with_status: Vec<types::NodeWithStatus>,
+    pub metadata: Option<validator_metadata::ValidatorMetadata>,
 }
 
 impl AppState {

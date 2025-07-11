@@ -796,34 +796,6 @@ fn display_simple_status_table(
         Cell::new(node_1_ledger),
     ]);
 
-    // Add tower path (derived from ledger path and identity)
-    let node_0_tower = validator_status
-        .nodes_with_status
-        .get(0)
-        .and_then(|n| n.tower_path.as_ref())
-        .map(|path| {
-            // Extract just the filename for display
-            path.split('/').last().unwrap_or(path).to_string()
-        })
-        .unwrap_or("N/A".to_string());
-    let node_1_tower = validator_status
-        .nodes_with_status
-        .get(1)
-        .and_then(|n| n.tower_path.as_ref())
-        .map(|path| {
-            // Extract just the filename for display
-            path.split('/').last().unwrap_or(path).to_string()
-        })
-        .unwrap_or("N/A".to_string());
-
-    table.add_row(vec![
-        Cell::new("Tower File")
-            .add_attribute(Attribute::Bold)
-            .fg(Color::Cyan),
-        Cell::new(node_0_tower),
-        Cell::new(node_1_tower),
-    ]);
-
     // Add swap readiness
     let node_0_swap = validator_status
         .nodes_with_status

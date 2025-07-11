@@ -1180,9 +1180,9 @@ async fn detect_node_status_and_executable(
                 )
                 .await
             {
-                // Parse fdctl version output
+                // Parse fdctl version output - first part is version, second is git hash
                 if let Some(line) = version_output.lines().next() {
-                    if let Some(version_match) = line.split_whitespace().nth(1) {
+                    if let Some(version_match) = line.split_whitespace().next() {
                         version = Some(format!("Firedancer {}", version_match));
                     }
                 }
@@ -1647,9 +1647,9 @@ async fn detect_node_status_and_executable_with_progress(
                 )
                 .await
             {
-                // Parse fdctl version output
+                // Parse fdctl version output - first part is version, second is git hash
                 if let Some(line) = version_output.lines().next() {
-                    if let Some(version_match) = line.split_whitespace().nth(1) {
+                    if let Some(version_match) = line.split_whitespace().next() {
                         version = Some(format!("Firedancer {}", version_match));
                     }
                 }

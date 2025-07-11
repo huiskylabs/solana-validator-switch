@@ -268,8 +268,8 @@ impl SwitchManager {
             self.identity_switch_time = Some(total_switch_start.elapsed());
         }
 
-        // Step 4: Verify standby catchup
-        println!("\n{}", "✅ Verify Standby Catchup".bright_blue().bold());
+        // Step 4: Verify new active node catchup (former standby)
+        println!("\n{}", "✅ Verify New Active Node (Former Standby)".bright_blue().bold());
         self.verify_backup_catchup(dry_run).await?;
 
         // Summary
@@ -684,7 +684,7 @@ impl SwitchManager {
         if !dry_run {
             tokio::time::sleep(Duration::from_secs(10)).await;
 
-            let spinner = ProgressSpinner::new("Verifying standby validator catchup status...");
+            let spinner = ProgressSpinner::new("Verifying new active validator (former standby) catchup status...");
 
             let catchup_result = {
                 let mut pool = self.ssh_pool.lock().unwrap();
@@ -697,9 +697,9 @@ impl SwitchManager {
             };
 
             if catchup_result.contains("has caught up") || catchup_result.contains("slots behind") {
-                spinner.stop_with_message("✅ Standby validator is syncing with funded identity");
+                spinner.stop_with_message("✅ New active validator (former standby) is syncing with funded identity");
             } else {
-                spinner.stop_with_message("⚠️  Standby sync status unclear - check manually");
+                spinner.stop_with_message("⚠️  New active validator sync status unclear - check manually");
             }
         }
 

@@ -81,7 +81,10 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Switch { dry_run }) => {
             if let Some(state) = app_state.as_ref() {
-                switch_command(dry_run, state).await?;
+                let show_status = switch_command(dry_run, state).await?;
+                if show_status && !dry_run {
+                    status_command(state).await?;
+                }
             } else {
                 // Startup validation already showed detailed error messages
                 std::process::exit(1);
@@ -178,7 +181,10 @@ async fn show_switch_menu(app_state: Option<&AppState>) -> Result<()> {
         match index {
             0 => {
                 if let Some(state) = app_state {
-                    switch_command(false, state).await?;
+                    let show_status = switch_command(false, state).await?;
+                    if show_status {
+                        status_command(state).await?;
+                    }
                     // After a live switch, return to main menu
                     break;
                 } else {
@@ -188,7 +194,8 @@ async fn show_switch_menu(app_state: Option<&AppState>) -> Result<()> {
             }
             1 => {
                 if let Some(state) = app_state {
-                    switch_command(true, state).await?;
+                    let _ = switch_command(true, state).await?;
+                    // Dry run doesn't show status
                 } else {
                     // This should never happen since we only show menu with valid state
                     std::process::exit(1);

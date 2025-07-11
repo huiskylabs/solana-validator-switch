@@ -4,7 +4,7 @@ use colored::*;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-pub async fn switch_command(dry_run: bool, app_state: &crate::AppState) -> Result<()> {
+pub async fn switch_command(dry_run: bool, app_state: &crate::AppState) -> Result<bool> {
     // Validate we have at least one validator configured
     if app_state.config.validators.is_empty() {
         return Err(anyhow!("No validators configured"));
@@ -70,7 +70,7 @@ pub async fn switch_command(dry_run: bool, app_state: &crate::AppState) -> Resul
     );
 
     // Execute the switch process
-    switch_manager.execute_switch(dry_run).await?;
+    let show_status = switch_manager.execute_switch(dry_run).await?;
 
     // Show completion message with timing breakdown
     if !dry_run {
@@ -115,16 +115,11 @@ pub async fn switch_command(dry_run: bool, app_state: &crate::AppState) -> Resul
             );
         }
         println!();
-        println!(
-            "{}",
-            "💡 Tip: Check Status menu to see updated validator roles".dimmed()
-        );
-        println!();
-        println!("{}", "Press any key to continue...".dimmed());
+        println!("{}", "Press any key to view status...".dimmed());
         let _ = std::io::stdin().read_line(&mut String::new());
     }
 
-    Ok(())
+    Ok(show_status)
 }
 
 pub(crate) struct SwitchManager {
@@ -159,7 +154,7 @@ impl SwitchManager {
         }
     }
 
-    async fn execute_switch(&mut self, dry_run: bool) -> Result<()> {
+    async fn execute_switch(&mut self, dry_run: bool) -> Result<bool> {
         // Show confirmation dialog (except for dry run)
         if !dry_run {
             println!(
@@ -212,7 +207,7 @@ impl SwitchManager {
 
             if !confirmed {
                 println!("\n{}", "❌ Validator switch cancelled by user".red());
-                return Ok(());
+                return Ok(false);
             }
             println!();
         }
@@ -275,7 +270,7 @@ impl SwitchManager {
         // Summary
         self.print_summary(dry_run);
 
-        Ok(())
+        Ok(!dry_run)
     }
 
     async fn switch_primary_to_unfunded(&mut self, dry_run: bool) -> Result<()> {

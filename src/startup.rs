@@ -1092,6 +1092,7 @@ async fn detect_node_status_and_executable(
     let mut sync_status = None;
     let mut current_identity = None;
     let mut ledger_path = None;
+    #[allow(unused_variables, unused_assignments)]
     let mut firedancer_config_path = None;
 
     // First, check what validator is actually running
@@ -1502,6 +1503,7 @@ async fn detect_node_status_and_executable_with_progress(
     let mut sync_status = None;
     let mut current_identity = None;
     let mut ledger_path = None;
+    #[allow(unused_variables, unused_assignments)]
     let mut firedancer_config_path = None;
 
     // Step 2: Executable Detection

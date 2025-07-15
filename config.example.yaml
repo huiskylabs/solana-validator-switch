@@ -42,7 +42,7 @@ validators:
 
           # Path to vote account keypair
           voteKeypair: /home/solana/keypairs/vote-account-keypair.json
-          
+
           # Note: The following paths are automatically detected from running processes:
           # - ledger path
           # - tower file location
@@ -71,9 +71,6 @@ validators:
 #         fundedIdentity: /home/solana/.secrets/funded-validator-keypair.json
 #         unfundedIdentity: /home/solana/.secrets/unfunded-validator-keypair.json
 #         voteKeypair: /home/solana/.secrets/vote-account-keypair.json
-#         ledger: /mnt/solana-data/ledger
-#         tower: /mnt/solana-data/ledger/tower-1_9-*.bin
-#         solanaCliPath: /home/solana/.local/share/solana/install/active_release/bin/solana
 #     - label: second-validator-node-2
 #       host: 10.0.1.2
 #       port: 22
@@ -82,12 +79,8 @@ validators:
 #         fundedIdentity: /home/solana/.secrets/funded-validator-keypair.json
 #         unfundedIdentity: /home/solana/.secrets/unfunded-validator-keypair.json
 #         voteKeypair: /home/solana/.secrets/vote-account-keypair.json
-#         ledger: /mnt/solana-data/ledger
-#         tower: /mnt/solana-data/ledger/tower-1_9-*.bin
-#         solanaCliPath: /home/solana/.local/share/solana/install/active_release/bin/solana
 
 # SSH key authentication notes:
 # - The tool will automatically detect your SSH keys
 # - Tries common locations: ~/.ssh/id_rsa, ~/.ssh/id_ed25519, etc.
-# - Supports SSH agent authentication
 # - Ensure SSH key authentication is set up for both nodes

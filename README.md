@@ -53,11 +53,11 @@ svs --version # Show version
 
 ```bash
 mkdir -p ~/.solana-validator-switch
-cp config.yaml.example ~/.solana-validator-switch/config.yaml
+cp config.example.yaml ~/.solana-validator-switch/config.yaml
 nano ~/.solana-validator-switch/config.yaml
 ```
 
-See [config.yaml.example](config.yaml.example) for the full configuration template.
+See [config.example.yaml](config.example.yaml) for the full configuration template.
 
 ## Key Features
 

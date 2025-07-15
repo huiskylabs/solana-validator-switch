@@ -395,7 +395,7 @@ impl SwitchManager {
                 )
                 .await?;
             }
-            tokio::time::sleep(Duration::from_secs(3)).await;
+            // No sleep - move immediately to next step!
             spinner.stop_with_message("✅ Active validator switched to unfunded identity");
         }
 
@@ -648,7 +648,7 @@ impl SwitchManager {
                 )
                 .await?;
             }
-            tokio::time::sleep(Duration::from_secs(5)).await;
+            // No sleep - switch is complete!
             spinner.stop_with_message("✅ Standby validator switched to funded identity");
         }
 
@@ -675,8 +675,7 @@ impl SwitchManager {
         );
 
         if !dry_run {
-            tokio::time::sleep(Duration::from_secs(10)).await;
-
+            // No sleep - verify immediately!
             let spinner = ProgressSpinner::new("Verifying new active validator (former standby) catchup status...");
 
             let catchup_result = {

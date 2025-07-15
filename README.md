@@ -4,6 +4,10 @@ Professional-grade CLI tool for ultra-fast Solana validator switching with runti
 
 > **Built by validators, for validators** - Stop losing sleep over manual switches. Get the fastest switch possible.
 
+## 🎥 Demo
+
+![Solana Validator Switch Demo](assets/demo.gif)
+
 
 ## Installation
 

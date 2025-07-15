@@ -215,9 +215,17 @@ impl SshConnectionPool {
             self.config.connect_timeout,
         )?;
 
-        tcp.set_read_timeout(Some(self.config.connect_timeout))?;
-        tcp.set_write_timeout(Some(self.config.connect_timeout))?;
-        tcp.set_nodelay(true)?; // Disable Nagle's algorithm for lower latency
+        // Optimize TCP settings for ultra-low latency
+        tcp.set_nodelay(true)?; // Disable Nagle's algorithm
+        tcp.set_read_timeout(Some(Duration::from_secs(30)))?; // Longer timeout for stability
+        tcp.set_write_timeout(Some(Duration::from_secs(30)))?;
+        
+        // Set TCP keep-alive for connection health
+        let keepalive = socket2::TcpKeepalive::new()
+            .with_time(Duration::from_secs(10))
+            .with_interval(Duration::from_secs(2));
+        let sock_ref = socket2::SockRef::from(&tcp);
+        sock_ref.set_tcp_keepalive(&keepalive)?;
 
         // Create SSH session
         let mut session = Session::new()?;

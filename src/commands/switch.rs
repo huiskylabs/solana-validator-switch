@@ -70,6 +70,27 @@ pub async fn switch_command(dry_run: bool, app_state: &crate::AppState) -> Resul
         app_state.detected_ssh_keys.clone(),
     );
 
+    // Pre-warm SSH connections to both nodes for faster switching
+    if !dry_run {
+        let spinner = ProgressSpinner::new("Pre-warming SSH connections...");
+        
+        // Get SSH keys for both nodes
+        let active_ssh_key = app_state.detected_ssh_keys.get(&active_node_with_status.node.host)
+            .ok_or_else(|| anyhow!("No SSH key detected for active node"))?;
+        let standby_ssh_key = app_state.detected_ssh_keys.get(&standby_node_with_status.node.host)
+            .ok_or_else(|| anyhow!("No SSH key detected for standby node"))?;
+        
+        // Pre-warm both connections (they'll be reused from the pool during switch)
+        {
+            let mut pool = app_state.ssh_pool.lock().unwrap();
+            // Trigger connection creation for both nodes
+            let _ = pool.get_connection(&active_node_with_status.node, active_ssh_key).await?;
+            let _ = pool.get_connection(&standby_node_with_status.node, standby_ssh_key).await?;
+        }
+        
+        spinner.stop_with_message("✅ SSH connections ready");
+    }
+
     // Execute the switch process
     let show_status = switch_manager.execute_switch(dry_run).await?;
 
@@ -366,7 +387,7 @@ impl SwitchManager {
             
             (
                 "Using Solana validator restart",
-                format!("{} exit && sleep 2 && solana-validator --identity {} --vote-account {} --ledger {} --limit-ledger-size 100000000 --log - &", 
+                format!("{} exit && solana-validator --identity {} --vote-account {} --ledger {} --limit-ledger-size 100000000 --log - &", 
                     "solana-validator",  // Using validator binary directly instead of solana CLI
                     self.active_node_with_status.node.paths.unfunded_identity,
                     self.active_node_with_status.node.paths.vote_keypair,
@@ -620,7 +641,7 @@ impl SwitchManager {
             
             (
                 "Using Solana validator restart",
-                format!("{} exit && sleep 2 && solana-validator --identity {} --vote-account {} --ledger {} --limit-ledger-size 100000000 --log - &", 
+                format!("{} exit && solana-validator --identity {} --vote-account {} --ledger {} --limit-ledger-size 100000000 --log - &", 
                     "solana-validator",  // Using validator binary directly instead of solana CLI
                     self.standby_node_with_status.node.paths.funded_identity,
                     self.standby_node_with_status.node.paths.vote_keypair,

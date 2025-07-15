@@ -1389,6 +1389,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "socket2",
  "ssh2",
  "tokio",
  "url",

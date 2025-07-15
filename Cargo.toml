@@ -34,3 +34,4 @@ url = "2.5.4"
 reqwest = { version = "0.11", features = ["json"] }
 base64 = "0.21"
 bs58 = "0.5"
+socket2 = "0.5"

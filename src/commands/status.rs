@@ -245,9 +245,11 @@ async fn check_swap_readiness(
     let mut all_ready = true;
 
     // Use detected ledger path if available, otherwise use a default
-    let ledger = ledger_path.map(|s| s.as_str()).unwrap_or("/mnt/solana_ledger");
+    let ledger = ledger_path
+        .map(|s| s.as_str())
+        .unwrap_or("/mnt/solana_ledger");
     let tower_pattern = format!("{}/tower-1_9-*.bin", ledger);
-    
+
     // Batch file checks into single command
     let file_check_cmd = format!(
         "echo '=== FILES ===' && \
@@ -546,7 +548,7 @@ fn display_status_table_from_app_state(app_state: &AppState) {
 
     for (index, validator_status) in app_state.validator_statuses.iter().enumerate() {
         let validator_pair = &validator_status.validator_pair;
-        
+
         // Display validator info with name if available
         if let Some(ref metadata) = validator_status.metadata {
             if let Some(ref name) = metadata.name {
@@ -555,14 +557,8 @@ fn display_status_table_from_app_state(app_state: &AppState) {
                     "🔗".bright_cyan(),
                     name.bright_white().bold()
                 );
-                println!(
-                    "   Vote: {}",
-                    validator_pair.vote_pubkey.dimmed()
-                );
-                println!(
-                    "   Identity: {}",
-                    validator_pair.identity_pubkey.dimmed()
-                );
+                println!("   Vote: {}", validator_pair.vote_pubkey.dimmed());
+                println!("   Identity: {}", validator_pair.identity_pubkey.dimmed());
             } else {
                 // No name in metadata
                 println!(
@@ -1559,10 +1555,7 @@ async fn verify_public_keys(
         .execute_command(
             node,
             ssh_key_path,
-            &format!(
-                "{} address -k {}",
-                "solana", node.paths.funded_identity
-            ),
+            &format!("{} address -k {}", "solana", node.paths.funded_identity),
         )
         .await
     {
@@ -1588,10 +1581,7 @@ async fn verify_public_keys(
         .execute_command(
             node,
             ssh_key_path,
-            &format!(
-                "{} address -k {}",
-                "solana", node.paths.vote_keypair
-            ),
+            &format!("{} address -k {}", "solana", node.paths.vote_keypair),
         )
         .await
     {

@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
-use std::process::Command;
 use dirs::home_dir;
+use std::process::Command;
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -17,20 +17,24 @@ pub async fn detect_ssh_key(host: &str, user: &str) -> Result<String> {
 }
 
 /// Try an SSH connection with optional key path
+#[allow(dead_code)]
 async fn try_ssh_connection(host: &str, user: &str, key_path: Option<&str>) -> Result<bool> {
     let mut cmd = Command::new("ssh");
-    cmd.arg("-o").arg("BatchMode=yes")
-       .arg("-o").arg("ConnectTimeout=5")
-       .arg("-o").arg("StrictHostKeyChecking=no")
-       .arg("-o").arg("PasswordAuthentication=no");
-    
+    cmd.arg("-o")
+        .arg("BatchMode=yes")
+        .arg("-o")
+        .arg("ConnectTimeout=5")
+        .arg("-o")
+        .arg("StrictHostKeyChecking=no")
+        .arg("-o")
+        .arg("PasswordAuthentication=no");
+
     if let Some(key) = key_path {
         cmd.arg("-i").arg(key);
     }
-    
-    cmd.arg(format!("{}@{}", user, host))
-       .arg("exit");
-    
+
+    cmd.arg(format!("{}@{}", user, host)).arg("exit");
+
     let output = cmd.output()?;
     Ok(output.status.success())
 }
@@ -38,17 +42,21 @@ async fn try_ssh_connection(host: &str, user: &str, key_path: Option<&str>) -> R
 /// Extract the working SSH key path from verbose SSH output
 async fn extract_key_from_verbose_ssh(host: &str, user: &str) -> Result<String> {
     let output = Command::new("ssh")
-        .arg("-vv")  // Double verbose is enough
-        .arg("-o").arg("BatchMode=yes")
-        .arg("-o").arg("ConnectTimeout=5")
-        .arg("-o").arg("StrictHostKeyChecking=no")
-        .arg("-o").arg("PasswordAuthentication=no")
+        .arg("-vv") // Double verbose is enough
+        .arg("-o")
+        .arg("BatchMode=yes")
+        .arg("-o")
+        .arg("ConnectTimeout=5")
+        .arg("-o")
+        .arg("StrictHostKeyChecking=no")
+        .arg("-o")
+        .arg("PasswordAuthentication=no")
         .arg(format!("{}@{}", user, host))
         .arg("exit")
         .output()?;
-    
+
     let stderr = String::from_utf8_lossy(&output.stderr);
-    
+
     // Look for patterns in SSH verbose output:
     // OpenSSH patterns:
     // "debug1: Offering public key: /path/to/key RSA SHA256:..."
@@ -56,15 +64,14 @@ async fn extract_key_from_verbose_ssh(host: &str, user: &str) -> Result<String> 
     // "debug1: Authentication succeeded (publickey)."
     // "debug1: Authenticating with public key \"/path/to/key\""
     // "debug1: Will attempt key: /path/to/key RSA SHA256:... explicit"
-    
+
     let lines = stderr.lines().collect::<Vec<_>>();
-    
+
     // First, check if authentication succeeded
-    let auth_succeeded = lines.iter().any(|line| 
-        line.contains("Authentication succeeded (publickey)") ||
-        line.contains("Authenticated to")
-    );
-    
+    let auth_succeeded = lines.iter().any(|line| {
+        line.contains("Authentication succeeded (publickey)") || line.contains("Authenticated to")
+    });
+
     if !auth_succeeded {
         // If auth failed, still try to find what key was attempted
         for line in &lines {
@@ -74,10 +81,10 @@ async fn extract_key_from_verbose_ssh(host: &str, user: &str) -> Result<String> 
         }
         return Err(anyhow!("SSH authentication failed"));
     }
-    
+
     // Look for the accepted key by working backwards from authentication success
     let mut accepted_key: Option<String> = None;
-    
+
     // Pattern 1: "Server accepts key:" (most reliable)
     for line in &lines {
         if line.contains("Server accepts key:") {
@@ -87,7 +94,7 @@ async fn extract_key_from_verbose_ssh(host: &str, user: &str) -> Result<String> 
             }
         }
     }
-    
+
     // Pattern 2: "Authenticating with public key"
     if accepted_key.is_none() {
         for line in &lines {
@@ -99,7 +106,7 @@ async fn extract_key_from_verbose_ssh(host: &str, user: &str) -> Result<String> 
             }
         }
     }
-    
+
     // Pattern 3: Look for successful "Offering" followed by no rejection
     if accepted_key.is_none() {
         for (i, line) in lines.iter().enumerate() {
@@ -107,13 +114,14 @@ async fn extract_key_from_verbose_ssh(host: &str, user: &str) -> Result<String> 
                 if let Some(path) = extract_path_from_offering_line(line) {
                     // Check if this key was not rejected
                     let mut was_rejected = false;
-                    for j in i+1..lines.len().min(i+10) {
-                        if lines[j].contains("Server accepts key") {
+                    for check_line in lines.iter().take(lines.len().min(i + 10)).skip(i + 1) {
+                        if check_line.contains("Server accepts key") {
                             accepted_key = Some(path.clone());
                             break;
                         }
-                        if lines[j].contains("key_verify failed") || 
-                           lines[j].contains("send_pubkey_test: no mutual signature") {
+                        if check_line.contains("key_verify failed")
+                            || check_line.contains("send_pubkey_test: no mutual signature")
+                        {
                             was_rejected = true;
                             break;
                         }
@@ -129,7 +137,7 @@ async fn extract_key_from_verbose_ssh(host: &str, user: &str) -> Result<String> 
             }
         }
     }
-    
+
     // Pattern 4: SSH agent keys
     if accepted_key.is_none() {
         for line in &lines {
@@ -141,10 +149,12 @@ async fn extract_key_from_verbose_ssh(host: &str, user: &str) -> Result<String> 
             }
         }
     }
-    
-    accepted_key.ok_or_else(|| anyhow!(
+
+    accepted_key.ok_or_else(|| {
+        anyhow!(
         "Could not determine SSH key from verbose output. SSH succeeded but key path not found."
-    ))
+    )
+    })
 }
 
 /// Extract key path from "Server accepts key:" line
@@ -212,6 +222,7 @@ fn extract_agent_key_comment(line: &str) -> Option<String> {
 }
 
 /// Extract path from identity file line
+#[allow(dead_code)]
 fn extract_identity_file_path(line: &str) -> Option<String> {
     // Pattern: "debug1: identity file /Users/username/.ssh/id_rsa type 0"
     if let Some(start) = line.find("identity file") {
@@ -240,7 +251,7 @@ fn expand_tilde(path: &str) -> Result<String> {
 #[allow(dead_code)]
 pub async fn auto_detect_ssh_keys(nodes: &[(String, String)]) -> Vec<Result<SshKeyInfo>> {
     let mut results = Vec::new();
-    
+
     for (host, user) in nodes {
         match detect_ssh_key(host, user).await {
             Ok(key_path) => {
@@ -255,14 +266,14 @@ pub async fn auto_detect_ssh_keys(nodes: &[(String, String)]) -> Vec<Result<SshK
             }
         }
     }
-    
+
     results
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_extract_path_from_offering_line() {
         let line = "debug1: Offering public key: /Users/test/.ssh/id_rsa RSA SHA256:abcd";
@@ -271,7 +282,7 @@ mod tests {
             Some("/Users/test/.ssh/id_rsa".to_string())
         );
     }
-    
+
     #[test]
     fn test_extract_key_path_from_accepts_line() {
         let line = "debug1: Server accepts key: /Users/test/.ssh/id_ed25519 ED25519 SHA256:xyz";
@@ -280,7 +291,7 @@ mod tests {
             Some("/Users/test/.ssh/id_ed25519".to_string())
         );
     }
-    
+
     #[test]
     fn test_extract_key_path_from_auth_line() {
         let line = "debug1: Authenticating with public key \"/Users/test/.ssh/id_rsa\"";
@@ -289,7 +300,7 @@ mod tests {
             Some("/Users/test/.ssh/id_rsa".to_string())
         );
     }
-    
+
     #[test]
     fn test_extract_identity_file_path() {
         let line = "debug1: identity file /Users/test/.ssh/id_rsa type 0";

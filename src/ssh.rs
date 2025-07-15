@@ -219,7 +219,7 @@ impl SshConnectionPool {
         tcp.set_nodelay(true)?; // Disable Nagle's algorithm
         tcp.set_read_timeout(Some(Duration::from_secs(30)))?; // Longer timeout for stability
         tcp.set_write_timeout(Some(Duration::from_secs(30)))?;
-        
+
         // Set TCP keep-alive for connection health
         let keepalive = socket2::TcpKeepalive::new()
             .with_time(Duration::from_secs(10))

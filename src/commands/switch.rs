@@ -73,21 +73,29 @@ pub async fn switch_command(dry_run: bool, app_state: &crate::AppState) -> Resul
     // Pre-warm SSH connections to both nodes for faster switching
     if !dry_run {
         let spinner = ProgressSpinner::new("Pre-warming SSH connections...");
-        
+
         // Get SSH keys for both nodes
-        let active_ssh_key = app_state.detected_ssh_keys.get(&active_node_with_status.node.host)
+        let active_ssh_key = app_state
+            .detected_ssh_keys
+            .get(&active_node_with_status.node.host)
             .ok_or_else(|| anyhow!("No SSH key detected for active node"))?;
-        let standby_ssh_key = app_state.detected_ssh_keys.get(&standby_node_with_status.node.host)
+        let standby_ssh_key = app_state
+            .detected_ssh_keys
+            .get(&standby_node_with_status.node.host)
             .ok_or_else(|| anyhow!("No SSH key detected for standby node"))?;
-        
+
         // Pre-warm both connections (they'll be reused from the pool during switch)
         {
             let mut pool = app_state.ssh_pool.lock().unwrap();
             // Trigger connection creation for both nodes
-            let _ = pool.get_connection(&active_node_with_status.node, active_ssh_key).await?;
-            let _ = pool.get_connection(&standby_node_with_status.node, standby_ssh_key).await?;
+            let _ = pool
+                .get_connection(&active_node_with_status.node, active_ssh_key)
+                .await?;
+            let _ = pool
+                .get_connection(&standby_node_with_status.node, standby_ssh_key)
+                .await?;
         }
-        
+
         spinner.stop_with_message("✅ SSH connections ready");
     }
 
@@ -147,6 +155,7 @@ pub async fn switch_command(dry_run: bool, app_state: &crate::AppState) -> Resul
 pub(crate) struct SwitchManager {
     active_node_with_status: crate::types::NodeWithStatus,
     standby_node_with_status: crate::types::NodeWithStatus,
+    #[allow(dead_code)]
     validator_pair: crate::types::ValidatorPair,
     ssh_pool: Arc<Mutex<crate::ssh::SshConnectionPool>>,
     detected_ssh_keys: std::collections::HashMap<String, String>,
@@ -181,11 +190,12 @@ impl SwitchManager {
 
     fn get_ssh_key_for_node(&self, host: &str) -> Result<String> {
         // Use detected key if available
-        self.detected_ssh_keys.get(host)
+        self.detected_ssh_keys
+            .get(host)
             .cloned()
             .ok_or_else(|| anyhow!("No SSH key detected for host: {}", host))
     }
-    
+
     async fn execute_switch(&mut self, dry_run: bool) -> Result<bool> {
         // Show confirmation dialog (except for dry run)
         if !dry_run {
@@ -296,7 +306,12 @@ impl SwitchManager {
         }
 
         // Step 4: Verify new active node catchup (former standby)
-        println!("\n{}", "✅ Verify New Active Node (Former Standby)".bright_blue().bold());
+        println!(
+            "\n{}",
+            "✅ Verify New Active Node (Former Standby)"
+                .bright_blue()
+                .bold()
+        );
         self.verify_backup_catchup(dry_run).await?;
 
         // Summary
@@ -360,14 +375,14 @@ impl SwitchManager {
                 .agave_validator_executable
                 .as_ref()
                 .ok_or_else(|| anyhow!("Agave validator executable path not found"))?;
-            
+
             // Use detected ledger path if available, otherwise error
             let ledger_path = self
                 .active_node_with_status
                 .ledger_path
                 .as_ref()
                 .ok_or_else(|| anyhow!("Ledger path not detected for active node"))?;
-            
+
             (
                 "Using Agave validator set-identity",
                 format!(
@@ -384,7 +399,7 @@ impl SwitchManager {
                 .ledger_path
                 .as_ref()
                 .ok_or_else(|| anyhow!("Ledger path not detected for active node"))?;
-            
+
             (
                 "Using Solana validator restart",
                 format!("{} exit && solana-validator --identity {} --vote-account {} --ledger {} --limit-ledger-size 100000000 --log - &", 
@@ -430,7 +445,7 @@ impl SwitchManager {
             .tower_path
             .as_ref()
             .ok_or_else(|| anyhow!("Tower path not available for active node"))?;
-        
+
         // Verify the tower file exists
         let check_tower_cmd = format!("test -f {} && echo 'exists' || echo 'missing'", tower_path);
         let tower_exists = {
@@ -443,25 +458,25 @@ impl SwitchManager {
             )
             .await?
         };
-        
+
         if tower_exists.trim() != "exists" {
-            return Err(anyhow!("Tower file not found on active node: {}", tower_path));
+            return Err(anyhow!(
+                "Tower file not found on active node: {}",
+                tower_path
+            ));
         }
 
         let tower_filename = tower_path.split('/').last().unwrap_or("tower.bin");
         self.tower_file_name = Some(tower_filename.to_string());
-        
+
         // Use detected ledger path if available, otherwise error
         let standby_ledger_path = self
             .standby_node_with_status
             .ledger_path
             .as_ref()
             .ok_or_else(|| anyhow!("Ledger path not detected for standby node"))?;
-        
-        let dest_path = format!(
-            "{}/{}",
-            standby_ledger_path, tower_filename
-        );
+
+        let dest_path = format!("{}/{}", standby_ledger_path, tower_filename);
 
         println!(
             "  📤 {}@{} → {}@{}",
@@ -481,11 +496,7 @@ impl SwitchManager {
                 let ssh_key = self.get_ssh_key_for_node(&self.active_node_with_status.node.host)?;
                 let mut pool = self.ssh_pool.lock().unwrap();
                 match pool
-                    .execute_command(
-                        &self.active_node_with_status.node,
-                        &ssh_key,
-                        &read_cmd,
-                    )
+                    .execute_command(&self.active_node_with_status.node, &ssh_key, &read_cmd)
                     .await
                 {
                     Ok(data) => data,
@@ -542,14 +553,11 @@ impl SwitchManager {
             // Verify the file on standby
             let verify_cmd = format!("ls -la {}", dest_path);
             let verify_result = {
-                let ssh_key = self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
+                let ssh_key =
+                    self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
                 let mut pool = self.ssh_pool.lock().unwrap();
-                pool.execute_command(
-                    &self.standby_node_with_status.node,
-                    &ssh_key,
-                    &verify_cmd,
-                )
-                .await?
+                pool.execute_command(&self.standby_node_with_status.node, &ssh_key, &verify_cmd)
+                    .await?
             };
             if verify_result.trim().is_empty() {
                 return Err(anyhow!("Failed to verify tower file on standby"));
@@ -614,14 +622,14 @@ impl SwitchManager {
                 .agave_validator_executable
                 .as_ref()
                 .ok_or_else(|| anyhow!("Agave validator executable path not found"))?;
-            
+
             // Use detected ledger path if available, otherwise error
             let ledger_path = self
                 .standby_node_with_status
                 .ledger_path
                 .as_ref()
                 .ok_or_else(|| anyhow!("Ledger path not detected for standby node"))?;
-            
+
             (
                 "Using Agave validator set-identity",
                 format!(
@@ -638,7 +646,7 @@ impl SwitchManager {
                 .ledger_path
                 .as_ref()
                 .ok_or_else(|| anyhow!("Ledger path not detected for standby node"))?;
-            
+
             (
                 "Using Solana validator restart",
                 format!("{} exit && solana-validator --identity {} --vote-account {} --ledger {} --limit-ledger-size 100000000 --log - &", 
@@ -660,7 +668,8 @@ impl SwitchManager {
         if !dry_run {
             let spinner = ProgressSpinner::new("Switching standby validator to funded identity...");
             {
-                let ssh_key = self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
+                let ssh_key =
+                    self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
                 let mut pool = self.ssh_pool.lock().unwrap();
                 pool.execute_command(
                     &self.standby_node_with_status.node,
@@ -679,15 +688,13 @@ impl SwitchManager {
     async fn verify_backup_catchup(&mut self, dry_run: bool) -> Result<()> {
         // Use detected solana CLI or fall back to default
         let default_solana = "solana".to_string();
-        let solana_cli = self.standby_node_with_status
+        let solana_cli = self
+            .standby_node_with_status
             .solana_cli_executable
             .as_ref()
             .unwrap_or(&default_solana);
-            
-        let catchup_cmd = format!(
-            "{} catchup --our-localhost",
-            solana_cli
-        );
+
+        let catchup_cmd = format!("{} catchup --our-localhost", solana_cli);
         println!(
             "ssh {}@{} '{}'",
             self.standby_node_with_status.node.user,
@@ -697,23 +704,26 @@ impl SwitchManager {
 
         if !dry_run {
             // No sleep - verify immediately!
-            let spinner = ProgressSpinner::new("Verifying new active validator (former standby) catchup status...");
+            let spinner = ProgressSpinner::new(
+                "Verifying new active validator (former standby) catchup status...",
+            );
 
             let catchup_result = {
-                let ssh_key = self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
+                let ssh_key =
+                    self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
                 let mut pool = self.ssh_pool.lock().unwrap();
-                pool.execute_command(
-                    &self.standby_node_with_status.node,
-                    &ssh_key,
-                    &catchup_cmd,
-                )
-                .await?
+                pool.execute_command(&self.standby_node_with_status.node, &ssh_key, &catchup_cmd)
+                    .await?
             };
 
             if catchup_result.contains("has caught up") || catchup_result.contains("slots behind") {
-                spinner.stop_with_message("✅ New active validator (former standby) is syncing with funded identity");
+                spinner.stop_with_message(
+                    "✅ New active validator (former standby) is syncing with funded identity",
+                );
             } else {
-                spinner.stop_with_message("⚠️  New active validator sync status unclear - check manually");
+                spinner.stop_with_message(
+                    "⚠️  New active validator sync status unclear - check manually",
+                );
             }
         }
 

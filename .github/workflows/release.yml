@@ -12,29 +12,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  create-release:
-    name: Create Release
-    runs-on: ubuntu-latest
-    outputs:
-      release_id: ${{ steps.create-release.outputs.id }}
-      upload_url: ${{ steps.create-release.outputs.upload_url }}
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Create Release
-        id: create-release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
-          draft: false
-          prerelease: false
-
-  build-and-upload:
-    name: Build and Upload
-    needs: create-release
+  build:
+    name: Build
     strategy:
       matrix:
         include:
@@ -93,8 +72,7 @@ jobs:
         if: matrix.os != 'windows-latest'
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf svs-${{ matrix.target }}.tar.gz ${{ matrix.binary }}
-          mv svs-${{ matrix.target }}.tar.gz ../../../
+          tar czf ../../../svs-${{ matrix.target }}.tar.gz ${{ matrix.binary }}
       
       - name: Prepare artifacts (Windows)
         if: matrix.os == 'windows-latest'
@@ -103,25 +81,32 @@ jobs:
           cd target\${{ matrix.target }}\release
           Compress-Archive -Path ${{ matrix.binary }} -DestinationPath ..\..\..\svs-${{ matrix.target }}.zip
       
-      - name: Upload Release Asset (tar.gz)
-        if: matrix.archive == 'tar.gz'
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
         with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ./svs-${{ matrix.target }}.tar.gz
-          asset_name: svs-${{ matrix.target }}.tar.gz
-          asset_content_type: application/gzip
-      
-      - name: Upload Release Asset (zip)
-        if: matrix.archive == 'zip'
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ./svs-${{ matrix.target }}.zip
-          asset_name: svs-${{ matrix.target }}.zip
-          asset_content_type: application/zip
+          name: binaries
+          path: |
+            svs-*.tar.gz
+            svs-*.zip
 
+  release:
+    name: Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: binaries
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            svs-*.tar.gz
+            svs-*.zip
+          draft: false
+          prerelease: false
+          generate_release_notes: true

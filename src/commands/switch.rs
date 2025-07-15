@@ -67,6 +67,7 @@ pub async fn switch_command(dry_run: bool, app_state: &crate::AppState) -> Resul
         standby_node_with_status.clone(),
         validator_pair.clone(),
         app_state.ssh_pool.clone(),
+        app_state.detected_ssh_keys.clone(),
     );
 
     // Execute the switch process
@@ -127,6 +128,7 @@ pub(crate) struct SwitchManager {
     standby_node_with_status: crate::types::NodeWithStatus,
     validator_pair: crate::types::ValidatorPair,
     ssh_pool: Arc<Mutex<crate::ssh::SshConnectionPool>>,
+    detected_ssh_keys: std::collections::HashMap<String, String>,
     tower_file_name: Option<String>,
     tower_transfer_time: Option<Duration>,
     identity_switch_time: Option<Duration>,
@@ -140,12 +142,14 @@ impl SwitchManager {
         standby_node_with_status: crate::types::NodeWithStatus,
         validator_pair: crate::types::ValidatorPair,
         ssh_pool: Arc<Mutex<crate::ssh::SshConnectionPool>>,
+        detected_ssh_keys: std::collections::HashMap<String, String>,
     ) -> Self {
         Self {
             active_node_with_status,
             standby_node_with_status,
             validator_pair,
             ssh_pool,
+            detected_ssh_keys,
             tower_file_name: None,
             tower_transfer_time: None,
             identity_switch_time: None,
@@ -154,6 +158,13 @@ impl SwitchManager {
         }
     }
 
+    fn get_ssh_key_for_node(&self, host: &str) -> Result<String> {
+        // Use detected key if available
+        self.detected_ssh_keys.get(host)
+            .cloned()
+            .ok_or_else(|| anyhow!("No SSH key detected for host: {}", host))
+    }
+    
     async fn execute_switch(&mut self, dry_run: bool) -> Result<bool> {
         // Show confirmation dialog (except for dry run)
         if !dry_run {
@@ -276,10 +287,11 @@ impl SwitchManager {
     async fn switch_primary_to_unfunded(&mut self, dry_run: bool) -> Result<()> {
         // Detect validator type to use appropriate command
         let process_info = {
+            let ssh_key = self.get_ssh_key_for_node(&self.active_node_with_status.node.host)?;
             let mut pool = self.ssh_pool.lock().unwrap();
             pool.execute_command(
                 &self.active_node_with_status.node,
-                &self.validator_pair.local_ssh_key_path,
+                &ssh_key,
                 "ps aux | grep -E 'solana-validator|agave|fdctl|firedancer' | grep -v grep",
             )
             .await?
@@ -288,12 +300,11 @@ impl SwitchManager {
         let (subtitle, switch_command) = if process_info.contains("fdctl")
             || process_info.contains("firedancer")
         {
-            // Use detected fdctl executable path if available, otherwise use configured path
+            // Use detected fdctl executable path
             let fdctl_path = self
                 .active_node_with_status
                 .fdctl_executable
                 .as_ref()
-                .or(self.active_node_with_status.node.paths.fdctl_path.as_ref())
                 .ok_or_else(|| anyhow!("Firedancer fdctl executable path not found"))?;
 
             // Extract config path from the process info (e.g., "fdctl run --config /path/to/config.toml")
@@ -309,16 +320,7 @@ impl SwitchManager {
                 }) {
                 config_match
             } else {
-                // Fall back to configured path if we can't extract from process
-                self.active_node_with_status
-                    .node
-                    .paths
-                    .firedancer_config
-                    .as_ref()
-                    .ok_or_else(|| {
-                        anyhow!("Firedancer config path not found in process or configuration")
-                    })?
-                    .clone()
+                return Err(anyhow!("Firedancer config path not found in running process. Please ensure fdctl is running with --config parameter"));
             };
 
             (
@@ -384,10 +386,11 @@ impl SwitchManager {
             let spinner =
                 ProgressSpinner::new("Switching active validator to unfunded identity...");
             {
+                let ssh_key = self.get_ssh_key_for_node(&self.active_node_with_status.node.host)?;
                 let mut pool = self.ssh_pool.lock().unwrap();
                 pool.execute_command(
                     &self.active_node_with_status.node,
-                    &self.validator_pair.local_ssh_key_path,
+                    &ssh_key,
                     &switch_command,
                 )
                 .await?;
@@ -410,10 +413,11 @@ impl SwitchManager {
         // Verify the tower file exists
         let check_tower_cmd = format!("test -f {} && echo 'exists' || echo 'missing'", tower_path);
         let tower_exists = {
+            let ssh_key = self.get_ssh_key_for_node(&self.active_node_with_status.node.host)?;
             let mut pool = self.ssh_pool.lock().unwrap();
             pool.execute_command(
                 &self.active_node_with_status.node,
-                &self.validator_pair.local_ssh_key_path,
+                &ssh_key,
                 &check_tower_cmd,
             )
             .await?
@@ -453,11 +457,12 @@ impl SwitchManager {
         let encoded_data = if !dry_run {
             let spinner = ProgressSpinner::new("Reading tower file...");
             let data = {
+                let ssh_key = self.get_ssh_key_for_node(&self.active_node_with_status.node.host)?;
                 let mut pool = self.ssh_pool.lock().unwrap();
                 match pool
                     .execute_command(
                         &self.active_node_with_status.node,
-                        &self.validator_pair.local_ssh_key_path,
+                        &ssh_key,
                         &read_cmd,
                     )
                     .await
@@ -516,10 +521,11 @@ impl SwitchManager {
             // Verify the file on standby
             let verify_cmd = format!("ls -la {}", dest_path);
             let verify_result = {
+                let ssh_key = self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
                 let mut pool = self.ssh_pool.lock().unwrap();
                 pool.execute_command(
                     &self.standby_node_with_status.node,
-                    &self.validator_pair.local_ssh_key_path,
+                    &ssh_key,
                     &verify_cmd,
                 )
                 .await?
@@ -535,10 +541,11 @@ impl SwitchManager {
     async fn switch_backup_to_funded(&mut self, dry_run: bool) -> Result<()> {
         // Detect validator type to use appropriate command
         let process_info = {
+            let ssh_key = self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
             let mut pool = self.ssh_pool.lock().unwrap();
             pool.execute_command(
                 &self.standby_node_with_status.node,
-                &self.validator_pair.local_ssh_key_path,
+                &ssh_key,
                 "ps aux | grep -E 'solana-validator|agave|fdctl|firedancer' | grep -v grep",
             )
             .await?
@@ -547,12 +554,11 @@ impl SwitchManager {
         let (subtitle, switch_command) = if process_info.contains("fdctl")
             || process_info.contains("firedancer")
         {
-            // Use detected fdctl executable path if available, otherwise use configured path
+            // Use detected fdctl executable path
             let fdctl_path = self
                 .standby_node_with_status
                 .fdctl_executable
                 .as_ref()
-                .or(self.standby_node_with_status.node.paths.fdctl_path.as_ref())
                 .ok_or_else(|| anyhow!("Firedancer fdctl executable path not found"))?;
 
             // Extract config path from the process info (e.g., "fdctl run --config /path/to/config.toml")
@@ -568,16 +574,7 @@ impl SwitchManager {
                 }) {
                 config_match
             } else {
-                // Fall back to configured path if we can't extract from process
-                self.standby_node_with_status
-                    .node
-                    .paths
-                    .firedancer_config
-                    .as_ref()
-                    .ok_or_else(|| {
-                        anyhow!("Firedancer config path not found in process or configuration")
-                    })?
-                    .clone()
+                return Err(anyhow!("Firedancer config path not found in running process. Please ensure fdctl is running with --config parameter"));
             };
 
             (
@@ -642,10 +639,11 @@ impl SwitchManager {
         if !dry_run {
             let spinner = ProgressSpinner::new("Switching standby validator to funded identity...");
             {
+                let ssh_key = self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
                 let mut pool = self.ssh_pool.lock().unwrap();
                 pool.execute_command(
                     &self.standby_node_with_status.node,
-                    &self.validator_pair.local_ssh_key_path,
+                    &ssh_key,
                     &switch_command,
                 )
                 .await?;
@@ -682,10 +680,11 @@ impl SwitchManager {
             let spinner = ProgressSpinner::new("Verifying new active validator (former standby) catchup status...");
 
             let catchup_result = {
+                let ssh_key = self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
                 let mut pool = self.ssh_pool.lock().unwrap();
                 pool.execute_command(
                     &self.standby_node_with_status.node,
-                    &self.validator_pair.local_ssh_key_path,
+                    &ssh_key,
                     &catchup_cmd,
                 )
                 .await?

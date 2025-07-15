@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 mod commands;
 mod config;
 mod ssh;
+mod ssh_key_detector;
 mod startup;
 mod types;
 mod validator_metadata;
@@ -50,6 +51,7 @@ pub struct AppState {
     pub config: types::Config,
     pub validator_statuses: Vec<ValidatorStatus>,
     pub metadata_cache: Arc<Mutex<validator_metadata::MetadataCache>>,
+    pub detected_ssh_keys: std::collections::HashMap<String, String>, // host -> key_path mapping
 }
 
 #[derive(Debug, Clone)]

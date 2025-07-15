@@ -68,7 +68,6 @@ mod ux_tests {
             vote_pubkey: "Vote123".to_string(),
             identity_pubkey: "Identity123".to_string(),
             rpc: "https://api.mainnet-beta.solana.com".to_string(),
-            local_ssh_key_path: "~/.ssh/id_rsa".to_string(),
             nodes: vec![],
         };
         
@@ -77,7 +76,8 @@ mod ux_tests {
             active_with_status,
             standby_with_status,
             validator_pair,
-            ssh_pool.clone()
+            ssh_pool.clone(),
+            std::collections::HashMap::new()
         );
         
         // Simulate user cancellation
@@ -287,12 +287,8 @@ mod ux_tests {
                 funded_identity: funded.to_string(),
                 unfunded_identity: unfunded.to_string(),
                 vote_keypair: "/home/solana/vote.json".to_string(),
-                ledger: "/mnt/solana_ledger".to_string(),
-                tower: "/mnt/solana_ledger/tower-1_9-*.bin".to_string(),
-                solana_cli_path: "/home/solana/.local/share/solana/install/active_release/bin/solana".to_string(),
-                firedancer_config: None,
-                fdctl_path: None,
             },
+            ssh_key_path: None,
         }
     }
     
@@ -311,6 +307,7 @@ mod ux_tests {
             tower_path: None,
             swap_ready: Some(true),
             swap_issues: vec![],
+            ssh_key_path: Some("~/.ssh/id_rsa".to_string()),
         }
     }
 }

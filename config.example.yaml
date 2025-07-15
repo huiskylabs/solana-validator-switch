@@ -21,10 +21,6 @@ validators:
     #   - Your private RPC endpoint
     rpc: https://api.mainnet-beta.solana.com
 
-    # Path to your local SSH private key for accessing validator nodes
-    # Supports ~ for home directory expansion
-    localSshKeyPath: ~/.ssh/id_rsa
-
     # Define exactly 2 nodes for active/standby switching
     # The order doesn't matter - active node is determined at runtime
     nodes:
@@ -33,6 +29,7 @@ validators:
         host: 10.0.0.1 # IP address or hostname
         port: 22 # SSH port (default: 22)
         user: solana # SSH username
+        # sshKeyPath: /Users/myuser/.ssh/id_rsa # Optional: SSH key path (auto-detected if not specified)
 
         # Paths on the remote validator node
         # Update these to match your validator setup
@@ -45,15 +42,18 @@ validators:
 
           # Path to vote account keypair
           voteKeypair: /home/solana/keypairs/vote-account-keypair.json
-
-          # Note: ledger path and tower file are automatically detected from running processes
-          # No need to specify them in the configuration
+          
+          # Note: The following paths are automatically detected from running processes:
+          # - ledger path
+          # - tower file location
+          # - solana CLI path
 
       # Second node configuration
       - label: validator-node-2
         host: 10.0.0.2
         port: 22
         user: solana
+        # sshKeyPath: /Users/myuser/.ssh/id_rsa # Optional: SSH key path (auto-detected if not specified)
         paths:
           fundedIdentity: /home/solana/keypairs/funded-validator-keypair.json
           unfundedIdentity: /home/solana/keypairs/unfunded-validator-keypair.json
@@ -62,7 +62,6 @@ validators:
 # - votePubkey: SECOND_VOTE_ACCOUNT_PUBKEY
 #   identityPubkey: SECOND_VALIDATOR_IDENTITY_PUBKEY
 #   rpc: https://api.mainnet-beta.solana.com
-#   localSshKeyPath: ~/.ssh/id_rsa_validator2
 #   nodes:
 #     - label: second-validator-node-1
 #       host: 10.0.1.1
@@ -72,6 +71,9 @@ validators:
 #         fundedIdentity: /home/solana/.secrets/funded-validator-keypair.json
 #         unfundedIdentity: /home/solana/.secrets/unfunded-validator-keypair.json
 #         voteKeypair: /home/solana/.secrets/vote-account-keypair.json
+#         ledger: /mnt/solana-data/ledger
+#         tower: /mnt/solana-data/ledger/tower-1_9-*.bin
+#         solanaCliPath: /home/solana/.local/share/solana/install/active_release/bin/solana
 #     - label: second-validator-node-2
 #       host: 10.0.1.2
 #       port: 22
@@ -80,5 +82,12 @@ validators:
 #         fundedIdentity: /home/solana/.secrets/funded-validator-keypair.json
 #         unfundedIdentity: /home/solana/.secrets/unfunded-validator-keypair.json
 #         voteKeypair: /home/solana/.secrets/vote-account-keypair.json
+#         ledger: /mnt/solana-data/ledger
+#         tower: /mnt/solana-data/ledger/tower-1_9-*.bin
+#         solanaCliPath: /home/solana/.local/share/solana/install/active_release/bin/solana
 
-# Ensure SSH key authentication is set up for both nodes
+# SSH key authentication notes:
+# - The tool will automatically detect your SSH keys
+# - Tries common locations: ~/.ssh/id_rsa, ~/.ssh/id_ed25519, etc.
+# - Supports SSH agent authentication
+# - Ensure SSH key authentication is set up for both nodes

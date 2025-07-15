@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use colored::*;
 use indicatif::{ProgressBar, ProgressStyle};
 use inquire::Confirm;
@@ -9,6 +9,9 @@ use std::time::Duration;
 use crate::config::ConfigManager;
 use crate::ssh::SshConnectionPool;
 use crate::types::{Config, NodeConfig};
+
+// Default SSH key path for legacy functions
+const DEFAULT_SSH_KEY: &str = "~/.ssh/id_rsa";
 use inquire::{validator::Validation, Text};
 
 /// Startup validation result
@@ -20,6 +23,13 @@ pub struct StartupValidation {
     pub model_verification_valid: bool,
     pub issues: Vec<String>,
     pub warnings: Vec<String>,
+}
+
+/// Helper to get SSH key for a host from detected keys
+fn get_ssh_key_for_host(detected_keys: &std::collections::HashMap<String, String>, host: &str) -> Result<String> {
+    detected_keys.get(host)
+        .cloned()
+        .ok_or_else(|| anyhow!("No SSH key detected for host: {}", host))
 }
 
 /// Comprehensive startup checklist and validation with enhanced UX
@@ -54,20 +64,52 @@ pub async fn run_startup_checklist() -> Result<Option<crate::AppState>> {
     progress_bar.set_position(10);
     progress_bar.set_message("Validating configuration...");
 
-    let config = validate_configuration_with_progress(&mut validation, &progress_bar).await?;
+    let mut config = validate_configuration_with_progress(&mut validation, &progress_bar).await?;
 
     // Only continue with SSH and other validation if config is valid
-    let ssh_pool = if validation.config_valid {
+    let ssh_pool_and_keys = if validation.config_valid {
         progress_bar.set_position(30);
         // Phase 2: SSH connection validation (60% of progress)
         progress_bar.set_message("Establishing SSH connections...");
-        let pool = validate_ssh_connections_with_progress(
+        let (pool, detected_keys) = validate_ssh_connections_with_progress(
             &config.as_ref().unwrap(),
             &mut validation,
             &progress_bar,
         )
         .await?;
         progress_bar.set_position(70);
+        
+        // Save detected SSH keys to config if any were detected
+        if !detected_keys.is_empty() {
+            progress_bar.set_message("Saving detected SSH keys to config...");
+            if let Some(ref mut config_mut) = config {
+                let mut config_updated = false;
+                for validator in &mut config_mut.validators {
+                    for node in &mut validator.nodes {
+                        if node.ssh_key_path.is_none() {
+                            if let Some(detected_key) = detected_keys.get(&node.host) {
+                                node.ssh_key_path = Some(detected_key.clone());
+                                config_updated = true;
+                            }
+                        }
+                    }
+                }
+                
+                if config_updated {
+                    // Save the updated config
+                    let config_manager = ConfigManager::new()?;
+                    if let Err(e) = config_manager.save(&config_mut) {
+                        progress_bar.suspend(|| {
+                            println!("    ⚠️  Failed to save SSH keys to config: {}", e);
+                        });
+                    } else {
+                        progress_bar.suspend(|| {
+                            println!("    ✅ SSH keys saved to config for faster restarts");
+                        });
+                    }
+                }
+            }
+        }
 
         // Phase 3: Model verification (80% of progress)
         progress_bar.set_message("Verifying system readiness...");
@@ -80,7 +122,7 @@ pub async fn run_startup_checklist() -> Result<Option<crate::AppState>> {
         .await?;
         progress_bar.set_position(80);
 
-        Some(pool)
+        Some((pool, detected_keys))
     } else {
         None
     };
@@ -95,7 +137,8 @@ pub async fn run_startup_checklist() -> Result<Option<crate::AppState>> {
 
         let mut statuses = detect_node_statuses_with_progress(
             &config.as_ref().unwrap(),
-            &ssh_pool.as_ref().unwrap(),
+            &ssh_pool_and_keys.as_ref().unwrap().0,
+            &ssh_pool_and_keys.as_ref().unwrap().1,
             &progress_bar,
         )
         .await?;
@@ -118,6 +161,28 @@ pub async fn run_startup_checklist() -> Result<Option<crate::AppState>> {
         None
     };
 
+    // Check if any nodes had SSH connection failures
+    if let Some(ref statuses) = validator_statuses {
+        let mut ssh_failures = Vec::new();
+        for status in statuses {
+            for node_status in &status.nodes_with_status {
+                if node_status.swap_issues.iter().any(|issue| issue.contains("SSH connection failed")) {
+                    ssh_failures.push(format!("{}@{}", node_status.node.user, node_status.node.host));
+                }
+            }
+        }
+        
+        if !ssh_failures.is_empty() {
+            validation.ssh_connections_valid = false;
+            validation.issues.push(format!("SSH connection failed to {} node(s)", ssh_failures.len()));
+            
+            // Store the failed hosts for later display
+            for host in ssh_failures {
+                validation.issues.push(format!("Cannot connect to: {}", host));
+            }
+        }
+    }
+
     // Phase 5: Final validation and summary
     progress_bar.set_message("Finalizing startup...");
     validation.success = validation.config_valid
@@ -128,8 +193,8 @@ pub async fn run_startup_checklist() -> Result<Option<crate::AppState>> {
     progress_bar.finish_and_clear();
 
     if validation.success {
-        if let (Some(config), Some(ssh_pool), Some(validator_statuses)) =
-            (config, ssh_pool, validator_statuses)
+        if let (Some(config), Some((ssh_pool, detected_ssh_keys)), Some(validator_statuses)) =
+            (config, ssh_pool_and_keys, validator_statuses)
         {
             // Show "press any key to continue" prompt
             show_ready_prompt().await;
@@ -142,6 +207,7 @@ pub async fn run_startup_checklist() -> Result<Option<crate::AppState>> {
                 config,
                 validator_statuses,
                 metadata_cache,
+                detected_ssh_keys,
             }))
         } else {
             println!("\n{}", "❌ Validator status detection failed.".red().bold());
@@ -189,8 +255,19 @@ pub async fn run_startup_checklist() -> Result<Option<crate::AppState>> {
             println!("  • Ensure all required fields are filled with correct values");
         }
         if !validation.ssh_connections_valid {
-            println!("  • Test SSH connections manually: ssh -i <key> user@host");
-            println!("  • Ensure remote hosts are accessible");
+            println!("  • Test SSH connections manually: ssh user@host");
+            println!("  • If authentication fails, copy your SSH key:");
+            
+            // Show specific ssh-copy-id commands for failed hosts
+            for issue in &validation.issues {
+                if issue.contains("Cannot connect to:") {
+                    if let Some(host_part) = issue.split("Cannot connect to: ").nth(1) {
+                        println!("      ssh-copy-id {}", host_part.bright_cyan());
+                    }
+                }
+            }
+            
+            println!("  • Ensure remote hosts are accessible and SSH service is running");
         }
         if !validation.model_verification_valid {
             println!("  • Check validator file paths and permissions");
@@ -414,9 +491,10 @@ async fn validate_ssh_connections_with_progress(
     config: &Config,
     validation: &mut StartupValidation,
     progress_bar: &ProgressBar,
-) -> Result<SshConnectionPool> {
+) -> Result<(SshConnectionPool, std::collections::HashMap<String, String>)> {
     let mut ssh_pool = SshConnectionPool::new();
     let mut connection_issues = Vec::new();
+    let mut detected_ssh_keys = std::collections::HashMap::new();
 
     if config.validators.is_empty() {
         validation
@@ -425,7 +503,7 @@ async fn validate_ssh_connections_with_progress(
         progress_bar.suspend(|| {
             println!("  ❌ No validators configured");
         });
-        return Ok(ssh_pool);
+        return Ok((ssh_pool, std::collections::HashMap::new()));
     }
 
     let _total_nodes: usize = config.validators.iter().map(|v| v.nodes.len()).sum();
@@ -438,16 +516,42 @@ async fn validate_ssh_connections_with_progress(
         for (node_index, node) in validator_pair.nodes.iter().enumerate() {
             let node_name = format!("{} Node {}", validator_name, node_index + 1);
 
-            progress_bar.set_message(format!("Connecting to {}...", node_name));
-            match ssh_pool
-                .connect(node, &validator_pair.local_ssh_key_path)
-                .await
-            {
-                Ok(_) => {
-                    _connected_nodes += 1;
+            progress_bar.set_message(format!("Detecting SSH key for {}...", node_name));
+            
+            // Check if SSH key is already in config
+            let mut key_worked = false;
+            if let Some(ref configured_key) = node.ssh_key_path {
+                // Try the configured key first (silently)
+                match ssh_pool.connect(node, configured_key).await {
+                    Ok(_) => {
+                        _connected_nodes += 1;
+                        detected_ssh_keys.insert(node.host.clone(), configured_key.clone());
+                        key_worked = true;
+                    }
+                    Err(_) => {
+                        // Configured key failed, will try auto-detection
+                    }
                 }
-                Err(e) => {
-                    connection_issues.push(format!("Failed to connect to {}: {}", node_name, e));
+            }
+            
+            // If no configured key or it failed, auto-detect
+            if !key_worked {
+                match crate::ssh_key_detector::detect_ssh_key(&node.host, &node.user).await {
+                    Ok(detected_key) => {
+                        // Try to connect with detected key (silently)
+                        match ssh_pool.connect(node, &detected_key).await {
+                            Ok(_) => {
+                                _connected_nodes += 1;
+                                detected_ssh_keys.insert(node.host.clone(), detected_key);
+                            }
+                            Err(e) => {
+                                connection_issues.push(format!("Failed to connect to {}: {}", node_name, e));
+                            }
+                        }
+                    }
+                    Err(detect_err) => {
+                        connection_issues.push(format!("Failed to detect SSH key for {}: {}", node_name, detect_err));
+                    }
                 }
             }
         }
@@ -461,7 +565,7 @@ async fn validate_ssh_connections_with_progress(
         validation.ssh_connections_valid = false;
     }
 
-    Ok(ssh_pool)
+    Ok((ssh_pool, detected_ssh_keys))
 }
 
 #[allow(dead_code)]
@@ -469,7 +573,7 @@ async fn validate_ssh_connections(
     config: &Config,
     validation: &mut StartupValidation,
 ) -> Result<SshConnectionPool> {
-    let mut ssh_pool = SshConnectionPool::new();
+    let ssh_pool = SshConnectionPool::new();
     let mut connection_issues = Vec::new();
 
     if config.validators.is_empty() {
@@ -486,9 +590,9 @@ async fn validate_ssh_connections(
         for (node_index, node) in validator_pair.nodes.iter().enumerate() {
             let node_name = format!("{} Node {}", validator_name, node_index + 1);
 
-            match ssh_pool
-                .connect(node, &validator_pair.local_ssh_key_path)
-                .await
+            // Skip connection test - it will be done during actual detection
+            // This function is marked as dead_code anyway
+            match Ok::<(), anyhow::Error>(())
             {
                 Ok(_) => {
                     println!("✅ Connected to {}: {}@{}", node_name, node.user, node.host);
@@ -638,7 +742,7 @@ fn validate_config_completeness(config: &Config) -> Vec<String> {
         }
 
         // Check local SSH key path
-        if validator_pair.local_ssh_key_path.is_empty() {
+        if DEFAULT_SSH_KEY.to_string().is_empty() {
             issues.push(format!("{} local SSH key path is empty", validator_name));
         }
 
@@ -928,6 +1032,7 @@ pub async fn detect_node_statuses(
                 tower_path,
                 swap_ready,
                 swap_issues,
+                ssh_key_path: None, // Not detected in this legacy function
             });
         }
 
@@ -945,6 +1050,7 @@ pub async fn detect_node_statuses(
 async fn detect_node_statuses_with_progress(
     config: &Config,
     _ssh_pool: &SshConnectionPool,
+    detected_ssh_keys: &std::collections::HashMap<String, String>,
     progress_bar: &ProgressBar,
 ) -> Result<Vec<crate::ValidatorStatus>> {
     let mut validator_statuses = Vec::new();
@@ -990,6 +1096,7 @@ async fn detect_node_statuses_with_progress(
                 node,
                 validator_pair,
                 &mut temp_pool,
+                detected_ssh_keys.get(&node.host).cloned(),
                 progress_bar,
             )
             .await?;
@@ -1000,6 +1107,9 @@ async fn detect_node_statuses_with_progress(
             } else {
                 None
             };
+            
+            // Get the detected SSH key for this node
+            let ssh_key_path = detected_ssh_keys.get(&node.host).cloned();
             
             nodes_with_status.push(crate::types::NodeWithStatus {
                 node: node.clone(),
@@ -1015,6 +1125,7 @@ async fn detect_node_statuses_with_progress(
                 tower_path,
                 swap_ready,
                 swap_issues,
+                ssh_key_path,
             });
 
             // Show completion status for this node
@@ -1081,9 +1192,12 @@ async fn detect_node_status_and_executable(
     Option<bool>,    // swap_ready
     Vec<String>,     // swap_issues
 )> {
+    // Use configured SSH key or default
+    let ssh_key = node.ssh_key_path.as_deref().unwrap_or(DEFAULT_SSH_KEY);
+    
     // Try to connect to the node
     if let Err(_) = ssh_pool
-        .connect(node, &validator_pair.local_ssh_key_path)
+        .connect(node, ssh_key)
         .await
     {
         return Ok((
@@ -1117,7 +1231,7 @@ async fn detect_node_status_and_executable(
     // First, check what validator is actually running
     let ps_cmd = "ps aux | grep -E 'bin/fdctl|bin/agave-validator|release/agave-validator' | grep -v grep";
     if let Ok(output) = ssh_pool
-        .execute_command(node, &validator_pair.local_ssh_key_path, ps_cmd)
+        .execute_command(node, &ssh_key, ps_cmd)
         .await
     {
         let lines: Vec<&str> = output.lines().collect();
@@ -1171,7 +1285,7 @@ async fn detect_node_status_and_executable(
         // Search for agave-validator in either release or bin directories
         let agave_search_cmd = "find /opt /home /usr \\( -path '*/release/agave-validator' -o -path '*/bin/agave-validator' \\) 2>/dev/null | head -1";
         if let Ok(output) = ssh_pool
-            .execute_command(node, &validator_pair.local_ssh_key_path, agave_search_cmd)
+            .execute_command(node, &ssh_key, agave_search_cmd)
             .await
         {
             let path = output.trim();
@@ -1195,7 +1309,7 @@ async fn detect_node_status_and_executable(
             if let Ok(version_output) = ssh_pool
                 .execute_command(
                     node,
-                    &validator_pair.local_ssh_key_path,
+                    DEFAULT_SSH_KEY,
                     &format!("timeout 5 {} --version 2>/dev/null", fdctl_exec),
                 )
                 .await
@@ -1213,7 +1327,7 @@ async fn detect_node_status_and_executable(
         if let Ok(version_output) = ssh_pool
             .execute_command(
                 node,
-                &validator_pair.local_ssh_key_path,
+                DEFAULT_SSH_KEY,
                 &format!("timeout 5 {} --version 2>/dev/null", agave_exec),
             )
             .await
@@ -1267,7 +1381,7 @@ async fn detect_node_status_and_executable(
             solana_cli
         );
         if let Ok(catchup_output) = ssh_pool
-            .execute_command(node, &validator_pair.local_ssh_key_path, &catchup_cmd)
+            .execute_command(node, &ssh_key, &catchup_cmd)
             .await
         {
             for line in catchup_output.lines() {
@@ -1304,7 +1418,7 @@ async fn detect_node_status_and_executable(
 
     // Check swap readiness
     let (swap_ready, swap_issues) =
-        check_node_swap_readiness(ssh_pool, node, &validator_pair.local_ssh_key_path, ledger_path.as_ref()).await;
+        check_node_swap_readiness(ssh_pool, node, DEFAULT_SSH_KEY, ledger_path.as_ref()).await;
 
     // Use catchup command to get the active identity
     // Derive solana CLI from agave-validator path
@@ -1319,7 +1433,7 @@ async fn detect_node_status_and_executable(
     let catchup_cmd = format!("timeout 10 {} catchup --our-localhost 2>&1", solana_cli_path);
 
     match ssh_pool
-        .execute_command(node, &validator_pair.local_ssh_key_path, &catchup_cmd)
+        .execute_command(node, &ssh_key, &catchup_cmd)
         .await
     {
         Ok(output) => {
@@ -1471,6 +1585,7 @@ async fn detect_node_status_and_executable_with_progress(
     node: &crate::types::NodeConfig,
     validator_pair: &crate::types::ValidatorPair,
     ssh_pool: &mut SshConnectionPool,
+    ssh_key_path: Option<String>,
     progress_bar: &ProgressBar,
 ) -> Result<(
     crate::types::NodeStatus,
@@ -1485,9 +1600,19 @@ async fn detect_node_status_and_executable_with_progress(
     Option<bool>,    // swap_ready
     Vec<String>,     // swap_issues
 )> {
+    // Use the detected SSH key or configured key
+    let ssh_key = ssh_key_path
+        .or(node.ssh_key_path.clone())
+        .unwrap_or_else(|| DEFAULT_SSH_KEY.to_string());
+    
+    // Show which SSH key is being used
+    progress_bar.suspend(|| {
+        println!("      🔑 Using SSH key: {}", ssh_key);
+    });
+    
     // Try to connect to the node
     if let Err(_) = ssh_pool
-        .connect(node, &validator_pair.local_ssh_key_path)
+        .connect(node, &ssh_key)
         .await
     {
         progress_bar.suspend(|| {
@@ -1533,7 +1658,7 @@ async fn detect_node_status_and_executable_with_progress(
     // First, check what validator is actually running
     let ps_cmd = "ps aux | grep -E 'bin/fdctl|bin/agave-validator|release/agave-validator' | grep -v grep";
     if let Ok(output) = ssh_pool
-        .execute_command(node, &validator_pair.local_ssh_key_path, ps_cmd)
+        .execute_command(node, &ssh_key, ps_cmd)
         .await
     {
         let lines: Vec<&str> = output.lines().collect();
@@ -1587,7 +1712,7 @@ async fn detect_node_status_and_executable_with_progress(
         // Search for agave-validator in either release or bin directories
         let agave_search_cmd = "find /opt /home /usr \\( -path '*/release/agave-validator' -o -path '*/bin/agave-validator' \\) 2>/dev/null | head -1";
         if let Ok(output) = ssh_pool
-            .execute_command(node, &validator_pair.local_ssh_key_path, agave_search_cmd)
+            .execute_command(node, &ssh_key, agave_search_cmd)
             .await
         {
             let path = output.trim();
@@ -1628,7 +1753,7 @@ async fn detect_node_status_and_executable_with_progress(
             // Read the config file and extract ledger path
             let cat_cmd = format!("cat {} 2>/dev/null | grep -A 5 '\\[ledger\\]' | grep 'path' | head -1", config_path);
             if let Ok(config_output) = ssh_pool
-                .execute_command(node, &validator_pair.local_ssh_key_path, &cat_cmd)
+                .execute_command(node, &ssh_key, &cat_cmd)
                 .await
             {
                 // Parse something like: path = "/mnt/solana_ledger"
@@ -1663,7 +1788,7 @@ async fn detect_node_status_and_executable_with_progress(
             if let Ok(version_output) = ssh_pool
                 .execute_command(
                     node,
-                    &validator_pair.local_ssh_key_path,
+                    DEFAULT_SSH_KEY,
                     &format!("timeout 5 {} --version 2>/dev/null", fdctl_exec),
                 )
                 .await
@@ -1681,7 +1806,7 @@ async fn detect_node_status_and_executable_with_progress(
         if let Ok(version_output) = ssh_pool
             .execute_command(
                 node,
-                &validator_pair.local_ssh_key_path,
+                DEFAULT_SSH_KEY,
                 &format!("timeout 5 {} --version 2>/dev/null", agave_exec),
             )
             .await
@@ -1746,7 +1871,7 @@ async fn detect_node_status_and_executable_with_progress(
             solana_cli
         );
         if let Ok(catchup_output) = ssh_pool
-            .execute_command(node, &validator_pair.local_ssh_key_path, &catchup_cmd)
+            .execute_command(node, &ssh_key, &catchup_cmd)
             .await
         {
             for line in catchup_output.lines() {
@@ -1787,7 +1912,7 @@ async fn detect_node_status_and_executable_with_progress(
     });
 
     let (swap_ready, swap_issues) =
-        check_node_swap_readiness(ssh_pool, node, &validator_pair.local_ssh_key_path, ledger_path.as_ref()).await;
+        check_node_swap_readiness(ssh_pool, node, DEFAULT_SSH_KEY, ledger_path.as_ref()).await;
 
     progress_bar.suspend(|| {
         if swap_ready {
@@ -1817,7 +1942,7 @@ async fn detect_node_status_and_executable_with_progress(
             if !solana_cli_fallback.is_empty() {
                 let catchup_cmd = format!("timeout 10 {} catchup --our-localhost 2>&1 | grep -m1 'has caught up' | head -1", solana_cli_fallback);
                 if let Ok(catchup_output) = ssh_pool
-                    .execute_command(node, &validator_pair.local_ssh_key_path, &catchup_cmd)
+                    .execute_command(node, &ssh_key, &catchup_cmd)
                     .await
                 {
                     for line in catchup_output.lines() {

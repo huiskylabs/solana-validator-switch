@@ -82,12 +82,8 @@ mod tests {
                 funded_identity: funded.to_string(),
                 unfunded_identity: unfunded.to_string(),
                 vote_keypair: "/home/solana/vote.json".to_string(),
-                ledger: "/mnt/solana_ledger".to_string(),
-                tower: "/mnt/solana_ledger/tower-1_9-*.bin".to_string(),
-                solana_cli_path: "/home/solana/.local/share/solana/install/active_release/bin/solana".to_string(),
-                firedancer_config: None,
-                fdctl_path: None,
             },
+            ssh_key_path: None,
         }
     }
     
@@ -106,6 +102,7 @@ mod tests {
             tower_path: None,
             swap_ready: Some(true),
             swap_issues: vec![],
+            ssh_key_path: Some("~/.ssh/id_rsa".to_string()),
         }
     }
     
@@ -121,7 +118,6 @@ mod tests {
             vote_pubkey: "Vote123".to_string(),
             identity_pubkey: "Identity123".to_string(),
             rpc: "https://api.mainnet-beta.solana.com".to_string(),
-            local_ssh_key_path: "~/.ssh/id_rsa".to_string(),
             nodes: vec![],
         };
         
@@ -131,7 +127,8 @@ mod tests {
             active_with_status.clone(),
             standby_with_status.clone(),
             validator_pair.clone(),
-            ssh_pool.clone()
+            ssh_pool.clone(),
+            std::collections::HashMap::new()
         );
         
         assert_eq!(manager.active_node_with_status.node.host, "1.2.3.4");
@@ -147,7 +144,6 @@ mod tests {
             vote_pubkey: "Vote123".to_string(),
             identity_pubkey: "Identity123".to_string(),
             rpc: "https://api.mainnet-beta.solana.com".to_string(),
-            local_ssh_key_path: "~/.ssh/id_rsa".to_string(),
             nodes: vec![],
         };
         
@@ -159,7 +155,8 @@ mod tests {
             active_with_status.clone(),
             active_with_status.clone(), // Using same node for simplicity
             validator_pair,
-            ssh_pool_arc.clone()
+            ssh_pool_arc.clone(),
+            std::collections::HashMap::new()
         );
         
         // Test switch_primary_to_unfunded
@@ -175,8 +172,7 @@ mod tests {
     
     #[tokio::test]
     async fn test_firedancer_identity_switch_command_generation() {
-        let mut active_node = create_test_node("Node1", "1.2.3.4", "/funded1.json", "/unfunded1.json");
-        active_node.paths.firedancer_config = Some("/home/solana/firedancer-config.toml".to_string());
+        let active_node = create_test_node("Node1", "1.2.3.4", "/funded1.json", "/unfunded1.json");
         
         let mut active_with_status = create_test_node_with_status(active_node, NodeStatus::Active, ValidatorType::Firedancer);
         active_with_status.fdctl_executable = Some("/home/solana/fdctl".to_string());
@@ -185,7 +181,6 @@ mod tests {
             vote_pubkey: "Vote123".to_string(),
             identity_pubkey: "Identity123".to_string(),
             rpc: "https://api.mainnet-beta.solana.com".to_string(),
-            local_ssh_key_path: "~/.ssh/id_rsa".to_string(),
             nodes: vec![],
         };
         
@@ -197,7 +192,8 @@ mod tests {
             active_with_status.clone(),
             active_with_status.clone(),
             validator_pair,
-            ssh_pool_arc.clone()
+            ssh_pool_arc.clone(),
+            std::collections::HashMap::new()
         );
         
         let result = manager.switch_primary_to_unfunded(true).await;
@@ -211,8 +207,7 @@ mod tests {
     
     #[tokio::test]
     async fn test_firedancer_config_auto_detection() {
-        let mut active_node = create_test_node("Node1", "1.2.3.4", "/funded1.json", "/unfunded1.json");
-        // Don't set firedancer_config to test auto-detection
+        let active_node = create_test_node("Node1", "1.2.3.4", "/funded1.json", "/unfunded1.json");
         
         let mut active_with_status = create_test_node_with_status(active_node, NodeStatus::Active, ValidatorType::Firedancer);
         active_with_status.fdctl_executable = Some("/home/solana/fdctl".to_string());
@@ -221,7 +216,6 @@ mod tests {
             vote_pubkey: "Vote123".to_string(),
             identity_pubkey: "Identity123".to_string(),
             rpc: "https://api.mainnet-beta.solana.com".to_string(),
-            local_ssh_key_path: "~/.ssh/id_rsa".to_string(),
             nodes: vec![],
         };
         
@@ -234,7 +228,8 @@ mod tests {
             active_with_status.clone(),
             active_with_status.clone(),
             validator_pair,
-            ssh_pool_arc.clone()
+            ssh_pool_arc.clone(),
+            std::collections::HashMap::new()
         );
         
         let result = manager.switch_primary_to_unfunded(true).await;
@@ -256,7 +251,6 @@ mod tests {
             vote_pubkey: "Vote123".to_string(),
             identity_pubkey: "Identity123".to_string(),
             rpc: "https://api.mainnet-beta.solana.com".to_string(),
-            local_ssh_key_path: "~/.ssh/id_rsa".to_string(),
             nodes: vec![],
         };
         
@@ -269,7 +263,8 @@ mod tests {
             active_with_status,
             standby_with_status,
             validator_pair,
-            ssh_pool_arc.clone()
+            ssh_pool_arc.clone(),
+            std::collections::HashMap::new()
         );
         
         let result = manager.transfer_tower_file(false).await;
@@ -294,7 +289,6 @@ mod tests {
             vote_pubkey: "Vote123".to_string(),
             identity_pubkey: "Identity123".to_string(),
             rpc: "https://api.mainnet-beta.solana.com".to_string(),
-            local_ssh_key_path: "~/.ssh/id_rsa".to_string(),
             nodes: vec![],
         };
         
@@ -306,7 +300,8 @@ mod tests {
             active_with_status,
             standby_with_status,
             validator_pair,
-            ssh_pool_arc
+            ssh_pool_arc,
+            std::collections::HashMap::new()
         );
         
         let result = manager.transfer_tower_file(false).await;
@@ -323,7 +318,6 @@ mod tests {
             vote_pubkey: "Vote123".to_string(),
             identity_pubkey: "Identity123".to_string(),
             rpc: "https://api.mainnet-beta.solana.com".to_string(),
-            local_ssh_key_path: "~/.ssh/id_rsa".to_string(),
             nodes: vec![],
         };
         
@@ -335,7 +329,8 @@ mod tests {
             active_with_status.clone(),
             active_with_status.clone(),
             validator_pair,
-            ssh_pool_arc
+            ssh_pool_arc,
+            std::collections::HashMap::new()
         );
         
         let result = manager.switch_primary_to_unfunded(true).await;
@@ -347,16 +342,13 @@ mod tests {
     async fn test_missing_executable_paths() {
         let active_node = create_test_node("Node1", "1.2.3.4", "/funded1.json", "/unfunded1.json");
         let mut active_with_status = create_test_node_with_status(active_node, NodeStatus::Active, ValidatorType::Firedancer);
-        // Don't set fdctl_executable or firedancer_config
+        // Don't set fdctl_executable
         active_with_status.fdctl_executable = None;
-        active_with_status.node.paths.fdctl_path = None;
-        active_with_status.node.paths.firedancer_config = None;
         
         let validator_pair = ValidatorPair {
             vote_pubkey: "Vote123".to_string(),
             identity_pubkey: "Identity123".to_string(),
             rpc: "https://api.mainnet-beta.solana.com".to_string(),
-            local_ssh_key_path: "~/.ssh/id_rsa".to_string(),
             nodes: vec![],
         };
         
@@ -368,7 +360,8 @@ mod tests {
             active_with_status.clone(),
             active_with_status.clone(),
             validator_pair,
-            ssh_pool_arc
+            ssh_pool_arc,
+            std::collections::HashMap::new()
         );
         
         let result = manager.switch_primary_to_unfunded(true).await;
@@ -385,7 +378,6 @@ mod tests {
             vote_pubkey: "Vote123".to_string(),
             identity_pubkey: "Identity123".to_string(),
             rpc: "https://api.mainnet-beta.solana.com".to_string(),
-            local_ssh_key_path: "~/.ssh/id_rsa".to_string(),
             nodes: vec![],
         };
         
@@ -397,7 +389,8 @@ mod tests {
             standby_with_status.clone(),
             standby_with_status.clone(),
             validator_pair,
-            ssh_pool_arc.clone()
+            ssh_pool_arc.clone(),
+            std::collections::HashMap::new()
         );
         
         let result = manager.verify_backup_catchup(false).await;
@@ -419,7 +412,6 @@ mod tests {
             vote_pubkey: "Vote123".to_string(),
             identity_pubkey: "Identity123".to_string(),
             rpc: "https://api.mainnet-beta.solana.com".to_string(),
-            local_ssh_key_path: "~/.ssh/id_rsa".to_string(),
             nodes: vec![],
         };
         
@@ -434,7 +426,8 @@ mod tests {
             active_with_status,
             standby_with_status,
             validator_pair,
-            ssh_pool_arc
+            ssh_pool_arc,
+            std::collections::HashMap::new()
         );
         
         let result = manager.execute_switch(false).await;

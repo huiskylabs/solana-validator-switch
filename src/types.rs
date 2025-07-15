@@ -13,8 +13,6 @@ pub struct ValidatorPair {
     #[serde(rename = "identityPubkey")]
     pub identity_pubkey: String,
     pub rpc: String,
-    #[serde(rename = "localSshKeyPath")]
-    pub local_ssh_key_path: String,
     pub nodes: Vec<NodeConfig>,
 }
 
@@ -25,6 +23,8 @@ pub struct NodeConfig {
     pub port: u16,
     pub user: String,
     pub paths: NodePaths,
+    #[serde(rename = "sshKeyPath", skip_serializing_if = "Option::is_none")]
+    pub ssh_key_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,10 +35,6 @@ pub struct NodePaths {
     pub unfunded_identity: String,
     #[serde(rename = "voteKeypair")]
     pub vote_keypair: String,
-    #[serde(rename = "firedancerConfig")]
-    pub firedancer_config: Option<String>,
-    #[serde(rename = "fdctlPath")]
-    pub fdctl_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -71,6 +67,7 @@ pub struct NodeWithStatus {
     pub tower_path: Option<String>,       // Tower file path derived from ledger path and identity
     pub swap_ready: Option<bool>,         // Whether the node is ready for validator switching
     pub swap_issues: Vec<String>,         // Issues preventing swap readiness
+    pub ssh_key_path: Option<String>,     // Detected SSH key path for this node
 }
 
 #[derive(Debug)]

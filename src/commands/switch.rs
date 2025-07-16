@@ -712,11 +712,21 @@ impl SwitchManager {
                 let ssh_key =
                     self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
                 let mut pool = self.ssh_pool.lock().unwrap();
-                pool.execute_command(&self.standby_node_with_status.node, &ssh_key, &catchup_cmd)
-                    .await?
+                
+                // Use early exit when we see "0 slot(s) behind"
+                pool.execute_command_with_early_exit(
+                    &self.standby_node_with_status.node, 
+                    &ssh_key, 
+                    &catchup_cmd,
+                    |output| output.contains("0 slot(s)") || output.contains("has caught up")
+                ).await?
             };
 
-            if catchup_result.contains("has caught up") || catchup_result.contains("slots behind") {
+            if catchup_result.contains("0 slot(s) behind") {
+                spinner.stop_with_message(
+                    "✅ New active validator (former standby) is caught up with funded identity",
+                );
+            } else if catchup_result.contains("slots behind") {
                 spinner.stop_with_message(
                     "✅ New active validator (former standby) is syncing with funded identity",
                 );

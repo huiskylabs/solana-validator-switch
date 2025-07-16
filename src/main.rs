@@ -20,6 +20,7 @@ mod ssh_key_detector;
 mod startup;
 mod types;
 mod validator_metadata;
+mod solana_rpc;
 
 use commands::{status_command, switch_command};
 use ssh::SshConnectionPool;

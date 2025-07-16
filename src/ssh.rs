@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use ssh2::Session;
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -44,6 +44,47 @@ impl SshConnection {
 
     pub fn execute_command(&mut self, command: &str) -> Result<String> {
         self.execute_command_with_input(command, None)
+    }
+    
+    pub fn execute_command_with_early_exit<F>(&mut self, command: &str, check_fn: F) -> Result<String>
+    where
+        F: Fn(&str) -> bool,
+    {
+        self.update_last_used();
+
+        let mut channel = self.session.channel_session()?;
+        channel.exec(command)?;
+
+        let mut output = String::new();
+        let mut buffer = [0u8; 1024];
+        
+        // Read output in chunks and check for early exit condition
+        loop {
+            use std::io::Read;
+            match channel.read(&mut buffer) {
+                Ok(0) => break, // EOF
+                Ok(n) => {
+                    let chunk = String::from_utf8_lossy(&buffer[..n]);
+                    output.push_str(&chunk);
+                    
+                    // Check if we should exit early
+                    if check_fn(&output) {
+                        // Send Ctrl+C to stop the command
+                        channel.write_all(&[3])?; // ASCII 3 is Ctrl+C
+                        channel.flush()?;
+                        break;
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    // No data available, continue
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+
+        channel.wait_close()?;
+        Ok(output)
     }
 
     pub fn execute_command_with_input(
@@ -294,6 +335,20 @@ impl SshConnectionPool {
     ) -> Result<String> {
         let connection = self.get_connection(node, ssh_key_path).await?;
         connection.execute_command(command)
+    }
+    
+    pub async fn execute_command_with_early_exit<F>(
+        &mut self,
+        node: &NodeConfig,
+        ssh_key_path: &str,
+        command: &str,
+        check_fn: F,
+    ) -> Result<String>
+    where
+        F: Fn(&str) -> bool,
+    {
+        let connection = self.get_connection(node, ssh_key_path).await?;
+        connection.execute_command_with_early_exit(command, check_fn)
     }
 
     /// Get connection status for a node

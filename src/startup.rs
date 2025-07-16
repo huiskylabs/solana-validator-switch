@@ -994,17 +994,28 @@ async fn show_ready_prompt() {
     // Flush stdout to ensure the prompt appears immediately
     io::stdout().flush().unwrap();
 
-    // Wait for any key press
-    let mut input = String::new();
-    let _ = io::stdin().read_line(&mut input);
+    // Skip wait for status command
+    if std::env::args().any(|arg| arg == "status") {
+        // Clear the ready prompt immediately for status command
+        print!("\x1B[8A\x1B[2K"); // Move up 8 lines and clear
+        for _ in 0..8 {
+            print!("\x1B[2K\x1B[1B"); // Clear line and move down
+        }
+        print!("\x1B[8A"); // Move back up to original position
+        io::stdout().flush().unwrap();
+    } else {
+        // Wait for any key press
+        let mut input = String::new();
+        let _ = io::stdin().read_line(&mut input);
 
-    // Clear the ready prompt
-    print!("\x1B[8A\x1B[2K"); // Move up 8 lines and clear
-    for _ in 0..8 {
-        print!("\x1B[2K\x1B[1B"); // Clear line and move down
+        // Clear the ready prompt
+        print!("\x1B[8A\x1B[2K"); // Move up 8 lines and clear
+        for _ in 0..8 {
+            print!("\x1B[2K\x1B[1B"); // Clear line and move down
+        }
+        print!("\x1B[8A"); // Move back up to original position
+        io::stdout().flush().unwrap();
     }
-    print!("\x1B[8A"); // Move back up to original position
-    io::stdout().flush().unwrap();
 }
 
 #[allow(dead_code)]
@@ -1399,12 +1410,13 @@ async fn detect_node_status_and_executable(
 
     if !solana_cli.is_empty() {
         let catchup_cmd = format!(
-            "timeout 10 {} catchup --our-localhost 2>&1 | grep -m1 'has caught up' | head -1",
+            "timeout 10 {} catchup --our-localhost 2>&1",
             solana_cli
         );
-        if let Ok(catchup_output) = ssh_pool.execute_command(node, &ssh_key, &catchup_cmd).await {
+        if let Ok(catchup_output) = ssh_pool.execute_command_with_early_exit(node, &ssh_key, &catchup_cmd, |output| output.contains("0 slot(s)") || output.contains("has caught up")).await {
             for line in catchup_output.lines() {
-                if line.contains("has caught up") {
+                // Handle both "has caught up" and "0 slot(s) behind" formats
+                if line.contains("has caught up") || line.contains("0 slot(s) behind") {
                     if let Some(caught_up_pos) = line.find(" has caught up") {
                         let identity = line[..caught_up_pos].trim();
                         if current_identity.is_none() && !identity.is_empty() {
@@ -1412,6 +1424,20 @@ async fn detect_node_status_and_executable(
                         }
 
                         // Extract slot information
+                        if let Some(us_start) = line.find("us:") {
+                            let us_end = line[us_start + 3..]
+                                .find(' ')
+                                .unwrap_or(line.len() - us_start - 3)
+                                + us_start
+                                + 3;
+                            let us_slot = &line[us_start + 3..us_end];
+                            sync_status = Some(format!("Caught up (slot: {})", us_slot));
+                        } else {
+                            sync_status = Some("Caught up".to_string());
+                        }
+                        break;
+                    } else if line.contains("0 slot(s) behind") {
+                        // Extract slot information from Firedancer format
                         if let Some(us_start) = line.find("us:") {
                             let us_end = line[us_start + 3..]
                                 .find(' ')
@@ -1454,7 +1480,7 @@ async fn detect_node_status_and_executable(
         solana_cli_path
     );
 
-    match ssh_pool.execute_command(node, &ssh_key, &catchup_cmd).await {
+    match ssh_pool.execute_command_with_early_exit(node, &ssh_key, &catchup_cmd, |output| output.contains("0 slot(s)") || output.contains("has caught up")).await {
         Ok(output) => {
             // Parse the catchup output to find identity
             for line in output.lines() {
@@ -1888,12 +1914,13 @@ async fn detect_node_status_and_executable_with_progress(
 
     if !solana_cli.is_empty() {
         let catchup_cmd = format!(
-            "timeout 10 {} catchup --our-localhost 2>&1 | grep -m1 'has caught up' | head -1",
+            "timeout 10 {} catchup --our-localhost 2>&1",
             solana_cli
         );
-        if let Ok(catchup_output) = ssh_pool.execute_command(node, &ssh_key, &catchup_cmd).await {
+        if let Ok(catchup_output) = ssh_pool.execute_command_with_early_exit(node, &ssh_key, &catchup_cmd, |output| output.contains("0 slot(s)") || output.contains("has caught up")).await {
             for line in catchup_output.lines() {
-                if line.contains("has caught up") {
+                // Handle both "has caught up" and "0 slot(s) behind" formats
+                if line.contains("has caught up") || line.contains("0 slot(s) behind") {
                     if let Some(caught_up_pos) = line.find(" has caught up") {
                         let identity = line[..caught_up_pos].trim();
                         if current_identity.is_none() && !identity.is_empty() {
@@ -1901,6 +1928,20 @@ async fn detect_node_status_and_executable_with_progress(
                         }
 
                         // Extract slot information
+                        if let Some(us_start) = line.find("us:") {
+                            let us_end = line[us_start + 3..]
+                                .find(' ')
+                                .unwrap_or(line.len() - us_start - 3)
+                                + us_start
+                                + 3;
+                            let us_slot = &line[us_start + 3..us_end];
+                            sync_status = Some(format!("Caught up (slot: {})", us_slot));
+                        } else {
+                            sync_status = Some("Caught up".to_string());
+                        }
+                        break;
+                    } else if line.contains("0 slot(s) behind") {
+                        // Extract slot information from Firedancer format
                         if let Some(us_start) = line.find("us:") {
                             let us_end = line[us_start + 3..]
                                 .find(' ')
@@ -1959,12 +2000,13 @@ async fn detect_node_status_and_executable_with_progress(
 
     if !solana_cli_fallback.is_empty() {
         let catchup_cmd = format!(
-            "timeout 10 {} catchup --our-localhost 2>&1 | grep -m1 'has caught up' | head -1",
+            "timeout 10 {} catchup --our-localhost 2>&1",
             solana_cli_fallback
         );
-        if let Ok(catchup_output) = ssh_pool.execute_command(node, &ssh_key, &catchup_cmd).await {
+        if let Ok(catchup_output) = ssh_pool.execute_command_with_early_exit(node, &ssh_key, &catchup_cmd, |output| output.contains("0 slot(s)") || output.contains("has caught up")).await {
             for line in catchup_output.lines() {
-                if line.contains("has caught up") {
+                // Handle both "has caught up" and "0 slot(s) behind" formats
+                if line.contains("has caught up") || line.contains("0 slot(s) behind") {
                     if let Some(caught_up_pos) = line.find(" has caught up") {
                         let identity = line[..caught_up_pos].trim();
                         if current_identity.is_none() {

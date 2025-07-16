@@ -5,9 +5,13 @@ use comfy_table::{
     ContentArrangement, Table,
 };
 use std::collections::HashMap;
+use std::time::Duration;
+use tokio::time::interval;
+use std::io::{stdout, Write};
 
 use crate::types::{Config, NodeConfig};
 use crate::AppState;
+use crate::solana_rpc::{fetch_vote_account_data, ValidatorVoteData};
 
 pub async fn status_command(app_state: &AppState) -> Result<()> {
     if app_state.config.validators.is_empty() {
@@ -18,8 +22,8 @@ pub async fn status_command(app_state: &AppState) -> Result<()> {
         return Ok(());
     }
 
-    // Show comprehensive status in one clean view
-    show_comprehensive_status(app_state).await
+    // Use ratatui UI for status display
+    crate::commands::status_ui::show_auto_refresh_status_ui(app_state).await
 }
 
 async fn show_comprehensive_status(app_state: &AppState) -> Result<()> {
@@ -30,6 +34,431 @@ async fn show_comprehensive_status(app_state: &AppState) -> Result<()> {
     display_status_table_from_app_state(app_state);
 
     Ok(())
+}
+
+async fn show_auto_refresh_status(app_state: &AppState) -> Result<()> {
+    // Set up Ctrl+C handler
+    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let r = running.clone();
+    
+    ctrlc::set_handler(move || {
+        r.store(false, std::sync::atomic::Ordering::SeqCst);
+    })?;
+    
+    // Create a 3-second interval
+    let mut refresh_interval = interval(Duration::from_secs(3));
+    
+    // Display header once
+    print!("\x1B[2J\x1B[1;1H"); // Clear screen initially
+    println!("{}", "📋 Validator Status (Auto-refresh every 3s)".bright_cyan().bold());
+    println!("{}", "─".repeat(80).dimmed());
+    println!();
+    
+    // Store cursor position after header
+    print!("\x1B[s"); // Save cursor position
+    stdout().flush()?;
+    
+    // First run - display the full table
+    if let Err(e) = display_status_with_rpc_data(app_state, true).await {
+        eprintln!("Error fetching status: {}", e);
+    }
+    stdout().flush()?;
+    
+    // Count lines in the table to know where the last row is
+    let table_lines = count_table_lines(app_state);
+    
+    while running.load(std::sync::atomic::Ordering::SeqCst) {
+        // Wait for next tick first
+        refresh_interval.tick().await;
+        
+        // Move cursor to the last row of the table
+        print!("\x1B[u"); // Restore to saved position
+        print!("\x1B[{}B", table_lines - 1); // Move down to last row
+        
+        // Clear just the last row
+        print!("\x1B[2K"); // Clear current line
+        
+        // Update only the vote status row
+        if let Err(e) = display_vote_status_row_only(app_state).await {
+            eprintln!("Error fetching vote status: {}", e);
+        }
+        
+        stdout().flush()?;
+    }
+    
+    Ok(())
+}
+
+async fn display_status_with_rpc_data(app_state: &AppState, full_display: bool) -> Result<()> {
+    for (index, validator_status) in app_state.validator_statuses.iter().enumerate() {
+        let validator_pair = &validator_status.validator_pair;
+        
+        if full_display {
+            // Display validator info with name if available
+            if let Some(ref metadata) = validator_status.metadata {
+                if let Some(ref name) = metadata.name {
+                    println!(
+                        "{} Validator: {}",
+                        "🔗".bright_cyan(),
+                        name.bright_white().bold()
+                    );
+                    println!("   Vote: {}", validator_pair.vote_pubkey.dimmed());
+                    println!("   Identity: {}", validator_pair.identity_pubkey.dimmed());
+                } else {
+                    println!(
+                        "{} Validator {} - Vote: {}",
+                        "🔗".bright_cyan(),
+                        index + 1,
+                        validator_pair.vote_pubkey
+                    );
+                }
+            } else {
+                println!(
+                    "{} Validator {} - Vote: {}",
+                    "🔗".bright_cyan(),
+                    index + 1,
+                    validator_pair.vote_pubkey
+                );
+            }
+            
+            println!();
+        }
+        
+        // Fetch vote account data from RPC
+        let vote_data = match fetch_vote_account_data(
+            &validator_pair.rpc,
+            &validator_pair.vote_pubkey,
+        ).await {
+            Ok(data) => Some(data),
+            Err(e) => {
+                eprintln!("Failed to fetch vote data: {}", e);
+                None
+            }
+        };
+        
+        if full_display {
+            // Get the two nodes with their statuses
+            let nodes_with_status = &validator_status.nodes_with_status;
+            if nodes_with_status.len() >= 2 {
+                let node_0 = &nodes_with_status[0];
+                let node_1 = &nodes_with_status[1];
+                
+                display_simple_status_table_with_rpc(
+                    &node_0.node,
+                    &node_0.status,
+                    &node_1.node,
+                    &node_1.status,
+                    validator_status,
+                    vote_data.as_ref(),
+                );
+            }
+            
+            println!();
+        }
+    }
+    
+    Ok(())
+}
+
+fn display_vote_data(vote_data: &ValidatorVoteData) {
+    // Voting status
+    let voting_status = if vote_data.is_voting {
+        "✅ Voting".green()
+    } else {
+        "⚠️ Not Voting".yellow()
+    };
+    println!("   Status: {}", voting_status);
+    
+    // Display most recent vote exactly like solana vote-account output
+    if let Some(recent_vote) = vote_data.recent_votes.first() {
+        println!(
+            "   Recent Vote: slot: {} (confirmation count: {}) (latency {})",
+            recent_vote.slot.to_string().bright_white(),
+            recent_vote.confirmation_count,
+            recent_vote.latency.to_string().cyan()
+        );
+    }
+    
+    // Display credits and commission
+    println!(
+        "   Credits: {} | Commission: {}%",
+        vote_data.vote_account_info.credits.to_string().bright_white(),
+        vote_data.vote_account_info.commission
+    );
+}
+
+fn display_simple_status_table_with_rpc(
+    node_0: &crate::types::NodeConfig,
+    node_0_status: &crate::types::NodeStatus,
+    node_1: &crate::types::NodeConfig,
+    node_1_status: &crate::types::NodeStatus,
+    validator_status: &crate::ValidatorStatus,
+    vote_data: Option<&ValidatorVoteData>,
+) {
+    let mut table = Table::new();
+
+    // Create custom table style with minimal borders
+    table
+        .load_preset(comfy_table::presets::UTF8_BORDERS_ONLY)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_content_arrangement(ContentArrangement::Dynamic);
+
+    // Header row with dynamic labels
+    let node_0_label = match node_0_status {
+        crate::types::NodeStatus::Active => "ACTIVE",
+        crate::types::NodeStatus::Standby => "STANDBY",
+        crate::types::NodeStatus::Unknown => "UNKNOWN",
+    };
+    let node_1_label = match node_1_status {
+        crate::types::NodeStatus::Active => "ACTIVE",
+        crate::types::NodeStatus::Standby => "STANDBY",
+        crate::types::NodeStatus::Unknown => "UNKNOWN",
+    };
+
+    let node_0_color = if node_0_label == "ACTIVE" {
+        Color::Green
+    } else if node_0_label == "STANDBY" {
+        Color::Yellow
+    } else {
+        Color::DarkGrey
+    };
+    let node_1_color = if node_1_label == "ACTIVE" {
+        Color::Green
+    } else if node_1_label == "STANDBY" {
+        Color::Yellow
+    } else {
+        Color::DarkGrey
+    };
+
+    // Node info as header
+    let node_0_info = format!("🖥️ {} ({})", node_0.label, node_0.host);
+    let node_1_info = format!("🖥️ {} ({})", node_1.label, node_1.host);
+
+    table.add_row(vec![
+        Cell::new("Node")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
+        Cell::new(&node_0_info),
+        Cell::new(&node_1_info),
+    ]);
+
+    // Add separator line after subheader
+    table.add_row(vec![
+        Cell::new("─".repeat(15)).fg(Color::DarkGrey),
+        Cell::new("─".repeat(25)).fg(Color::DarkGrey),
+        Cell::new("─".repeat(25)).fg(Color::DarkGrey),
+    ]);
+
+    // Status rows with basic info
+    table.add_row(vec![
+        Cell::new("Status")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
+        Cell::new(node_0_label).fg(node_0_color),
+        Cell::new(node_1_label).fg(node_1_color),
+    ]);
+
+    // Add executable paths
+    let node_0_agave = validator_status
+        .nodes_with_status
+        .get(0)
+        .and_then(|n| n.agave_validator_executable.as_ref())
+        .map(|path| truncate_path(path, 30))
+        .unwrap_or("N/A".to_string());
+    let node_1_agave = validator_status
+        .nodes_with_status
+        .get(1)
+        .and_then(|n| n.agave_validator_executable.as_ref())
+        .map(|path| truncate_path(path, 30))
+        .unwrap_or("N/A".to_string());
+
+    table.add_row(vec![
+        Cell::new("Agave Executable")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
+        Cell::new(node_0_agave),
+        Cell::new(node_1_agave),
+    ]);
+
+    // Add Solana CLI executable row
+    let node_0_solana = validator_status
+        .nodes_with_status
+        .get(0)
+        .and_then(|n| n.solana_cli_executable.as_ref())
+        .map(|path| truncate_path(path, 30))
+        .unwrap_or("N/A".to_string());
+    let node_1_solana = validator_status
+        .nodes_with_status
+        .get(1)
+        .and_then(|n| n.solana_cli_executable.as_ref())
+        .map(|path| truncate_path(path, 30))
+        .unwrap_or("N/A".to_string());
+
+    table.add_row(vec![
+        Cell::new("Solana CLI")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
+        Cell::new(node_0_solana),
+        Cell::new(node_1_solana),
+    ]);
+
+    let node_0_fdctl = validator_status
+        .nodes_with_status
+        .get(0)
+        .and_then(|n| n.fdctl_executable.as_ref())
+        .map(|path| truncate_path(path, 30))
+        .unwrap_or("N/A".to_string());
+    let node_1_fdctl = validator_status
+        .nodes_with_status
+        .get(1)
+        .and_then(|n| n.fdctl_executable.as_ref())
+        .map(|path| truncate_path(path, 30))
+        .unwrap_or("N/A".to_string());
+
+    table.add_row(vec![
+        Cell::new("Fdctl Executable")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
+        Cell::new(node_0_fdctl),
+        Cell::new(node_1_fdctl),
+    ]);
+
+    // Add version information
+    let node_0_version = validator_status
+        .nodes_with_status
+        .get(0)
+        .and_then(|n| n.version.as_ref())
+        .cloned()
+        .unwrap_or("N/A".to_string());
+    let node_1_version = validator_status
+        .nodes_with_status
+        .get(1)
+        .and_then(|n| n.version.as_ref())
+        .cloned()
+        .unwrap_or("N/A".to_string());
+
+    table.add_row(vec![
+        Cell::new("Version")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
+        Cell::new(node_0_version),
+        Cell::new(node_1_version),
+    ]);
+
+    // Add sync status
+    let node_0_sync = validator_status
+        .nodes_with_status
+        .get(0)
+        .and_then(|n| n.sync_status.as_ref())
+        .cloned()
+        .unwrap_or("Unknown".to_string());
+    let node_1_sync = validator_status
+        .nodes_with_status
+        .get(1)
+        .and_then(|n| n.sync_status.as_ref())
+        .cloned()
+        .unwrap_or("Unknown".to_string());
+
+    table.add_row(vec![
+        Cell::new("Sync Status")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
+        Cell::new(node_0_sync),
+        Cell::new(node_1_sync),
+    ]);
+
+    // Add identity pubkey (from current_identity)
+    let node_0_identity = validator_status
+        .nodes_with_status
+        .get(0)
+        .and_then(|n| n.current_identity.as_ref())
+        .cloned()
+        .unwrap_or("Unknown".to_string());
+    let node_1_identity = validator_status
+        .nodes_with_status
+        .get(1)
+        .and_then(|n| n.current_identity.as_ref())
+        .cloned()
+        .unwrap_or("Unknown".to_string());
+
+    table.add_row(vec![
+        Cell::new("Identity")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
+        Cell::new(node_0_identity),
+        Cell::new(node_1_identity),
+    ]);
+
+    // Add ledger path (detected from running process)
+    let node_0_ledger = validator_status
+        .nodes_with_status
+        .get(0)
+        .and_then(|n| n.ledger_path.as_ref())
+        .map(|path| truncate_path(path, 30))
+        .unwrap_or("N/A".to_string());
+    let node_1_ledger = validator_status
+        .nodes_with_status
+        .get(1)
+        .and_then(|n| n.ledger_path.as_ref())
+        .map(|path| truncate_path(path, 30))
+        .unwrap_or("N/A".to_string());
+
+    table.add_row(vec![
+        Cell::new("Ledger Path")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
+        Cell::new(node_0_ledger),
+        Cell::new(node_1_ledger),
+    ]);
+
+    // Add swap readiness
+    let node_0_swap = validator_status
+        .nodes_with_status
+        .get(0)
+        .and_then(|n| n.swap_ready)
+        .map(|ready| if ready { "✅ Ready" } else { "❌ Not Ready" })
+        .unwrap_or("❓ Unknown");
+    let node_1_swap = validator_status
+        .nodes_with_status
+        .get(1)
+        .and_then(|n| n.swap_ready)
+        .map(|ready| if ready { "✅ Ready" } else { "❌ Not Ready" })
+        .unwrap_or("❓ Unknown");
+
+    table.add_row(vec![
+        Cell::new("Swap Ready")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
+        Cell::new(node_0_swap),
+        Cell::new(node_1_swap),
+    ]);
+    
+    // Add RPC voting status row as the last row
+    if let Some(vote_data) = vote_data {
+        let voting_status = if vote_data.is_voting {
+            "✅ Voting"
+        } else {
+            "⚠️ Not Voting"
+        };
+        
+        let vote_info = if let Some(recent_vote) = vote_data.recent_votes.first() {
+            let current_slot = vote_data.vote_account_info.current_slot.unwrap_or(0);
+            let diff = current_slot.saturating_sub(recent_vote.slot);
+            format!("(-{})", diff)
+        } else {
+            "No recent votes".to_string()
+        };
+        
+        table.add_row(vec![
+            Cell::new("Vote Status")
+                .add_attribute(Attribute::Bold)
+                .fg(Color::Cyan),
+            Cell::new(voting_status).fg(if vote_data.is_voting { Color::Green } else { Color::Yellow }),
+            Cell::new(&vote_info),
+        ]);
+    }
+
+    println!("{}", table);
 }
 
 #[allow(dead_code)]
@@ -1614,4 +2043,62 @@ fn truncate_path(path: &str, max_length: usize) -> String {
         };
         format!("...{}", &path[start..])
     }
+}
+
+fn count_table_lines(app_state: &AppState) -> usize {
+    // Count the number of lines in the table
+    // Each validator has: header + status rows
+    let mut lines = 0;
+    for _ in app_state.validator_statuses.iter() {
+        lines += 4; // Validator header lines
+        lines += 11; // Fixed table rows (Node, separator, Status, Agave, Solana CLI, Fdctl, Version, Sync, Identity, Ledger, Swap)
+        lines += 1; // Vote Status row
+        lines += 1; // Empty line between validators
+    }
+    lines
+}
+
+async fn display_vote_status_row_only(app_state: &AppState) -> Result<()> {
+    // Only update the vote status for each validator
+    for validator_status in app_state.validator_statuses.iter() {
+        let validator_pair = &validator_status.validator_pair;
+        
+        // Fetch vote account data from RPC
+        let vote_data = match fetch_vote_account_data(
+            &validator_pair.rpc,
+            &validator_pair.vote_pubkey,
+        ).await {
+            Ok(data) => Some(data),
+            Err(_) => None,
+        };
+        
+        if let Some(vote_data) = vote_data {
+            let voting_status = if vote_data.is_voting {
+                "✅ Voting"
+            } else {
+                "⚠️ Not Voting"
+            };
+            
+            let vote_info = if let Some(recent_vote) = vote_data.recent_votes.first() {
+                let current_slot = vote_data.vote_account_info.current_slot.unwrap_or(0);
+                let diff = current_slot.saturating_sub(recent_vote.slot);
+                format!("(-{})", diff)
+            } else {
+                "No recent votes".to_string()
+            };
+            
+            // Print the updated row
+            print!("│ {:14} │ {:24} │ {:24} │", 
+                "Vote Status".cyan().bold(),
+                if vote_data.is_voting { 
+                    voting_status.green() 
+                } else { 
+                    voting_status.yellow() 
+                },
+                vote_info
+            );
+        }
+    }
+    
+    Ok(())
 }

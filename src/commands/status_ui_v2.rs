@@ -324,33 +324,28 @@ async fn fetch_catchup_for_node(
     };
     
     // First check if the solana CLI exists
-    let check_cmd = format!("test -f {} && echo 'exists' || echo 'not found'", solana_cli);
-    match ssh_pool.execute_command(&node.node, ssh_key, &check_cmd).await {
-        Ok(output) => {
-            if !output.contains("exists") {
-                let _ = log_sender.send(LogMessage {
-                    host: node.node.host.clone(),
-                    message: format!("Solana CLI not found at: {}", solana_cli),
-                    timestamp: Instant::now(),
-                    level: LogLevel::Error,
-                });
-                return Some(CatchupStatus {
-                    status: "CLI not found".to_string(),
-                    last_updated: Instant::now(),
-                });
-            }
-        }
-        Err(_) => {
-            return Some(CatchupStatus {
-                status: "Error".to_string(),
-                last_updated: Instant::now(),
-            });
-        }
+    let test_args = vec!["-f", &solana_cli];
+    let file_exists = match ssh_pool.execute_command_with_args(&node.node, ssh_key, "test", &test_args).await {
+        Ok(_) => true,
+        Err(_) => false,
+    };
+    
+    if !file_exists {
+        let _ = log_sender.send(LogMessage {
+            host: node.node.host.clone(),
+            message: format!("Solana CLI not found at: {}", solana_cli),
+            timestamp: Instant::now(),
+            level: LogLevel::Error,
+        });
+        return Some(CatchupStatus {
+            status: "CLI not found".to_string(),
+            last_updated: Instant::now(),
+        });
     }
     
     // Test if we can run solana --version
-    let version_cmd = format!("{} --version 2>&1", solana_cli);
-    match ssh_pool.execute_command(&node.node, ssh_key, &version_cmd).await {
+    let version_args = vec!["--version"];
+    match ssh_pool.execute_command_with_args(&node.node, ssh_key, &solana_cli, &version_args).await {
         Ok(output) => {
             let _ = log_sender.send(LogMessage {
                 host: node.node.host.clone(),
@@ -369,19 +364,18 @@ async fn fetch_catchup_for_node(
         }
     }
     
-    // Try different catchup command formats based on validator type
-    // Both Firedancer and Agave support --our-localhost
-    let catchup_cmd = format!("timeout 10 {} catchup --our-localhost 2>&1", solana_cli);
+    // Use args approach for catchup command
+    let args = vec!["catchup", "--our-localhost"];
     
     let _ = log_sender.send(LogMessage {
         host: node.node.host.clone(),
-        message: format!("Executing catchup command: {}", catchup_cmd),
+        message: format!("Executing catchup command: {} {}", solana_cli, args.join(" ")),
         timestamp: Instant::now(),
         level: LogLevel::Info,
     });
     
-    // Try executing the command without early exit to get full output
-    match ssh_pool.execute_command(&node.node, ssh_key, &catchup_cmd).await {
+    // Try executing the command with args
+    match ssh_pool.execute_command_with_args(&node.node, ssh_key, &solana_cli, &args).await {
         Ok(output) => {
             // Log the raw output for debugging
             let _ = log_sender.send(LogMessage {
@@ -406,7 +400,8 @@ async fn fetch_catchup_for_node(
                 "Error".to_string()
             } else if output.trim().is_empty() {
                 // Try a simple test command to verify SSH is working
-                if let Ok(test_output) = ssh_pool.execute_command(&node.node, ssh_key, "echo 'test'").await {
+                let echo_args = vec!["test"];
+                if let Ok(test_output) = ssh_pool.execute_command_with_args(&node.node, ssh_key, "echo", &echo_args).await {
                     if test_output.contains("test") {
                         "No catchup output".to_string()
                     } else {
@@ -791,12 +786,12 @@ fn draw_validator_table(
     }
     
     // Vote account info - determine which node is active
-    if let Some(vote_data) = vote_data {
-        if validator_status.nodes_with_status.len() >= 2 {
-            let node_0 = &validator_status.nodes_with_status[0];
-            let node_1 = &validator_status.nodes_with_status[1];
-            
-            // Vote status row - show which node is voting
+    if validator_status.nodes_with_status.len() >= 2 {
+        let node_0 = &validator_status.nodes_with_status[0];
+        let node_1 = &validator_status.nodes_with_status[1];
+        
+        // Vote status row
+        if let Some(vote_data) = vote_data {
             let vote_status = if vote_data.is_voting {
                 "✅ Voting"
             } else {
@@ -810,63 +805,65 @@ fn draw_validator_table(
                 Cell::from(if node_1.status == crate::types::NodeStatus::Active { vote_status } else { "-" })
                     .style(Style::default().fg(if node_1.status == crate::types::NodeStatus::Active && vote_data.is_voting { Color::Green } else { Color::Yellow })),
             ]));
+        } else {
+            rows.push(Row::new(vec![
+                Cell::from("Vote Status"),
+                Cell::from("Loading..."),
+                Cell::from("Loading..."),
+            ]));
         }
         
-        // Last voted slot row - show for active validator
-        if let Some(last_vote) = vote_data.recent_votes.last() {
-            if validator_status.nodes_with_status.len() >= 2 {
-                let node_0 = &validator_status.nodes_with_status[0];
-                let node_1 = &validator_status.nodes_with_status[1];
-                
-                let last_slot = last_vote.slot;
-                let mut slot_display = format!("{}", last_slot);
-                
-                // Add increment if applicable
-                if let Some(prev) = previous_last_slot {
-                    if last_slot > prev {
-                        let inc = format!(" (+{})", last_slot - prev);
-                        if increment_time.map(|t| t.elapsed().as_secs() < 3).unwrap_or(false) {
-                            slot_display.push_str(&inc);
-                        }
+        // Last voted slot row - always show
+        let last_slot_info = vote_data.as_ref()
+            .and_then(|vd| vd.recent_votes.last())
+            .map(|lv| lv.slot);
+            
+        if let Some(last_slot) = last_slot_info {
+            let mut slot_display = format!("{}", last_slot);
+            
+            // Add increment if applicable
+            if let Some(prev) = previous_last_slot {
+                if last_slot > prev {
+                    let inc = format!(" (+{})", last_slot - prev);
+                    if increment_time.map(|t| t.elapsed().as_secs() < 3).unwrap_or(false) {
+                        slot_display.push_str(&inc);
                     }
                 }
-                
-                let slot_cell = Cell::from(slot_display.clone()).style(
-                    if increment_time.map(|t| t.elapsed().as_secs() < 3).unwrap_or(false) {
+            }
+            
+            rows.push(Row::new(vec![
+                Cell::from("Last Vote"),
+                Cell::from(if node_0.status == crate::types::NodeStatus::Active { 
+                    slot_display.clone() 
+                } else { 
+                    "-".to_string() 
+                }).style(
+                    if node_0.status == crate::types::NodeStatus::Active && increment_time.map(|t| t.elapsed().as_secs() < 3).unwrap_or(false) {
                         Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
                     } else {
                         Style::default()
                     }
-                );
-                
-                rows.push(Row::new(vec![
-                    Cell::from("Last Vote"),
-                    Cell::from(if node_0.status == crate::types::NodeStatus::Active { 
-                        slot_display.clone() 
-                    } else { 
-                        "-".to_string() 
-                    }).style(
-                        if node_0.status == crate::types::NodeStatus::Active && increment_time.map(|t| t.elapsed().as_secs() < 3).unwrap_or(false) {
-                            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::default()
-                        }
-                    ),
-                    Cell::from(if node_1.status == crate::types::NodeStatus::Active { 
-                        slot_display 
-                    } else { 
-                        "-".to_string() 
-                    }).style(
-                        if node_1.status == crate::types::NodeStatus::Active && increment_time.map(|t| t.elapsed().as_secs() < 3).unwrap_or(false) {
-                            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::default()
-                        }
-                    ),
-                ]));
-            }
+                ),
+                Cell::from(if node_1.status == crate::types::NodeStatus::Active { 
+                    slot_display 
+                } else { 
+                    "-".to_string() 
+                }).style(
+                    if node_1.status == crate::types::NodeStatus::Active && increment_time.map(|t| t.elapsed().as_secs() < 3).unwrap_or(false) {
+                        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    }
+                ),
+            ]));
+        } else {
+            // Show loading or no data message
+            rows.push(Row::new(vec![
+                Cell::from("Last Vote"),
+                Cell::from(if vote_data.is_some() { "No votes" } else { "Loading..." }),
+                Cell::from(if vote_data.is_some() { "No votes" } else { "Loading..." }),
+            ]));
         }
-        
     }
     
     let table = Table::new(

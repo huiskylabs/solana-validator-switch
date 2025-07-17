@@ -362,7 +362,7 @@ impl SwitchManager {
             (
                 "Using Firedancer fdctl set-identity",
                 format!(
-                    "{} set-identity --config {} {}",
+                    "{} set-identity --config \"{}\" \"{}\"",
                     fdctl_path,
                     config_path,
                     self.active_node_with_status.node.paths.unfunded_identity
@@ -386,7 +386,7 @@ impl SwitchManager {
             (
                 "Using Agave validator set-identity",
                 format!(
-                    "{} -l {} set-identity {}",
+                    "{} -l \"{}\" set-identity \"{}\"",
                     agave_path,
                     ledger_path,
                     self.active_node_with_status.node.paths.unfunded_identity
@@ -424,12 +424,54 @@ impl SwitchManager {
             {
                 let ssh_key = self.get_ssh_key_for_node(&self.active_node_with_status.node.host)?;
                 let pool = self.ssh_pool.clone();
-                pool.execute_command(
-                    &self.active_node_with_status.node,
-                    &ssh_key,
-                    &switch_command,
-                )
-                .await?;
+                
+                // Execute the switch command based on validator type
+                if process_info.contains("fdctl") || process_info.contains("firedancer") {
+                    // Firedancer: fdctl set-identity --config <config> <identity>
+                    let fdctl_path = self.active_node_with_status.fdctl_executable.as_ref().unwrap();
+                    let config_path = process_info
+                        .lines()
+                        .find(|line| line.contains("fdctl") && line.contains("--config"))
+                        .and_then(|line| {
+                            let parts: Vec<&str> = line.split_whitespace().collect();
+                            parts.windows(2).find(|w| w[0] == "--config").map(|w| w[1])
+                        })
+                        .unwrap();
+                    
+                    let args = vec![
+                        "set-identity",
+                        "--config",
+                        config_path,
+                        &self.active_node_with_status.node.paths.unfunded_identity,
+                    ];
+                    
+                    pool.execute_command_with_args(
+                        &self.active_node_with_status.node,
+                        &ssh_key,
+                        fdctl_path,
+                        &args,
+                    ).await?;
+                } else if process_info.contains("agave-validator") {
+                    // Agave: agave-validator -l <ledger> set-identity <identity>
+                    let agave_path = self.active_node_with_status.agave_validator_executable.as_ref().unwrap();
+                    let ledger_path = self.active_node_with_status.ledger_path.as_ref().unwrap();
+                    
+                    let args = vec![
+                        "-l",
+                        ledger_path,
+                        "set-identity",
+                        &self.active_node_with_status.node.paths.unfunded_identity,
+                    ];
+                    
+                    pool.execute_command_with_args(
+                        &self.active_node_with_status.node,
+                        &ssh_key,
+                        agave_path,
+                        &args,
+                    ).await?;
+                } else {
+                    return Err(anyhow!("Unsupported validator type for set-identity"));
+                }
             }
             // No sleep - move immediately to next step!
             spinner.stop_with_message("✅ Active validator switched to unfunded identity");
@@ -489,14 +531,14 @@ impl SwitchManager {
         let start_time = Instant::now();
 
         // Execute the streaming transfer using base64 encoding
-        let read_cmd = format!("base64 {}", tower_path);
         let encoded_data = if !dry_run {
             let spinner = ProgressSpinner::new("Reading tower file...");
             let ssh_key_active = self.get_ssh_key_for_node(&self.active_node_with_status.node.host)?;
             let data = {
                 let pool = self.ssh_pool.clone();
+                let base64_args = vec![tower_path.as_str()];
                 match pool
-                    .execute_command(&self.active_node_with_status.node, &ssh_key_active, &read_cmd)
+                    .execute_command_with_args(&self.active_node_with_status.node, &ssh_key_active, "base64", &base64_args)
                     .await
                 {
                     Ok(data) => data,
@@ -553,12 +595,12 @@ impl SwitchManager {
 
         if !dry_run {
             // Verify the file on standby
-            let verify_cmd = format!("ls -la {}", dest_path);
             let verify_result = {
                 let ssh_key =
                     self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
                 let pool = self.ssh_pool.clone();
-                pool.execute_command(&self.standby_node_with_status.node, &ssh_key, &verify_cmd)
+                let ls_args = vec!["-la", &dest_path];
+                pool.execute_command_with_args(&self.standby_node_with_status.node, &ssh_key, "ls", &ls_args)
                     .await?
             };
             if verify_result.trim().is_empty() {
@@ -611,7 +653,7 @@ impl SwitchManager {
             (
                 "Using Firedancer fdctl set-identity",
                 format!(
-                    "{} set-identity --config {} {}",
+                    "{} set-identity --config \"{}\" \"{}\"",
                     fdctl_path,
                     config_path,
                     self.standby_node_with_status.node.paths.funded_identity
@@ -635,7 +677,7 @@ impl SwitchManager {
             (
                 "Using Agave validator set-identity",
                 format!(
-                    "{} -l {} set-identity --require-tower {}",
+                    "{} -l \"{}\" set-identity --require-tower \"{}\"",
                     agave_path,
                     ledger_path,
                     self.standby_node_with_status.node.paths.funded_identity
@@ -673,12 +715,55 @@ impl SwitchManager {
                 let ssh_key =
                     self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
                 let pool = self.ssh_pool.clone();
-                pool.execute_command(
-                    &self.standby_node_with_status.node,
-                    &ssh_key,
-                    &switch_command,
-                )
-                .await?;
+                
+                // Execute the switch command based on validator type
+                if process_info.contains("fdctl") || process_info.contains("firedancer") {
+                    // Firedancer: fdctl set-identity --config <config> <identity>
+                    let fdctl_path = self.standby_node_with_status.fdctl_executable.as_ref().unwrap();
+                    let config_path = process_info
+                        .lines()
+                        .find(|line| line.contains("fdctl") && line.contains("--config"))
+                        .and_then(|line| {
+                            let parts: Vec<&str> = line.split_whitespace().collect();
+                            parts.windows(2).find(|w| w[0] == "--config").map(|w| w[1])
+                        })
+                        .unwrap();
+                    
+                    let args = vec![
+                        "set-identity",
+                        "--config",
+                        config_path,
+                        &self.standby_node_with_status.node.paths.funded_identity,
+                    ];
+                    
+                    pool.execute_command_with_args(
+                        &self.standby_node_with_status.node,
+                        &ssh_key,
+                        fdctl_path,
+                        &args,
+                    ).await?;
+                } else if process_info.contains("agave-validator") {
+                    // Agave: agave-validator -l <ledger> set-identity --require-tower <identity>
+                    let agave_path = self.standby_node_with_status.agave_validator_executable.as_ref().unwrap();
+                    let ledger_path = self.standby_node_with_status.ledger_path.as_ref().unwrap();
+                    
+                    let args = vec![
+                        "-l",
+                        ledger_path,
+                        "set-identity",
+                        "--require-tower",
+                        &self.standby_node_with_status.node.paths.funded_identity,
+                    ];
+                    
+                    pool.execute_command_with_args(
+                        &self.standby_node_with_status.node,
+                        &ssh_key,
+                        agave_path,
+                        &args,
+                    ).await?;
+                } else {
+                    return Err(anyhow!("Unsupported validator type for set-identity"));
+                }
             }
             // No sleep - switch is complete!
             spinner.stop_with_message("✅ Standby validator switched to funded identity");

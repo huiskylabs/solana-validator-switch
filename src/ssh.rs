@@ -126,6 +126,42 @@ impl AsyncSshPool {
         }
     }
 
+    /// Execute a command with arguments and return the output
+    pub async fn execute_command_with_args(
+        &self,
+        node: &NodeConfig,
+        ssh_key_path: &str,
+        command: &str,
+        args: &[&str],
+    ) -> Result<String> {
+        let session = self.get_session(node, ssh_key_path).await?;
+        
+        let mut cmd = session.command(command);
+        for arg in args {
+            cmd.arg(arg);
+        }
+        
+        let output = cmd.output().await
+            .map_err(|e| anyhow!("Failed to execute command: {}", e))?;
+
+        // For commands with args, always return stdout content if available
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        
+        // If we have stdout content, return it even if the command "failed"
+        if !stdout.is_empty() {
+            return Ok(stdout);
+        }
+        
+        // If no stdout but there's stderr, and command failed, return error
+        if !output.status.success() && !stderr.is_empty() {
+            return Err(anyhow!("Command failed: {}", stderr));
+        }
+        
+        // Otherwise return empty string
+        Ok(String::new())
+    }
+
     /// Execute a command and return the output
     pub async fn execute_command(
         &self,

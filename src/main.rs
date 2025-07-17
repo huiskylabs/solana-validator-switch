@@ -11,20 +11,20 @@
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 mod commands;
 mod config;
 mod ssh;
-mod ssh_async;
 mod ssh_key_detector;
 mod startup;
+mod startup_logger;
 mod types;
 mod validator_metadata;
 mod solana_rpc;
 
 use commands::{status_command, switch_command};
-use ssh::SshConnectionPool;
+use ssh::AsyncSshPool;
 
 #[derive(Parser)]
 #[command(name = "svs")]
@@ -50,10 +50,10 @@ enum Commands {
 /// Application state that persists throughout the CLI session
 #[derive(Clone)]
 pub struct AppState {
-    pub ssh_pool: Arc<Mutex<SshConnectionPool>>,
+    pub ssh_pool: Arc<AsyncSshPool>,
     pub config: types::Config,
     pub validator_statuses: Vec<ValidatorStatus>,
-    pub metadata_cache: Arc<Mutex<validator_metadata::MetadataCache>>,
+    pub metadata_cache: Arc<tokio::sync::Mutex<validator_metadata::MetadataCache>>,
     pub detected_ssh_keys: std::collections::HashMap<String, String>, // host -> key_path mapping
 }
 

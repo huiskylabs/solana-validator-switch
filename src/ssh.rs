@@ -1,238 +1,88 @@
 use anyhow::{anyhow, Result};
-use ssh2::Session;
+use openssh::{Session, SessionBuilder, Stdio};
 use std::collections::HashMap;
-use std::io::{Read, Write};
-use std::net::TcpStream;
-use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use std::time::Duration;
+use crate::types::NodeConfig;
 
-use crate::types::{ConnectionStatus, NodeConfig};
-
-/// Individual SSH connection with health tracking
-pub struct SshConnection {
-    session: Session,
-    #[allow(dead_code)]
-    node_id: String,
-    connected_at: Instant,
-    last_used: Instant,
-    is_healthy: bool,
-}
-
-impl SshConnection {
-    pub fn new(session: Session, node_id: String) -> Self {
-        let now = Instant::now();
-        SshConnection {
-            session,
-            node_id,
-            connected_at: now,
-            last_used: now,
-            is_healthy: true,
-        }
-    }
-
-    pub fn is_connected(&self) -> bool {
-        self.is_healthy && self.session.authenticated()
-    }
-
-    pub fn update_last_used(&mut self) {
-        self.last_used = Instant::now();
-    }
-
-    pub fn mark_unhealthy(&mut self) {
-        self.is_healthy = false;
-    }
-
-    pub fn execute_command(&mut self, command: &str) -> Result<String> {
-        self.execute_command_with_input(command, None)
-    }
-    
-    pub fn execute_command_with_early_exit<F>(&mut self, command: &str, check_fn: F) -> Result<String>
-    where
-        F: Fn(&str) -> bool,
-    {
-        self.update_last_used();
-
-        let mut channel = self.session.channel_session()?;
-        channel.exec(command)?;
-
-        let mut output = String::new();
-        let mut buffer = [0u8; 1024];
-        
-        // Read output in chunks and check for early exit condition
-        loop {
-            use std::io::Read;
-            match channel.read(&mut buffer) {
-                Ok(0) => break, // EOF
-                Ok(n) => {
-                    let chunk = String::from_utf8_lossy(&buffer[..n]);
-                    output.push_str(&chunk);
-                    
-                    // Check if we should exit early
-                    if check_fn(&output) {
-                        // Send Ctrl+C to stop the command
-                        channel.write_all(&[3])?; // ASCII 3 is Ctrl+C
-                        channel.flush()?;
-                        break;
-                    }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    // No data available, continue
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                }
-                Err(e) => return Err(e.into()),
-            }
-        }
-
-        channel.wait_close()?;
-        Ok(output)
-    }
-
-    pub fn execute_command_with_input(
-        &mut self,
-        command: &str,
-        input: Option<&str>,
-    ) -> Result<String> {
-        self.update_last_used();
-
-        let mut channel = self.session.channel_session()?;
-        channel.exec(command)?;
-
-        // Write input if provided
-        if let Some(input_data) = input {
-            use std::io::Write;
-            channel.write_all(input_data.as_bytes())?;
-            channel.flush()?;
-            // Close the input stream to signal end of data
-            channel.send_eof()?;
-        }
-
-        let mut output = String::new();
-        channel.read_to_string(&mut output)?;
-        channel.wait_close()?;
-
-        let exit_status = channel.exit_status()?;
-        if exit_status != 0 {
-            return Err(anyhow!(
-                "Command failed with exit status {}: {}",
-                exit_status,
-                output
-            ));
-        }
-
-        Ok(output)
-    }
-
-    pub fn health_check(&mut self) -> bool {
-        // Simple health check - try to execute a lightweight command
-        match self.execute_command("echo 'health_check'") {
-            Ok(output) if output.trim() == "health_check" => {
-                self.is_healthy = true;
-                true
-            }
-            _ => {
-                self.mark_unhealthy();
-                false
-            }
-        }
-    }
-}
-
-/// Persistent SSH connection pool manager
-pub struct SshConnectionPool {
-    connections: HashMap<String, SshConnection>,
+/// SSH session pool with async support and connection reuse
+pub struct AsyncSshPool {
+    sessions: Arc<RwLock<HashMap<String, Arc<Session>>>>,
     config: PoolConfig,
 }
 
+#[derive(Clone)]
 pub struct PoolConfig {
-    pub max_idle_time: Duration,
-    pub health_check_interval: Duration,
     pub connect_timeout: Duration,
+    pub max_idle_time: Duration,
+    pub multiplex: bool,
 }
 
 impl Default for PoolConfig {
     fn default() -> Self {
         PoolConfig {
-            max_idle_time: Duration::from_secs(300),        // 5 minutes
-            health_check_interval: Duration::from_secs(60), // 1 minute
             connect_timeout: Duration::from_secs(10),
+            max_idle_time: Duration::from_secs(300),
+            multiplex: true, // Enable connection multiplexing by default
         }
     }
 }
 
-impl SshConnectionPool {
+impl AsyncSshPool {
     pub fn new() -> Self {
-        SshConnectionPool {
-            connections: HashMap::new(),
-            config: PoolConfig::default(),
-        }
+        Self::with_config(PoolConfig::default())
     }
 
     pub fn with_config(config: PoolConfig) -> Self {
-        SshConnectionPool {
-            connections: HashMap::new(),
+        Self {
+            sessions: Arc::new(RwLock::new(HashMap::new())),
             config,
         }
     }
 
-    /// Get connection ID for a node
-    fn get_connection_id(node: &NodeConfig) -> String {
-        format!("{}@{}:{}", node.user, node.host, node.port)
+    fn get_connection_key(node: &NodeConfig, ssh_key_path: &str) -> String {
+        format!("{}@{}:{}:{}", node.user, node.host, node.port, ssh_key_path)
     }
 
-    /// Get or create a connection to a node
-    pub async fn get_connection(
-        &mut self,
-        node: &NodeConfig,
-        ssh_key_path: &str,
-    ) -> Result<&mut SshConnection> {
-        let connection_id = Self::get_connection_id(node);
-
-        // Check if we need to reconnect
-        let needs_reconnect = if let Some(conn) = self.connections.get_mut(&connection_id) {
-            if conn.is_connected() {
-                // Quick health check if it's been a while
-                if conn.last_used.elapsed() > self.config.health_check_interval {
-                    !conn.health_check()
-                } else {
-                    false
+    /// Get or create an SSH session for a node
+    pub async fn get_session(&self, node: &NodeConfig, ssh_key_path: &str) -> Result<Arc<Session>> {
+        let key = Self::get_connection_key(node, ssh_key_path);
+        
+        // Try to get existing session
+        {
+            let sessions = self.sessions.read().await;
+            if let Some(session) = sessions.get(&key) {
+                // Check if session is still alive
+                if self.is_session_alive(session).await {
+                    return Ok(Arc::clone(session));
                 }
-            } else {
-                true
-            }
-        } else {
-            true
-        };
-
-        if needs_reconnect {
-            // Remove any existing unhealthy connection
-            self.connections.remove(&connection_id);
-
-            // Create new connection (only print for new connections)
-            let session = self.create_session(node, ssh_key_path).await?;
-            let connection = SshConnection::new(session, connection_id.clone());
-
-            self.connections.insert(connection_id.clone(), connection);
-        } else {
-            // Update last used time for existing connection
-            if let Some(conn) = self.connections.get_mut(&connection_id) {
-                conn.last_used = Instant::now();
             }
         }
 
-        Ok(self.connections.get_mut(&connection_id).unwrap())
+        // Create new session
+        let session = self.create_session(node, ssh_key_path).await?;
+        let session_arc = Arc::new(session);
+
+        // Store session
+        {
+            let mut sessions = self.sessions.write().await;
+            sessions.insert(key, Arc::clone(&session_arc));
+        }
+
+        Ok(session_arc)
     }
 
-    /// Create a new SSH session
     async fn create_session(&self, node: &NodeConfig, ssh_key_path: &str) -> Result<Session> {
-        // Expand the SSH key path (handle ~ for home directory)
+        // Expand the SSH key path
         let expanded_path = if ssh_key_path.starts_with("~") {
             let home = dirs::home_dir().ok_or_else(|| anyhow!("Could not find home directory"))?;
-            home.join(&ssh_key_path[2..]) // Skip "~/"
+            home.join(&ssh_key_path[2..])
         } else {
-            PathBuf::from(ssh_key_path)
+            std::path::PathBuf::from(ssh_key_path)
         };
 
-        // Check if the SSH key file exists
         if !expanded_path.exists() {
             return Err(anyhow!(
                 "SSH key file not found: {} (expanded from: {})",
@@ -241,318 +91,425 @@ impl SshConnectionPool {
             ));
         }
 
-        // Check if we can read the file
-        if let Err(e) = std::fs::metadata(&expanded_path) {
-            return Err(anyhow!(
-                "Cannot access SSH key file {}: {}",
-                expanded_path.display(),
-                e
-            ));
-        }
+        let mut builder = SessionBuilder::default();
+        builder
+            .user(node.user.clone())
+            .port(node.port)
+            .keyfile(&expanded_path)
+            .connect_timeout(self.config.connect_timeout);
 
-        // Connect to TCP stream with timeout
-        let tcp = TcpStream::connect_timeout(
-            &format!("{}:{}", node.host, node.port).parse()?,
-            self.config.connect_timeout,
-        )?;
-
-        // Optimize TCP settings for ultra-low latency
-        tcp.set_nodelay(true)?; // Disable Nagle's algorithm
-        tcp.set_read_timeout(Some(Duration::from_secs(30)))?; // Longer timeout for stability
-        tcp.set_write_timeout(Some(Duration::from_secs(30)))?;
-
-        // Set TCP keep-alive for connection health
-        let keepalive = socket2::TcpKeepalive::new()
-            .with_time(Duration::from_secs(10))
-            .with_interval(Duration::from_secs(2));
-        let sock_ref = socket2::SockRef::from(&tcp);
-        sock_ref.set_tcp_keepalive(&keepalive)?;
-
-        // Create SSH session
-        let mut session = Session::new()?;
-        session.set_tcp_stream(tcp);
-        session.handshake()?;
-
-        // Authenticate with SSH key
-        match session.userauth_pubkey_file(&node.user, None, &expanded_path, None) {
-            Ok(_) => {}
-            Err(e) => {
-                return Err(anyhow!(
-                    "SSH authentication failed for user '{}' with key '{}': {}. \
-                    Make sure: 1) The private key file exists and is readable, \
-                    2) The corresponding public key is in ~/.ssh/authorized_keys on the remote host, \
-                    3) The key format is supported (RSA, ED25519, etc.)",
-                    node.user, expanded_path.display(), e
-                ));
+        // Enable multiplexing if configured
+        if self.config.multiplex {
+            // Convert Duration to seconds for control persist
+            let persist_secs = self.config.max_idle_time.as_secs();
+            use std::num::NonZeroUsize;
+            if let Some(persist_time) = NonZeroUsize::new(persist_secs as usize) {
+                builder.control_persist(openssh::ControlPersist::IdleFor(persist_time));
+            } else {
+                builder.control_persist(openssh::ControlPersist::Forever);
             }
         }
 
-        if !session.authenticated() {
-            return Err(anyhow!(
-                "SSH authentication failed for {} - key was rejected by server",
-                node.user
-            ));
-        }
+        let session = builder
+            .connect(&node.host)
+            .await
+            .map_err(|e| anyhow!("Failed to connect to {}@{}: {}", node.user, node.host, e))?;
 
         Ok(session)
     }
 
-    /// Execute command on a node with automatic connection management
-    pub async fn execute_command_with_input(
-        &mut self,
-        node: &NodeConfig,
-        command: &str,
-        input: &str,
-    ) -> Result<String> {
-        let _node_key = format!("{}@{}:{}", node.user, node.host, node.port);
-
-        // Get connection and execute command
-        let connection = self.get_connection(node, "").await?;
-        connection.execute_command_with_input(command, Some(input))
-    }
-
-    pub async fn connect(&mut self, node: &NodeConfig, ssh_key_path: &str) -> Result<()> {
-        let connection_id = Self::get_connection_id(node);
-
-        // Check if connection already exists
-        if let Some(conn) = self.connections.get(&connection_id) {
-            if conn.is_connected() {
-                // Connection already exists and is healthy, no need to reconnect
-                return Ok(());
-            }
+    async fn is_session_alive(&self, session: &Session) -> bool {
+        // Simple check by running a lightweight command
+        match session.command("true").output().await {
+            Ok(output) => output.status.success(),
+            Err(_) => false,
         }
-
-        // Create new connection
-        let _connection = self.get_connection(node, ssh_key_path).await?;
-        Ok(())
     }
 
+    /// Execute a command and return the output
     pub async fn execute_command(
-        &mut self,
+        &self,
         node: &NodeConfig,
         ssh_key_path: &str,
         command: &str,
     ) -> Result<String> {
-        let connection = self.get_connection(node, ssh_key_path).await?;
-        connection.execute_command(command)
+        let session = self.get_session(node, ssh_key_path).await?;
+        
+        // Check if command needs shell features (pipes, redirections, etc.)
+        let needs_shell = command.contains('|') || command.contains('>') || command.contains('<') 
+            || command.contains('&') || command.contains(';') || command.contains('$')
+            || command.contains('`') || command.contains("||") || command.contains("&&");
+        
+        let output = if needs_shell {
+            // Use bash -c with proper argument handling for shell features
+            session
+                .command("bash")
+                .arg("-c")
+                .arg(command)
+                .output()
+                .await
+                .map_err(|e| anyhow!("Failed to execute command: {}", e))?
+        } else {
+            // Execute directly for better performance
+            session
+                .command(command)
+                .output()
+                .await
+                .map_err(|e| anyhow!("Failed to execute command: {}", e))?
+        };
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !stderr.is_empty() {
+                return Err(anyhow!("Command failed: {}", stderr));
+            }
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
-    
+
+    /// Execute a command with early exit based on output
     pub async fn execute_command_with_early_exit<F>(
-        &mut self,
+        &self,
         node: &NodeConfig,
         ssh_key_path: &str,
         command: &str,
         check_fn: F,
     ) -> Result<String>
     where
-        F: Fn(&str) -> bool,
+        F: Fn(&str) -> bool + Send + 'static,
     {
-        let connection = self.get_connection(node, ssh_key_path).await?;
-        connection.execute_command_with_early_exit(command, check_fn)
-    }
-
-    /// Get connection status for a node
-    pub fn get_connection_status(&self, node: &NodeConfig) -> Option<ConnectionStatus> {
-        let connection_id = Self::get_connection_id(node);
-
-        if let Some(conn) = self.connections.get(&connection_id) {
-            let latency = if conn.is_connected() {
-                // Calculate average latency based on connection time
-                Some(conn.connected_at.elapsed().as_millis() as u64)
-            } else {
-                None
-            };
-
-            Some(ConnectionStatus {
-                connected: conn.is_connected(),
-                latency_ms: latency,
-                error: if conn.is_connected() {
-                    None
-                } else {
-                    Some("Connection unhealthy".to_string())
-                },
-            })
+        let session = self.get_session(node, ssh_key_path).await?;
+        
+        // Check if command needs shell features
+        let needs_shell = command.contains('|') || command.contains('>') || command.contains('<') 
+            || command.contains('&') || command.contains(';') || command.contains('$')
+            || command.contains('`') || command.contains("||") || command.contains("&&");
+        
+        let mut child = if needs_shell {
+            session
+                .command("bash")
+                .arg("-c")
+                .arg(command)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .await
+                .map_err(|e| anyhow!("Failed to spawn command: {}", e))?
         } else {
-            None
-        }
-    }
+            session
+                .command(command)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .await
+                .map_err(|e| anyhow!("Failed to spawn command: {}", e))?
+        };
 
-    /// Perform health checks on all connections
-    pub fn health_check_all(&mut self) {
-        let mut unhealthy_connections = Vec::new();
+        let stdout = child.stdout().take().ok_or_else(|| anyhow!("Failed to get stdout"))?;
+        let mut reader = BufReader::new(stdout);
+        let mut output = String::new();
+        let mut line = String::new();
 
-        for (id, conn) in &mut self.connections {
-            if !conn.health_check() {
-                unhealthy_connections.push(id.clone());
+        // Read output line by line
+        loop {
+            line.clear();
+            match reader.read_line(&mut line).await {
+                Ok(0) => break, // EOF
+                Ok(_) => {
+                    output.push_str(&line);
+                    
+                    // Check if we should exit early
+                    if check_fn(&output) {
+                        // Try to terminate the process
+                        // Note: openssh-rs Child doesn't have kill(), just drop the child
+                        drop(child);
+                        break;
+                    }
+                }
+                Err(e) => return Err(anyhow!("Failed to read output: {}", e)),
             }
         }
 
-        // Remove unhealthy connections
-        for id in unhealthy_connections {
-            println!("🔌 Removing unhealthy connection to {}", id);
-            self.connections.remove(&id);
-        }
+        Ok(output)
     }
 
-    /// Clean up idle connections
-    pub fn cleanup_idle_connections(&mut self) {
-        let now = Instant::now();
-        let mut idle_connections = Vec::new();
+    /// Execute a command and stream output via channel
+    pub async fn execute_command_streaming(
+        &self,
+        node: &NodeConfig,
+        ssh_key_path: &str,
+        command: &str,
+        tx: tokio::sync::mpsc::Sender<String>,
+    ) -> Result<()> {
+        let session = self.get_session(node, ssh_key_path).await?;
+        
+        // Check if command needs shell features
+        let needs_shell = command.contains('|') || command.contains('>') || command.contains('<') 
+            || command.contains('&') || command.contains(';') || command.contains('$')
+            || command.contains('`') || command.contains("||") || command.contains("&&");
+        
+        let mut child = if needs_shell {
+            session
+                .command("bash")
+                .arg("-c")
+                .arg(command)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .await
+                .map_err(|e| anyhow!("Failed to spawn command: {}", e))?
+        } else {
+            session
+                .command(command)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .await
+                .map_err(|e| anyhow!("Failed to spawn command: {}", e))?
+        };
 
-        for (id, conn) in &self.connections {
-            if now.duration_since(conn.last_used) > self.config.max_idle_time {
-                idle_connections.push(id.clone());
+        let stdout = child.stdout().take().ok_or_else(|| anyhow!("Failed to get stdout"))?;
+        let stderr = child.stderr().take().ok_or_else(|| anyhow!("Failed to get stderr"))?;
+
+        // Spawn tasks to read stdout and stderr concurrently
+        let tx_stdout = tx.clone();
+        let stdout_task = tokio::spawn(async move {
+            let mut reader = BufReader::new(stdout);
+            let mut line = String::new();
+            
+            loop {
+                line.clear();
+                match reader.read_line(&mut line).await {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        if tx_stdout.send(line.clone()).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        let tx_stderr = tx;
+        let stderr_task = tokio::spawn(async move {
+            let mut reader = BufReader::new(stderr);
+            let mut line = String::new();
+            
+            loop {
+                line.clear();
+                match reader.read_line(&mut line).await {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        if tx_stderr.send(format!("[ERROR] {}", line)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        // Wait for both tasks and the command to complete
+        let _ = tokio::join!(stdout_task, stderr_task);
+        let status = child.wait().await?;
+
+        if !status.success() {
+            return Err(anyhow!("Command failed with exit code: {:?}", status.code()));
+        }
+
+        Ok(())
+    }
+
+    /// Execute a command with input
+    pub async fn execute_command_with_input(
+        &self,
+        node: &NodeConfig,
+        ssh_key_path: &str,
+        command: &str,
+        input: &str,
+    ) -> Result<String> {
+        let session = self.get_session(node, ssh_key_path).await?;
+        
+        // Check if command needs shell features
+        let needs_shell = command.contains('|') || command.contains('>') || command.contains('<') 
+            || command.contains('&') || command.contains(';') || command.contains('$')
+            || command.contains('`') || command.contains("||") || command.contains("&&");
+        
+        let shell_command = if needs_shell {
+            format!("bash -c '{}'", command.replace("'", "'\\'''"))
+        } else {
+            command.to_string()
+        };
+        
+        // Create command with input via pipe
+        let mut child = session
+            .command(&shell_command)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .await
+            .map_err(|e| anyhow!("Failed to spawn command: {}", e))?;
+
+        // Write input to stdin
+        if let Some(mut stdin) = child.stdin().take() {
+            use tokio::io::AsyncWriteExt;
+            stdin.write_all(input.as_bytes()).await?;
+            stdin.flush().await?;
+            drop(stdin);
+        }
+
+        let output = child.wait_with_output().await
+            .map_err(|e| anyhow!("Failed to get command output: {}", e))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow!("Command failed: {}", stderr));
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    /// Copy a file to remote host
+    pub async fn copy_file_to_remote(
+        &self,
+        node: &NodeConfig,
+        ssh_key_path: &str,
+        local_path: &str,
+        remote_path: &str,
+    ) -> Result<()> {
+        let session = self.get_session(node, ssh_key_path).await?;
+        
+        // Read file content
+        let content = std::fs::read(local_path)?;
+        
+        // Use cat command to write to remote file
+        let mut child = session
+            .command("cat")
+            .arg(format!("> {}", remote_path))
+            .stdin(Stdio::piped())
+            .spawn()
+            .await?;
+            
+        if let Some(mut stdin) = child.stdin().take() {
+            use tokio::io::AsyncWriteExt;
+            stdin.write_all(&content).await?;
+            stdin.flush().await?;
+            drop(stdin);
+        }
+        
+        let status = child.wait().await?;
+
+        if !status.success() {
+            return Err(anyhow!("Failed to copy file: {:?}", status));
+        }
+
+        Ok(())
+    }
+
+    /// Clear all cached sessions
+    pub async fn clear_all_sessions(&self) {
+        let mut sessions = self.sessions.write().await;
+        sessions.clear();
+    }
+
+    /// Get pool statistics
+    pub async fn get_stats(&self) -> PoolStats {
+        let sessions = self.sessions.read().await;
+        let total = sessions.len();
+        
+        // Count alive sessions
+        let mut alive = 0;
+        for session in sessions.values() {
+            if self.is_session_alive(session).await {
+                alive += 1;
             }
         }
-
-        for id in idle_connections {
-            println!("🧹 Cleaning up idle connection to {}", id);
-            self.connections.remove(&id);
-        }
-    }
-
-    /// Get statistics about the connection pool
-    pub fn get_pool_stats(&self) -> PoolStats {
-        let total_connections = self.connections.len();
-        let healthy_connections = self
-            .connections
-            .values()
-            .filter(|conn| conn.is_connected())
-            .count();
 
         PoolStats {
-            total_connections,
-            healthy_connections,
-            unhealthy_connections: total_connections - healthy_connections,
-        }
-    }
-
-    /// Gracefully disconnect all connections
-    pub fn disconnect_all(&mut self) {
-        let count = self.connections.len();
-        if count > 0 {
-            println!("🔌 Disconnecting {} SSH connection(s)...", count);
-            self.connections.clear();
+            total_sessions: total,
+            alive_sessions: alive,
+            dead_sessions: total - alive,
         }
     }
 }
 
 #[derive(Debug)]
 pub struct PoolStats {
-    pub total_connections: usize,
-    pub healthy_connections: usize,
-    pub unhealthy_connections: usize,
+    pub total_sessions: usize,
+    pub alive_sessions: usize,
+    pub dead_sessions: usize,
 }
 
-impl Drop for SshConnectionPool {
-    fn drop(&mut self) {
-        // Don't automatically disconnect - let the app manage connection lifecycle
-    }
+/// SSH command builder for complex commands
+pub struct CommandBuilder {
+    command: String,
+    args: Vec<String>,
+    env_vars: HashMap<String, String>,
+    working_dir: Option<String>,
 }
 
-/// Legacy SshManager for backwards compatibility
-#[allow(dead_code)]
-pub struct SshManager {
-    pool: SshConnectionPool,
-    current_node: Option<NodeConfig>,
-    current_ssh_key: Option<String>,
-}
-
-#[allow(dead_code)]
-impl SshManager {
-    pub fn new() -> Self {
-        SshManager {
-            pool: SshConnectionPool::new(),
-            current_node: None,
-            current_ssh_key: None,
+impl CommandBuilder {
+    pub fn new(command: &str) -> Self {
+        Self {
+            command: command.to_string(),
+            args: Vec::new(),
+            env_vars: HashMap::new(),
+            working_dir: None,
         }
     }
 
-    pub async fn connect(
-        &mut self,
-        node: &NodeConfig,
-        ssh_key_path: &str,
-    ) -> Result<ConnectionStatus> {
-        self.current_node = Some(node.clone());
-        self.current_ssh_key = Some(ssh_key_path.to_string());
-
-        let start_time = Instant::now();
-        let _connection = self.pool.get_connection(node, ssh_key_path).await?;
-        let latency = start_time.elapsed();
-
-        Ok(ConnectionStatus {
-            connected: true,
-            latency_ms: Some(latency.as_millis() as u64),
-            error: None,
-        })
+    pub fn arg(mut self, arg: &str) -> Self {
+        self.args.push(arg.to_string());
+        self
     }
 
-    pub async fn execute_command_with_input(
-        &mut self,
-        command: &str,
-        input: &str,
-    ) -> Result<String> {
-        self.pool
-            .execute_command_with_input(&self.current_node.as_ref().unwrap(), command, input)
-            .await
+    pub fn args<I, S>(mut self, args: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.args.extend(args.into_iter().map(|s| s.as_ref().to_string()));
+        self
     }
 
-    pub async fn execute_command(&mut self, command: &str) -> Result<String> {
-        if let (Some(node), Some(ssh_key)) = (&self.current_node, &self.current_ssh_key) {
-            self.pool.execute_command(node, ssh_key, command).await
-        } else {
-            Err(anyhow!("No active connection. Call connect() first."))
+    pub fn env(mut self, key: &str, value: &str) -> Self {
+        self.env_vars.insert(key.to_string(), value.to_string());
+        self
+    }
+
+    pub fn current_dir(mut self, dir: &str) -> Self {
+        self.working_dir = Some(dir.to_string());
+        self
+    }
+
+    pub fn build(self) -> String {
+        let mut cmd = String::new();
+
+        // Add working directory if specified
+        if let Some(dir) = self.working_dir {
+            cmd.push_str(&format!("cd {} && ", dir));
         }
-    }
 
-    pub fn is_connected(&self) -> bool {
-        if let Some(node) = &self.current_node {
-            self.pool
-                .get_connection_status(node)
-                .map(|status| status.connected)
-                .unwrap_or(false)
-        } else {
-            false
+        // Add environment variables
+        for (key, value) in self.env_vars {
+            cmd.push_str(&format!("{}={} ", key, value));
         }
-    }
 
-    pub fn disconnect(&mut self) {
-        // For backwards compatibility, don't actually disconnect
-        // Just clear current node reference
-        self.current_node = None;
-        self.current_ssh_key = None;
-    }
+        // Add command and arguments
+        cmd.push_str(&self.command);
+        for arg in self.args {
+            cmd.push(' ');
+            // Quote arguments if they contain spaces
+            if arg.contains(' ') {
+                cmd.push_str(&format!("\"{}\"", arg));
+            } else {
+                cmd.push_str(&arg);
+            }
+        }
 
-    /// Get access to the connection pool for advanced operations
-    pub fn get_pool(&mut self) -> &mut SshConnectionPool {
-        &mut self.pool
+        cmd
     }
 }
-
-// NOTE: These validation functions are commented out as ledger path is now dynamically detected
-// and would require refactoring to accept ledger path as a parameter
-
-/*
-/// Validate validator files on a remote node using SSH pool
-#[allow(dead_code)]
-pub async fn validate_node_files_with_pool(
-    ssh_pool: &mut SshConnectionPool,
-    node: &NodeConfig,
-    ssh_key_path: &str,
-) -> Result<ValidationResult> {
-    // Implementation commented out - would need ledger path parameter
-    unimplemented!("This function needs to be updated to accept ledger path as parameter")
-}
-*/
-
-/*
-/// Validate validator files on a remote node (legacy version using SshManager)
-#[allow(dead_code)]
-pub async fn validate_node_files(
-    ssh_manager: &mut SshManager,
-    node: &NodeConfig,
-) -> Result<ValidationResult> {
-    // Implementation commented out - would need ledger path parameter
-    unimplemented!("This function needs to be updated to accept ledger path as parameter")
-}
-*/

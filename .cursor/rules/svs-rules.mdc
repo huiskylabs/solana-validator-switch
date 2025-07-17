@@ -12,7 +12,7 @@ You are building a professional-grade TypeScript CLI application for Solana vali
 - **Language**: TypeScript (strict mode)
 - **Runtime**: Node.js
 - **CLI Framework**: Commander.js
-- **SSH**: ssh2, node-ssh
+- **SSH**: openssh-rs
 - **UI**: Inquirer, blessed, ora, chalk, cli-table3
 - **Testing**: Jest with ts-jest
 - **Build**: TypeScript compiler

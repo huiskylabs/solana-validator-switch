@@ -5,7 +5,7 @@
 **Goal**: Build a professional-grade CLI tool for ultra-fast Solana validator switching with zero credential storage.
 
 **Target Users**: Professional Solana validator operators
-**Technology Stack**: TypeScript (Node.js), Commander.js, SSH2, Inquirer
+**Technology Stack**: Rust, Tokio, openssh-rs, Ratatui
 **Language**: TypeScript with strict mode enabled
 **Development Time**: 8-12 weeks
 **Team Size**: 1-2 developers
@@ -67,52 +67,39 @@ solana-validator-switch/
 ### Key Files to Create:
 
 ```
-package.json                    # TypeScript project configuration
-tsconfig.json                   # TypeScript compiler configuration
-.eslintrc.json                  # ESLint for TypeScript
-.prettierrc                     # Prettier configuration
-jest.config.js                  # Jest with TypeScript support
-src/index.ts                    # Main TypeScript entry point
-src/types/index.ts              # TypeScript type definitions
-bin/svs.js                      # Compiled JavaScript executable
-bin/solana-validator-switch.js  # Compiled JavaScript executable
+Cargo.toml                      # Rust project configuration
+src/main.rs                     # Main Rust entry point
+src/lib.rs                      # Rust library (if applicable)
+tests/                          # Rust test files
 ```
 
 ### Dependencies to Install:
 
 ```bash
-# Core dependencies
-npm install commander inquirer ssh2 node-ssh ora chalk cli-table3 boxen conf winston
+# Core dependencies (Rust equivalent)
+# No direct npm install equivalent for Rust dependencies.
+# Dependencies are managed via Cargo.toml.
 
-# TypeScript and development dependencies
-npm install -D typescript @types/node @types/inquirer @types/ssh2 @types/cli-table3 @types/boxen @types/winston jest @types/jest ts-jest eslint @typescript-eslint/eslint-plugin @typescript-eslint/parser prettier @typescript-eslint/parser
+# Development dependencies (Rust equivalent)
+# No direct npm install equivalent for Rust development dependencies.
+# Dependencies are managed via Cargo.toml.
 
 # TypeScript build tools
 npm install -D ts-node nodemon rimraf
 ```
 
-### TypeScript Configuration (tsconfig.json):
+### Rust Configuration (Cargo.toml):
 
-```json
-{
-  "compilerOptions": {
-    "target": "ES2022",
-    "module": "commonjs",
-    "lib": ["ES2022"],
-    "outDir": "./dist",
-    "rootDir": "./src",
-    "strict": true,
-    "esModuleInterop": true,
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true,
-    "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true
-  },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "tests"]
-}
+Rust project configuration is managed via `Cargo.toml`. This file defines project metadata, dependencies, features, and build settings.
+
+```toml
+[package]
+name = "solana-validator-switch"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies]
+# ... (dependencies listed here)
 ```
 
 ## 1.2 Basic CLI Structure
@@ -124,22 +111,14 @@ npm install -D ts-node nodemon rimraf
 - [ ] Create typed error handling framework
 - [ ] Set up TypeScript build and watch scripts
 
-### Package.json Scripts:
+### Cargo Commands:
 
-```json
-{
-  "scripts": {
-    "build": "tsc",
-    "build:watch": "tsc --watch",
-    "dev": "ts-node src/index.ts",
-    "start": "node dist/index.js",
-    "test": "jest",
-    "test:watch": "jest --watch",
-    "lint": "eslint src/**/*.ts",
-    "lint:fix": "eslint src/**/*.ts --fix",
-    "clean": "rimraf dist"
-  }
-}
+```bash
+cargo build         # Compile Rust project
+cargo run           # Run the project
+cargo test          # Run tests
+cargo clippy        # Linting
+cargo fmt           # Format code
 ```
 
 ### Expected Output:
@@ -167,68 +146,17 @@ svs setup --help    # After compilation
 - [ ] Create config validation and migration system with type safety
 - [ ] Implement typed config import/export functionality
 
-### Key TypeScript Files:
+### Key Rust Files:
 
 ```
-src/types/config.ts             # Configuration interfaces
-src/utils/config-manager.ts     # Typed configuration manager
-src/utils/validator.ts          # TypeScript input validation
-src/commands/config.ts          # Typed config command handlers
+src/config.rs                   # Configuration structures
+src/main.rs                     # Main application logic
+src/commands/                  # CLI command implementations
 ```
 
-### TypeScript Configuration Schema:
+### Rust Type Definitions:
 
-```typescript
-// src/types/config.ts
-export interface NodeConfig {
-  label: string;
-  host: string;
-  port: number;
-  user: string;
-  keyPath: string;
-  paths: {
-    fundedIdentity: string;
-    unfundedIdentity: string;
-    ledger: string;
-    tower: string;
-  };
-}
-
-export interface MonitoringConfig {
-  interval: number;
-  healthThreshold: number;
-  readinessThreshold: number;
-}
-
-export interface DisplayConfig {
-  theme: 'dark' | 'light';
-  compact: boolean;
-  showTechnicalDetails: boolean;
-}
-
-export interface Config {
-  version: string;
-  nodes: {
-    primary: NodeConfig;
-    backup: NodeConfig;
-  };
-  rpc: {
-    endpoint: string;
-  };
-  monitoring: MonitoringConfig;
-  display: DisplayConfig;
-}
-
-export interface EnvironmentConfig {
-  SVS_CONFIG_PATH?: string;
-  SVS_SSH_TIMEOUT?: string;
-  SVS_LOG_LEVEL?: 'debug' | 'info' | 'warn' | 'error';
-  SVS_NO_COLOR?: string;
-  SVS_REFRESH_INTERVAL?: string;
-  SVS_RPC_ENDPOINT?: string;
-  SVS_MAX_RETRIES?: string;
-}
-```
+Rust's strong type system ensures data integrity and safety. Configuration structures are defined using Rust structs, often with `serde` for serialization/deserialization.
 
 ## 2.2 Setup Command
 
@@ -264,12 +192,11 @@ svs config --export
 - [ ] Add error handling and reconnection logic
 - [ ] Implement connection diagnostics
 
-### Key Files:
+### Key Rust Files:
 
 ```
-src/lib/ssh-manager.ts
-src/lib/connection-pool.ts
-src/utils/ssh-diagnostics.ts
+src/ssh.rs
+src/solana_rpc.rs
 ```
 
 ## 3.2 Node Detection
@@ -302,13 +229,13 @@ svs config --test  # Test all connections
 - [ ] Create switch state management
 - [ ] Add rollback capabilities
 
-### Key Files:
+### Key Rust Files:
 
 ```
-src/lib/switch-manager.ts
-src/lib/tower-manager.ts
-src/lib/validator-controller.ts
-src/utils/switch-state.ts
+src/lib/switch_manager.rs
+src/lib/tower_manager.rs
+src/lib/validator_controller.rs
+src/utils/switch_state.rs
 ```
 
 ## 4.2 Safety Checks
@@ -342,12 +269,12 @@ svs switch --force
 - [ ] Create health scoring system
 - [ ] Add real-time updates
 
-### Key Files:
+### Key Rust Files:
 
 ```
-src/lib/solana-rpc.ts
-src/lib/health-checker.ts
-src/lib/monitor.ts
+src/solana_rpc.rs
+src/health_checker.rs
+src/monitor.rs
 ```
 
 ## 5.2 Status Commands
@@ -380,12 +307,11 @@ svs watch
 - [ ] Color-coded status indicators
 - [ ] Progress bars and loading states
 
-### Key Files:
+### Key Rust Files:
 
 ```
-src/ui/dashboard.ts
-src/ui/components.ts
-src/ui/terminal-utils.ts
+src/commands/status_ui.rs
+src/commands/status_ui_v2.rs
 ```
 
 ## 6.2 Monitor Command
@@ -417,12 +343,12 @@ svs monitor  # Interactive dashboard
 - [ ] Create error reporting system
 - [ ] Add graceful degradation
 
-### Key Files:
+### Key Rust Files:
 
 ```
-src/utils/error-handler.ts
-src/utils/diagnostics.ts
-src/utils/recovery.ts
+src/commands/error_handler.rs
+src/utils/diagnostics.rs
+src/utils/recovery.rs
 ```
 
 ## 7.2 Logging System
@@ -582,91 +508,74 @@ svs history
 
 ## 🔧 Technical Implementation Details
 
-### Core Architecture (TypeScript)
+### Core Architecture (Rust)
 
-```typescript
-// src/index.ts - Main application structure
-import { Config } from './types/config';
-import { ConfigManager } from './utils/config-manager';
-import { SSHManager } from './lib/ssh-manager';
-import { MonitorManager } from './lib/monitor';
-import { SwitchManager } from './lib/switch-manager';
+```rust
+// src/main.rs - Main application structure
+use crate::config::Config;
+use crate::ssh::SshManager;
+use crate::solana_rpc::SolanaRpcClient;
+use crate::commands::status::StatusManager;
+use crate::commands::switch::SwitchManager;
 
-export class SolanaValidatorSwitch {
-  private config: ConfigManager;
-  private ssh: SSHManager;
-  private monitor: MonitorManager;
-  private switcher: SwitchManager;
+pub struct SolanaValidatorSwitch {
+    config: Config,
+    ssh_manager: SshManager,
+    rpc_client: SolanaRpcClient,
+    status_manager: StatusManager,
+    switch_manager: SwitchManager,
+}
 
-  constructor(configPath?: string) {
-    this.config = new ConfigManager(configPath);
-    this.ssh = new SSHManager();
-    this.monitor = new MonitorManager();
-    this.switcher = new SwitchManager();
-  }
+impl SolanaValidatorSwitch {
+    pub fn new(config: Config) -> Self {
+        let rpc_client = SolanaRpcClient::new(config.rpc_endpoint.clone());
+        let ssh_manager = SshManager::new();
+        let status_manager = StatusManager::new(rpc_client.clone(), ssh_manager.clone());
+        let switch_manager = SwitchManager::new(rpc_client.clone(), ssh_manager.clone());
 
-  async initialize(): Promise<void> {
-    await this.config.load();
-    await this.ssh.connect(this.config.getNodes());
-    await this.monitor.start();
-  }
+        SolanaValidatorSwitch {
+            config,
+            ssh_manager,
+            rpc_client,
+            status_manager,
+            switch_manager,
+        }
+    }
 
-  async shutdown(): Promise<void> {
-    await this.monitor.stop();
-    await this.ssh.disconnect();
-  }
+    pub async fn run(&self) -> Result<(), anyhow::Error> {
+        // Main application logic
+        Ok(())
+    }
 }
 ```
 
-### Key TypeScript Classes
+### Key Rust Modules
 
-1. **ConfigManager**: Handles all configuration operations with type safety
-2. **SSHManager**: Manages SSH connections with proper error typing
-3. **SwitchManager**: Orchestrates validator switching with state types
-4. **MonitorManager**: Real-time monitoring with typed health data
-5. **TowerManager**: Handles tower file operations with file validation
-6. **ValidatorController**: Controls validator processes with command types
+1.  **config.rs**: Handles all configuration operations with type safety using `serde`.
+2.  **ssh.rs**: Manages SSH connections using `openssh-rs` with proper error handling.
+3.  **solana_rpc.rs**: Provides a client for interacting with the Solana RPC.
+4.  **commands/**: Contains implementations for various CLI commands (e.g., `status`, `switch`).
+5.  **types.rs**: Defines common data structures and types used across the application.
+6.  **validator_metadata.rs**: Handles parsing and managing validator-specific metadata.
 
-### TypeScript File Structure Template
+### Rust File Structure Template
 
 ```
 src/
-├── index.ts                    # Main entry point (TypeScript)
-├── types/
-│   ├── config.ts              # Configuration interfaces
-│   ├── ssh.ts                 # SSH-related types
-│   ├── validator.ts           # Validator interfaces
-│   ├── monitor.ts             # Monitoring types
-│   └── index.ts               # Export all types
-├── commands/
-│   ├── setup.ts               # Setup command with types
-│   ├── config.ts              # Config command with types
-│   ├── monitor.ts             # Monitor command with types
-│   ├── switch.ts              # Switch command with types
-│   ├── status.ts              # Status command with types
-│   └── index.ts               # Export all commands
-├── lib/
-│   ├── ssh-manager.ts         # SSH connection management
-│   ├── switch-manager.ts      # Core switching logic
-│   ├── tower-manager.ts       # Tower file operations
-│   ├── health-checker.ts      # Health monitoring
-│   ├── solana-rpc.ts          # Solana RPC client
-│   └── validator-controller.ts # Validator control
-├── utils/
-│   ├── config-manager.ts      # Configuration utilities
-│   ├── logger.ts              # Logging utilities
-│   ├── validator.ts           # Input validation
-│   ├── error-handler.ts       # Error handling
-│   └── diagnostics.ts         # System diagnostics
-├── ui/
-│   ├── dashboard.ts           # Interactive dashboard
-│   ├── components.ts          # UI components
-│   ├── prompts.ts             # Interactive prompts
-│   └── terminal-utils.ts      # Terminal utilities
-└── constants/
-    ├── defaults.ts            # Default values
-    ├── errors.ts              # Error messages
-    └── commands.ts            # Command definitions
+├── main.rs                     # Main entry point
+├── config.rs                   # Configuration loading and parsing
+├── solana_rpc.rs               # Solana RPC client
+├── ssh.rs                      # SSH connection management
+├── startup.rs                  # Application startup logic
+├── types.rs                    # Common data types and structs
+├── validator_metadata.rs       # Validator metadata handling
+└── commands/                   # CLI command implementations
+    ├── mod.rs                  # Module declarations for commands
+    ├── status.rs               # Status command logic
+    ├── switch.rs               # Switch command logic
+    ├── error_handler.rs        # Centralized error handling
+    ├── status_ui.rs            # TUI for status command
+    └── status_ui_v2.rs         # Enhanced TUI for status command
 ```
 
 ## 🧪 Testing Strategy

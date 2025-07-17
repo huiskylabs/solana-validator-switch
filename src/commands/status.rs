@@ -22,13 +22,13 @@ pub async fn status_command(app_state: &AppState) -> Result<()> {
         return Ok(());
     }
 
-    // Check if we should use the enhanced UI (can be controlled by env var or config)
-    if std::env::var("USE_ENHANCED_UI").unwrap_or_default() == "1" {
-        // Use the new enhanced UI with SSH streaming
-        crate::commands::status_ui_v2::show_enhanced_status_ui(app_state).await
-    } else {
+    // Use enhanced UI by default, allow fallback to standard UI with env var
+    if std::env::var("USE_STANDARD_UI").unwrap_or_default() == "1" {
         // Use the standard auto-refresh UI
         crate::commands::status_ui::show_auto_refresh_status_ui(app_state).await
+    } else {
+        // Use the new enhanced UI with SSH streaming (default)
+        crate::commands::status_ui_v2::show_enhanced_status_ui(app_state).await
     }
 }
 
@@ -469,7 +469,7 @@ fn display_simple_status_table_with_rpc(
 
 #[allow(dead_code)]
 async fn check_comprehensive_status(
-    pool: &mut crate::ssh::SshConnectionPool,
+    pool: &mut crate::ssh::AsyncSshPool,
     node: &NodeConfig,
     ssh_key_path: &str,
     _validator_pair: &crate::types::ValidatorPair,
@@ -670,7 +670,7 @@ fn parse_batch_output(output: &str, status: &mut ComprehensiveStatus) {
 
 #[allow(dead_code)]
 async fn check_swap_readiness(
-    pool: &mut crate::ssh::SshConnectionPool,
+    pool: &mut crate::ssh::AsyncSshPool,
     node: &NodeConfig,
     ssh_key_path: &str,
     ledger_path: Option<&String>,
@@ -781,7 +781,7 @@ fn parse_swap_readiness_output(
 
 #[allow(dead_code)]
 async fn detect_validator_version(
-    pool: &mut crate::ssh::SshConnectionPool,
+    pool: &mut crate::ssh::AsyncSshPool,
     node: &NodeConfig,
     ssh_key_path: &str,
 ) -> Option<String> {
@@ -846,7 +846,7 @@ async fn detect_validator_version(
 
 #[allow(dead_code)]
 async fn get_firedancer_version(
-    pool: &mut crate::ssh::SshConnectionPool,
+    pool: &mut crate::ssh::AsyncSshPool,
     node: &NodeConfig,
     ssh_key_path: &str,
     executable_path: &str,
@@ -874,7 +874,7 @@ async fn get_firedancer_version(
 
 #[allow(dead_code)]
 async fn get_jito_agave_version(
-    pool: &mut crate::ssh::SshConnectionPool,
+    pool: &mut crate::ssh::AsyncSshPool,
     node: &NodeConfig,
     ssh_key_path: &str,
     executable_path: &str,
@@ -960,7 +960,7 @@ fn parse_agave_version(version_line: &str) -> String {
 
 #[allow(dead_code)]
 async fn get_solana_validator_version(
-    pool: &mut crate::ssh::SshConnectionPool,
+    pool: &mut crate::ssh::AsyncSshPool,
     node: &NodeConfig,
     ssh_key_path: &str,
     executable_path: &str,
@@ -1979,7 +1979,7 @@ impl ComprehensiveStatus {
 
 #[allow(dead_code)]
 async fn verify_public_keys(
-    pool: &mut crate::ssh::SshConnectionPool,
+    pool: &mut crate::ssh::AsyncSshPool,
     node: &NodeConfig,
     ssh_key_path: &str,
     validator_pair: &crate::types::ValidatorPair,

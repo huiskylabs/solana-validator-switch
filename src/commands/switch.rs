@@ -1,7 +1,7 @@
 use crate::commands::error_handler::ProgressSpinner;
 use anyhow::{anyhow, Result};
 use colored::*;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub async fn switch_command(dry_run: bool, app_state: &crate::AppState) -> Result<bool> {
@@ -86,13 +86,13 @@ pub async fn switch_command(dry_run: bool, app_state: &crate::AppState) -> Resul
 
         // Pre-warm both connections (they'll be reused from the pool during switch)
         {
-            let mut pool = app_state.ssh_pool.lock().unwrap();
+            let pool = app_state.ssh_pool.clone();
             // Trigger connection creation for both nodes
             let _ = pool
-                .get_connection(&active_node_with_status.node, active_ssh_key)
+                .get_session(&active_node_with_status.node, active_ssh_key)
                 .await?;
             let _ = pool
-                .get_connection(&standby_node_with_status.node, standby_ssh_key)
+                .get_session(&standby_node_with_status.node, standby_ssh_key)
                 .await?;
         }
 
@@ -157,7 +157,7 @@ pub(crate) struct SwitchManager {
     standby_node_with_status: crate::types::NodeWithStatus,
     #[allow(dead_code)]
     validator_pair: crate::types::ValidatorPair,
-    ssh_pool: Arc<Mutex<crate::ssh::SshConnectionPool>>,
+    ssh_pool: Arc<crate::ssh::AsyncSshPool>,
     detected_ssh_keys: std::collections::HashMap<String, String>,
     tower_file_name: Option<String>,
     tower_transfer_time: Option<Duration>,
@@ -171,7 +171,7 @@ impl SwitchManager {
         active_node_with_status: crate::types::NodeWithStatus,
         standby_node_with_status: crate::types::NodeWithStatus,
         validator_pair: crate::types::ValidatorPair,
-        ssh_pool: Arc<Mutex<crate::ssh::SshConnectionPool>>,
+        ssh_pool: Arc<crate::ssh::AsyncSshPool>,
         detected_ssh_keys: std::collections::HashMap<String, String>,
     ) -> Self {
         Self {
@@ -324,7 +324,7 @@ impl SwitchManager {
         // Detect validator type to use appropriate command
         let process_info = {
             let ssh_key = self.get_ssh_key_for_node(&self.active_node_with_status.node.host)?;
-            let mut pool = self.ssh_pool.lock().unwrap();
+            let pool = self.ssh_pool.clone();
             pool.execute_command(
                 &self.active_node_with_status.node,
                 &ssh_key,
@@ -423,7 +423,7 @@ impl SwitchManager {
                 ProgressSpinner::new("Switching active validator to unfunded identity...");
             {
                 let ssh_key = self.get_ssh_key_for_node(&self.active_node_with_status.node.host)?;
-                let mut pool = self.ssh_pool.lock().unwrap();
+                let pool = self.ssh_pool.clone();
                 pool.execute_command(
                     &self.active_node_with_status.node,
                     &ssh_key,
@@ -450,7 +450,7 @@ impl SwitchManager {
         let check_tower_cmd = format!("test -f {} && echo 'exists' || echo 'missing'", tower_path);
         let tower_exists = {
             let ssh_key = self.get_ssh_key_for_node(&self.active_node_with_status.node.host)?;
-            let mut pool = self.ssh_pool.lock().unwrap();
+            let pool = self.ssh_pool.clone();
             pool.execute_command(
                 &self.active_node_with_status.node,
                 &ssh_key,
@@ -492,11 +492,11 @@ impl SwitchManager {
         let read_cmd = format!("base64 {}", tower_path);
         let encoded_data = if !dry_run {
             let spinner = ProgressSpinner::new("Reading tower file...");
+            let ssh_key_active = self.get_ssh_key_for_node(&self.active_node_with_status.node.host)?;
             let data = {
-                let ssh_key = self.get_ssh_key_for_node(&self.active_node_with_status.node.host)?;
-                let mut pool = self.ssh_pool.lock().unwrap();
+                let pool = self.ssh_pool.clone();
                 match pool
-                    .execute_command(&self.active_node_with_status.node, &ssh_key, &read_cmd)
+                    .execute_command(&self.active_node_with_status.node, &ssh_key_active, &read_cmd)
                     .await
                 {
                     Ok(data) => data,
@@ -510,11 +510,13 @@ impl SwitchManager {
 
             let write_cmd = format!("base64 -d > {}", dest_path);
             let spinner = ProgressSpinner::new("Transferring tower file...");
+            let ssh_key_standby = self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
             {
-                let mut pool = self.ssh_pool.lock().unwrap();
+                let pool = self.ssh_pool.clone();
                 match pool
                     .execute_command_with_input(
                         &self.standby_node_with_status.node,
+                        &ssh_key_standby,
                         &write_cmd,
                         &data,
                     )
@@ -555,7 +557,7 @@ impl SwitchManager {
             let verify_result = {
                 let ssh_key =
                     self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
-                let mut pool = self.ssh_pool.lock().unwrap();
+                let pool = self.ssh_pool.clone();
                 pool.execute_command(&self.standby_node_with_status.node, &ssh_key, &verify_cmd)
                     .await?
             };
@@ -571,7 +573,7 @@ impl SwitchManager {
         // Detect validator type to use appropriate command
         let process_info = {
             let ssh_key = self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
-            let mut pool = self.ssh_pool.lock().unwrap();
+            let pool = self.ssh_pool.clone();
             pool.execute_command(
                 &self.standby_node_with_status.node,
                 &ssh_key,
@@ -670,7 +672,7 @@ impl SwitchManager {
             {
                 let ssh_key =
                     self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
-                let mut pool = self.ssh_pool.lock().unwrap();
+                let pool = self.ssh_pool.clone();
                 pool.execute_command(
                     &self.standby_node_with_status.node,
                     &ssh_key,
@@ -711,7 +713,7 @@ impl SwitchManager {
             let catchup_result = {
                 let ssh_key =
                     self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
-                let mut pool = self.ssh_pool.lock().unwrap();
+                let pool = self.ssh_pool.clone();
                 
                 // Use early exit when we see "0 slot(s) behind"
                 pool.execute_command_with_early_exit(

@@ -87,7 +87,7 @@ USE_ENHANCED_UI=1 svs status
 
 The refactoring is designed to be incremental:
 
-1. **Phase 1** ✅ - Create new SSH module with openssh-rs
+1. **Phase 1** ✅ - New SSH module with openssh-rs implemented and integrated
 2. **Phase 2** ✅ - Build enhanced UI with channel-based updates
 3. **Phase 3** 🚧 - Migrate existing commands to use new SSH pool
 4. **Phase 4** 🚧 - Make enhanced UI the default

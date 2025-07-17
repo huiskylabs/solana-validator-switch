@@ -19,7 +19,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 
-use crate::{AppState, ssh_async::AsyncSshPool};
+use crate::{ssh::AsyncSshPool, AppState};
 use crate::solana_rpc::{fetch_vote_account_data, ValidatorVoteData};
 
 /// Enhanced UI App state with async support
@@ -90,7 +90,7 @@ pub enum LogLevel {
 
 impl EnhancedStatusApp {
     pub async fn new(app_state: Arc<AppState>) -> Result<Self> {
-        let ssh_pool = Arc::new(AsyncSshPool::new());
+        let ssh_pool = Arc::clone(&app_state.ssh_pool);
         
         // Create broadcast channel for log messages
         let (log_sender, _) = tokio::sync::broadcast::channel(1000);

@@ -285,7 +285,7 @@ impl<'a> StatusApp<'a> {
             }
         };
         
-        let mut pool = self.app_state.ssh_pool.lock().unwrap();
+        let pool = self.app_state.ssh_pool.clone();
         
         match pool.execute_command_with_early_exit(
             &node.node,

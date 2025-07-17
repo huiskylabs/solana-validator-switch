@@ -3,10 +3,10 @@
 ## Architecture Overview
 
 ### **Pure CLI Architecture**
-- **Technology Stack**: TypeScript, Node.js, Commander.js
-- **SSH Library**: SSH2 (with connection pooling)
-- **UI Framework**: Blessed for interactive dashboard
-- **Configuration**: File-based (~/.solana-validator-switch/config.json)
+- **Technology Stack**: Rust, Tokio, Clap, Ratatui
+- **SSH Library**: openssh-rs (with connection pooling)
+- **UI Framework**: Ratatui for interactive dashboard
+- **Configuration**: File-based (~/.solana-validator-switch/config.yaml)
 - **No Browser**: Runs entirely in terminal, no web components
 
 ### **Persistent SSH Connection Pool**

@@ -273,7 +273,7 @@ async fn fetch_catchup_for_node(
             .as_ref())
         .cloned()?;
     
-    let catchup_cmd = format!("{} catchup --our-localhost", solana_cli);
+    let catchup_cmd = format!("{} catchup localhost", solana_cli);
     
     match ssh_pool.execute_command_with_early_exit(
         &node.node,
@@ -292,8 +292,13 @@ async fn fetch_catchup_for_node(
                 } else {
                     "Checking...".to_string()
                 }
+            } else if output.contains("Error") || output.contains("error") {
+                // If there's an error, return N/A instead of Unknown
+                "N/A".to_string()
             } else {
-                "Unknown".to_string()
+                // For debugging - show first part of output
+                let debug_output = output.chars().take(50).collect::<String>().replace('\n', " ");
+                format!("Unknown: {}", debug_output).to_string()
             };
             
             let _ = log_sender.send(LogMessage {
@@ -620,71 +625,84 @@ fn draw_validator_table(
         ]));
     }
     
-    // Vote account info
+    // Vote account info - determine which node is active
     if let Some(vote_data) = vote_data {
-        // Vote status row
-        let vote_status = if vote_data.is_voting {
-            "✅ Voting"
-        } else {
-            "⚠️ Not Voting"
-        };
-        
-        rows.push(Row::new(vec![
-            Cell::from("Vote Status"),
-            Cell::from(vote_status).style(Style::default().fg(if vote_data.is_voting { Color::Green } else { Color::Yellow })),
-            Cell::from(""),
-        ]));
-        
-        // Last voted slot row
-        if let Some(last_vote) = vote_data.recent_votes.last() {
-            let last_slot = last_vote.slot;
-            let mut slot_display = format!("{}", last_slot);
+        if validator_status.nodes_with_status.len() >= 2 {
+            let node_0 = &validator_status.nodes_with_status[0];
+            let node_1 = &validator_status.nodes_with_status[1];
             
-            // Add increment if applicable
-            if let Some(prev) = previous_last_slot {
-                if last_slot > prev {
-                    let inc = format!(" (+{})", last_slot - prev);
-                    if increment_time.map(|t| t.elapsed().as_secs() < 3).unwrap_or(false) {
-                        slot_display.push_str(&inc);
-                    }
-                }
-            }
+            // Vote status row - show which node is voting
+            let vote_status = if vote_data.is_voting {
+                "✅ Voting"
+            } else {
+                "⚠️ Not Voting"
+            };
             
             rows.push(Row::new(vec![
-                Cell::from("Last Vote"),
-                Cell::from(slot_display).style(
+                Cell::from("Vote Status"),
+                Cell::from(if node_0.status == crate::types::NodeStatus::Active { vote_status } else { "" }),
+                Cell::from(if node_1.status == crate::types::NodeStatus::Active { vote_status } else { "" }),
+            ]));
+        }
+        
+        // Last voted slot row - show for active validator
+        if let Some(last_vote) = vote_data.recent_votes.last() {
+            if validator_status.nodes_with_status.len() >= 2 {
+                let node_0 = &validator_status.nodes_with_status[0];
+                let node_1 = &validator_status.nodes_with_status[1];
+                
+                let last_slot = last_vote.slot;
+                let mut slot_display = format!("{}", last_slot);
+                
+                // Add increment if applicable
+                if let Some(prev) = previous_last_slot {
+                    if last_slot > prev {
+                        let inc = format!(" (+{})", last_slot - prev);
+                        if increment_time.map(|t| t.elapsed().as_secs() < 3).unwrap_or(false) {
+                            slot_display.push_str(&inc);
+                        }
+                    }
+                }
+                
+                let slot_cell = Cell::from(slot_display.clone()).style(
                     if increment_time.map(|t| t.elapsed().as_secs() < 3).unwrap_or(false) {
                         Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
                     } else {
                         Style::default()
                     }
-                ),
-                Cell::from(""),
-            ]));
+                );
+                
+                rows.push(Row::new(vec![
+                    Cell::from("Last Vote"),
+                    Cell::from(if node_0.status == crate::types::NodeStatus::Active { slot_display.clone() } else { String::new() }),
+                    Cell::from(if node_1.status == crate::types::NodeStatus::Active { slot_display } else { String::new() }),
+                ]));
+            }
         }
         
-        // Vote count and commission info
-        rows.push(Row::new(vec![
-            Cell::from("Votes/Commission"),
-            Cell::from(format!("{} votes / {}%", vote_data.recent_votes.len(), vote_data.vote_account_info.commission)),
-            Cell::from(""),
-        ]));
-        
-        // Activated stake info
-        let activated_stake_sol = vote_data.vote_account_info.activated_stake as f64 / 1e9;
-        rows.push(Row::new(vec![
-            Cell::from("Activated Stake"),
-            Cell::from(format!("{:.2} SOL", activated_stake_sol)),
-            Cell::from(""),
-        ]));
+        // Vote count and stake info - show for active validator
+        if validator_status.nodes_with_status.len() >= 2 {
+            let node_0 = &validator_status.nodes_with_status[0];
+            let node_1 = &validator_status.nodes_with_status[1];
+            
+            let vote_info = format!("{} votes / {}%", vote_data.recent_votes.len(), vote_data.vote_account_info.commission);
+            let activated_stake_sol = vote_data.vote_account_info.activated_stake as f64 / 1e9;
+            let stake_info = format!("{:.2} SOL", activated_stake_sol);
+            
+            rows.push(Row::new(vec![
+                Cell::from("Votes/Stake"),
+                Cell::from(if node_0.status == crate::types::NodeStatus::Active { format!("{} / {}", vote_info, stake_info) } else { String::new() }),
+                Cell::from(if node_1.status == crate::types::NodeStatus::Active { format!("{} / {}", vote_info, stake_info) } else { String::new() }),
+            ]));
+        }
     }
     
     let table = Table::new(
         rows,
         vec![
-            Constraint::Length(10),
-            Constraint::Percentage(45),
-            Constraint::Percentage(45),
+            Constraint::Length(15),  // Wider label column
+            Constraint::Percentage(42),
+            Constraint::Percentage(43),
         ]
     )
     .block(

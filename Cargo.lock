@@ -198,6 +198,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e16d2d3311acee920a9eb8d33b8cbc1787ce4a264e85f964c2404b969bdcd487"
 
 [[package]]
+name = "arc-swap"
+version = "1.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69f7f8c3906b62b754cd5326047894316021dcfe5a194c8ea52bdd94934a3457"
+
+[[package]]
 name = "ark-bn254"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -344,7 +350,7 @@ dependencies = [
  "nom",
  "num-traits",
  "rusticata-macros",
- "thiserror",
+ "thiserror 1.0.69",
  "time",
 ]
 
@@ -438,6 +444,22 @@ name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
+
+[[package]]
+name = "awaitable"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70af449c9a763cb655c6a1e5338b42d99c67190824ff90658c1e30be844c0775"
+dependencies = [
+ "awaitable-error",
+ "cfg-if",
+]
+
+[[package]]
+name = "awaitable-error"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d5b3469636cdf8543cceab175efca534471f36eee12fb8374aba00eb5e7e7f8a"
 
 [[package]]
 name = "backtrace"
@@ -754,7 +776,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "190baaad529bcfbde9e1a19022c42781bdb6ff9de25721abdb8fd98c0807730b"
 dependencies = [
  "libc",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -959,6 +981,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ca0197aee26d1ae37445ee532fefce43251d24cc7c166799f4d46817f1d3973"
 dependencies = [
  "crossbeam-utils",
+]
+
+[[package]]
+name = "concurrent_arena"
+version = "0.1.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a07f0a549fe58f8477a15f0f1c3aa8ced03a3cdeaa38a661530572f21ea963a0"
+dependencies = [
+ "arc-swap",
+ "parking_lot",
+ "triomphe",
 ]
 
 [[package]]
@@ -1288,6 +1321,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
+]
+
+[[package]]
+name = "derive_destructure2"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "64b697ac90ff296f0fc031ee5a61c7ac31fb9fff50e3fb32873b09223613fc0c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.104",
 ]
 
 [[package]]
@@ -2372,7 +2416,7 @@ dependencies = [
  "ark-bn254",
  "ark-ff",
  "num-bigint 0.4.6",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -2566,6 +2610,15 @@ checksum = "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a"
 dependencies = [
  "memchr",
  "minimal-lexical",
+]
+
+[[package]]
+name = "non-zero-byte-slice"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "89daa1daa11c9df05d1181bcd0936d8066f8543144d77b09808eb78d65e38024"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -2778,6 +2831,125 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
+name = "openssh"
+version = "0.10.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "330f4b61092456dc0aaa0cf9a205d956cae07d8127a69ffeff6760a72549c77f"
+dependencies = [
+ "libc",
+ "once_cell",
+ "openssh-mux-client",
+ "shell-escape",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-pipe",
+]
+
+[[package]]
+name = "openssh-mux-client"
+version = "0.17.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d83f349e6427c6159fee16ec3dd8fa995cc25d4f5498855836d8666b9c6a8b75"
+dependencies = [
+ "cfg-if",
+ "non-zero-byte-slice",
+ "once_cell",
+ "openssh-mux-client-error",
+ "sendfd",
+ "serde",
+ "ssh_format",
+ "tokio",
+ "tokio-io-utility",
+ "typed-builder",
+]
+
+[[package]]
+name = "openssh-mux-client-error"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9879168afb48a235200e30d93df320b7191568cda8621df02f145c1c0f1af95a"
+dependencies = [
+ "ssh_format_error",
+ "thiserror 2.0.12",
+]
+
+[[package]]
+name = "openssh-sftp-client"
+version = "0.14.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f472c9c38ea60bc161f8b5df4d04c79057003cdc12572eaad7f6dcc74e6fca5"
+dependencies = [
+ "bytes",
+ "derive_destructure2",
+ "futures-core",
+ "once_cell",
+ "openssh-sftp-client-lowlevel",
+ "openssh-sftp-error",
+ "pin-project",
+ "scopeguard",
+ "tokio",
+ "tokio-io-utility",
+ "tokio-util",
+]
+
+[[package]]
+name = "openssh-sftp-client-lowlevel"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4a84f1a52761901fcf5b10885544085348a872e57294531ec9188145d9a83042"
+dependencies = [
+ "awaitable",
+ "bytes",
+ "concurrent_arena",
+ "derive_destructure2",
+ "openssh-sftp-error",
+ "openssh-sftp-protocol",
+ "pin-project",
+ "tokio",
+ "tokio-io-utility",
+]
+
+[[package]]
+name = "openssh-sftp-error"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "61a5aea093d714df10186f481a6003e3f906f6fc8360c026737a841f4f182996"
+dependencies = [
+ "awaitable-error",
+ "openssh-sftp-protocol-error",
+ "ssh_format_error",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
+name = "openssh-sftp-protocol"
+version = "0.24.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a9c862e0c56553146306507f55958c11ff554e02c46de287e6976e50d815b350"
+dependencies = [
+ "bitflags 2.9.1",
+ "num-derive 0.4.2",
+ "num-traits",
+ "openssh-sftp-protocol-error",
+ "serde",
+ "ssh_format",
+ "vec-strings",
+]
+
+[[package]]
+name = "openssh-sftp-protocol-error"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42b54df62ccfd9a7708a83a9d60c46293837e478f9f4c0829360dcfa60ede8d2"
+dependencies = [
+ "serde",
+ "thiserror 2.0.12",
+ "vec-strings",
+]
+
+[[package]]
 name = "openssl"
 version = "0.10.73"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2912,6 +3084,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2fd23b938276f14057220b707937bcb42fa76dda7560e57a2da30cb52d557937"
 dependencies = [
  "num",
+]
+
+[[package]]
+name = "pin-project"
+version = "1.1.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "677f1add503faace112b9f1373e43e9e054bfdd22ff1a63c1bc485eaec6a6a8a"
+dependencies = [
+ "pin-project-internal",
+]
+
+[[package]]
+name = "pin-project-internal"
+version = "1.1.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e918e4ff8c4549eb882f14b3a4bc8c8bc93de829416eacf579f1207a8fbf861"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.104",
 ]
 
 [[package]]
@@ -3060,7 +3252,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "thiserror",
+ "thiserror 1.0.69",
  "tokio",
  "tracing",
 ]
@@ -3078,7 +3270,7 @@ dependencies = [
  "rustls",
  "rustls-native-certs",
  "slab",
- "thiserror",
+ "thiserror 1.0.69",
  "tinyvec",
  "tracing",
 ]
@@ -3260,7 +3452,7 @@ checksum = "ba009ff324d1fc1b900bd1fdb31564febe58a8ccc8a6fdbb93b543d33b13ca43"
 dependencies = [
  "getrandom 0.2.16",
  "libredox",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -3574,6 +3766,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "56e6fa9c48d24d85fb3de5ad847117517440f6beceb7798af16b4a87d616b8d0"
 
 [[package]]
+name = "sendfd"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b183bfd5b1bc64ab0c1ef3ee06b008a9ef1b68a7d3a99ba566fbfe7a7c6d745b"
+dependencies = [
+ "libc",
+ "tokio",
+]
+
+[[package]]
 name = "serde"
 version = "1.0.219"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3719,6 +3921,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "shell-escape"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "45bb67a18fa91266cc7807181f62f9178a6873bfad7dc788c42e6430db40184f"
+
+[[package]]
 name = "shell-words"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3825,7 +4033,7 @@ dependencies = [
  "spl-token-2022",
  "spl-token-group-interface",
  "spl-token-metadata-interface",
- "thiserror",
+ "thiserror 1.0.69",
  "zstd",
 ]
 
@@ -3840,7 +4048,7 @@ dependencies = [
  "rpassword",
  "solana-remote-wallet",
  "solana-sdk",
- "thiserror",
+ "thiserror 1.0.69",
  "tiny-bip39",
  "uriparse",
  "url",
@@ -3875,7 +4083,7 @@ dependencies = [
  "solana-thin-client",
  "solana-tpu-client",
  "solana-udp-client",
- "thiserror",
+ "thiserror 1.0.69",
  "tokio",
 ]
 
@@ -3911,7 +4119,7 @@ dependencies = [
  "solana-measure",
  "solana-metrics",
  "solana-sdk",
- "thiserror",
+ "thiserror 1.0.69",
  "tokio",
 ]
 
@@ -3937,7 +4145,7 @@ dependencies = [
  "sha2 0.10.9",
  "solana-frozen-abi-macro",
  "subtle",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -3985,7 +4193,7 @@ dependencies = [
  "log",
  "reqwest",
  "solana-sdk",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -4088,7 +4296,7 @@ dependencies = [
  "solana-frozen-abi",
  "solana-frozen-abi-macro",
  "solana-sdk-macro",
- "thiserror",
+ "thiserror 1.0.69",
  "tiny-bip39",
  "wasm-bindgen",
  "zeroize",
@@ -4119,7 +4327,7 @@ dependencies = [
  "solana-metrics",
  "solana-sdk",
  "solana_rbpf",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -4139,7 +4347,7 @@ dependencies = [
  "solana-account-decoder",
  "solana-rpc-client-api",
  "solana-sdk",
- "thiserror",
+ "thiserror 1.0.69",
  "tokio",
  "tokio-stream",
  "tokio-tungstenite",
@@ -4170,7 +4378,7 @@ dependencies = [
  "solana-rpc-client-api",
  "solana-sdk",
  "solana-streamer",
- "thiserror",
+ "thiserror 1.0.69",
  "tokio",
 ]
 
@@ -4199,7 +4407,7 @@ dependencies = [
  "qstring",
  "semver",
  "solana-sdk",
- "thiserror",
+ "thiserror 1.0.69",
  "uriparse",
 ]
 
@@ -4248,7 +4456,7 @@ dependencies = [
  "solana-transaction-status",
  "solana-version",
  "spl-token-2022",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -4261,7 +4469,7 @@ dependencies = [
  "solana-clap-utils",
  "solana-rpc-client",
  "solana-sdk",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -4314,7 +4522,7 @@ dependencies = [
  "solana-logger",
  "solana-program",
  "solana-sdk-macro",
- "thiserror",
+ "thiserror 1.0.69",
  "uriparse",
  "wasm-bindgen",
 ]
@@ -4366,7 +4574,7 @@ dependencies = [
  "solana-metrics",
  "solana-perf",
  "solana-sdk",
- "thiserror",
+ "thiserror 1.0.69",
  "tokio",
  "x509-parser",
 ]
@@ -4406,7 +4614,7 @@ dependencies = [
  "solana-rpc-client",
  "solana-rpc-client-api",
  "solana-sdk",
- "thiserror",
+ "thiserror 1.0.69",
  "tokio",
 ]
 
@@ -4432,7 +4640,7 @@ dependencies = [
  "spl-memo",
  "spl-token",
  "spl-token-2022",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -4446,7 +4654,7 @@ dependencies = [
  "solana-net-utils",
  "solana-sdk",
  "solana-streamer",
- "thiserror",
+ "thiserror 1.0.69",
  "tokio",
 ]
 
@@ -4455,6 +4663,7 @@ name = "solana-validator-switch"
 version = "1.0.5"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "base64 0.21.7",
  "bs58 0.5.1",
  "chrono",
@@ -4468,6 +4677,8 @@ dependencies = [
  "futures",
  "indicatif",
  "inquire",
+ "openssh",
+ "openssh-sftp-client",
  "ratatui",
  "reqwest",
  "serde",
@@ -4479,6 +4690,7 @@ dependencies = [
  "solana-sdk",
  "ssh2",
  "tokio",
+ "tokio-util",
  "url",
 ]
 
@@ -4517,7 +4729,7 @@ dependencies = [
  "solana-program",
  "solana-program-runtime",
  "solana-sdk",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -4545,7 +4757,7 @@ dependencies = [
  "solana-program",
  "solana-sdk",
  "subtle",
- "thiserror",
+ "thiserror 1.0.69",
  "zeroize",
 ]
 
@@ -4564,7 +4776,7 @@ dependencies = [
  "rand 0.8.5",
  "rustc-demangle",
  "scroll",
- "thiserror",
+ "thiserror 1.0.69",
  "winapi",
 ]
 
@@ -4597,7 +4809,7 @@ dependencies = [
  "solana-program",
  "spl-token",
  "spl-token-2022",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -4632,7 +4844,7 @@ dependencies = [
  "quote",
  "sha2 0.10.9",
  "syn 2.0.104",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -4667,7 +4879,7 @@ dependencies = [
  "num-traits",
  "solana-program",
  "spl-program-error-derive",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -4708,7 +4920,7 @@ dependencies = [
  "num-traits",
  "num_enum 0.6.1",
  "solana-program",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -4732,7 +4944,7 @@ dependencies = [
  "spl-token-metadata-interface",
  "spl-transfer-hook-interface",
  "spl-type-length-value",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -4801,6 +5013,26 @@ dependencies = [
  "libc",
  "libssh2-sys",
  "parking_lot",
+]
+
+[[package]]
+name = "ssh_format"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "24ab31081d1c9097c327ec23550858cb5ffb4af6b866c1ef4d728455f01f3304"
+dependencies = [
+ "bytes",
+ "serde",
+ "ssh_format_error",
+]
+
+[[package]]
+name = "ssh_format_error"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be3c6519de7ca611f71ef7e8a56eb57aa1c818fecb5242d0a0f39c83776c210c"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -4981,12 +5213,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c13547615a44dc9c452a8a534638acdf07120d4b6847c8178705da06306a3057"
 
 [[package]]
+name = "thin-vec"
+version = "0.2.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "144f754d318415ac792f9d69fc87abbbfc043ce2ef041c60f16ad828f638717d"
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52"
 dependencies = [
- "thiserror-impl",
+ "thiserror-impl 1.0.69",
+]
+
+[[package]]
+name = "thiserror"
+version = "2.0.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "567b8a2dae586314f7be2a752ec7474332959c6460e02bde30d702a66d488708"
+dependencies = [
+ "thiserror-impl 2.0.12",
 ]
 
 [[package]]
@@ -4994,6 +5241,17 @@ name = "thiserror-impl"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.104",
+]
+
+[[package]]
+name = "thiserror-impl"
+version = "2.0.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f7cf42b4507d8ea322120659672cf1b9dbb93f8f2d4ecfd6e51350ff5b17a1d"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5053,7 +5311,7 @@ dependencies = [
  "rand 0.7.3",
  "rustc-hash",
  "sha2 0.9.9",
- "thiserror",
+ "thiserror 1.0.69",
  "unicode-normalization",
  "wasm-bindgen",
  "zeroize",
@@ -5105,6 +5363,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-io-utility"
+version = "0.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d672654d175710e52c7c41f6aec77c62b3c0954e2a7ebce9049d1e94ed7c263"
+dependencies = [
+ "bytes",
+ "tokio",
+]
+
+[[package]]
 name = "tokio-macros"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5122,6 +5390,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbae76ab933c85776efabc971569dd6119c580d8f5d448769dec1764bf796ef2"
 dependencies = [
  "native-tls",
+ "tokio",
+]
+
+[[package]]
+name = "tokio-pipe"
+version = "0.2.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f213a84bffbd61b8fa0ba8a044b4bbe35d471d0b518867181e82bd5c15542784"
+dependencies = [
+ "libc",
  "tokio",
 ]
 
@@ -5250,6 +5528,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "triomphe"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef8f7726da4807b58ea5c96fdc122f80702030edc33b35aff9190a51148ccc85"
+dependencies = [
+ "arc-swap",
+ "serde",
+ "stable_deref_trait",
+]
+
+[[package]]
 name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5270,10 +5559,30 @@ dependencies = [
  "rand 0.8.5",
  "rustls",
  "sha1",
- "thiserror",
+ "thiserror 1.0.69",
  "url",
  "utf-8",
  "webpki-roots 0.24.0",
+]
+
+[[package]]
+name = "typed-builder"
+version = "0.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce63bcaf7e9806c206f7d7b9c1f38e0dce8bb165a80af0898161058b19248534"
+dependencies = [
+ "typed-builder-macro",
+]
+
+[[package]]
+name = "typed-builder-macro"
+version = "0.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60d8d828da2a3d759d3519cdf29a5bac49c77d039ad36d0782edadbf9cd5415b"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.104",
 ]
 
 [[package]]
@@ -5413,6 +5722,16 @@ name = "vcpkg"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
+
+[[package]]
+name = "vec-strings"
+version = "0.4.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c8509489e2a7ee219522238ad45fd370bec6808811ac15ac6b07453804e77659"
+dependencies = [
+ "serde",
+ "thin-vec",
+]
 
 [[package]]
 name = "vec_map"
@@ -5863,7 +6182,7 @@ dependencies = [
  "nom",
  "oid-registry",
  "rusticata-macros",
- "thiserror",
+ "thiserror 1.0.69",
  "time",
 ]
 

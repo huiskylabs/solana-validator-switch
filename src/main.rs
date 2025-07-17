@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 mod commands;
 mod config;
 mod ssh;
+mod ssh_async;
 mod ssh_key_detector;
 mod startup;
 mod types;
@@ -47,6 +48,7 @@ enum Commands {
 }
 
 /// Application state that persists throughout the CLI session
+#[derive(Clone)]
 pub struct AppState {
     pub ssh_pool: Arc<Mutex<SshConnectionPool>>,
     pub config: types::Config,

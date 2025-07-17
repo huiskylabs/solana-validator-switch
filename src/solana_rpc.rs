@@ -46,7 +46,7 @@ pub async fn fetch_vote_account_data(
     // eprintln!("Using RPC URL: {}", rpc_url);
     // eprintln!("Looking for vote account: {}", vote_pubkey_str);
     
-    let rpc_client = RpcClient::new_with_timeout(rpc_url.to_string(), Duration::from_secs(5));
+    let rpc_client = RpcClient::new_with_timeout(rpc_url.to_string(), Duration::from_secs(3));
     let vote_pubkey = Pubkey::from_str(vote_pubkey_str)
         .map_err(|e| anyhow!("Invalid vote pubkey: {}", e))?;
 

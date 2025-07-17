@@ -22,8 +22,14 @@ pub async fn status_command(app_state: &AppState) -> Result<()> {
         return Ok(());
     }
 
-    // Use ratatui UI for status display
-    crate::commands::status_ui::show_auto_refresh_status_ui(app_state).await
+    // Check if we should use the enhanced UI (can be controlled by env var or config)
+    if std::env::var("USE_ENHANCED_UI").unwrap_or_default() == "1" {
+        // Use the new enhanced UI with SSH streaming
+        crate::commands::status_ui_v2::show_enhanced_status_ui(app_state).await
+    } else {
+        // Use the standard auto-refresh UI
+        crate::commands::status_ui::show_auto_refresh_status_ui(app_state).await
+    }
 }
 
 async fn show_comprehensive_status(app_state: &AppState) -> Result<()> {

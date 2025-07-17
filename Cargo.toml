@@ -20,10 +20,13 @@ clap = { version = "4.4", features = ["derive"] }
 inquire = "0.7"
 comfy-table = "7.1"
 ssh2 = { version = "0.9", features = ["vendored-openssl"] }
+openssh = { version = "0.10", features = ["native-mux"] }
+openssh-sftp-client = "0.14"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
-tokio = { version = "1.0", features = ["full"] }
+tokio = { version = "1.0", features = ["full", "sync"] }
+tokio-util = "0.7"
 anyhow = "1.0"
 crossterm = "0.27"
 indicatif = "0.17"
@@ -42,3 +45,4 @@ chrono = "0.4"
 ctrlc = "3.4"
 ratatui = "0.26"
 futures = "0.3"
+arc-swap = "1.7"

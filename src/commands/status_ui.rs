@@ -10,7 +10,6 @@ use ratatui::{
 use std::io;
 use std::time::Duration;
 use tokio::time::interval;
-use futures::FutureExt;
 use crossterm::{
     event::{self, Event, KeyCode, KeyModifiers},
     execute,
@@ -21,12 +20,18 @@ use crate::AppState;
 use crate::solana_rpc::{fetch_vote_account_data, ValidatorVoteData};
 
 pub async fn show_auto_refresh_status_ui(app_state: &AppState) -> Result<()> {
-    // Setup terminal
+    // Setup terminal with proper configuration
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
+    
+    // Configure backend for better performance
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+    
+    // Clear the terminal and hide cursor for cleaner UI
+    terminal.clear()?;
+    terminal.hide_cursor()?;
 
     // Create app state
     let mut app = StatusApp {
@@ -45,8 +50,8 @@ pub async fn show_auto_refresh_status_ui(app_state: &AppState) -> Result<()> {
     // Initialize catchup data from startup sync status
     app.initialize_catchup_from_sync_status();
     
-    // Initial vote data fetch
-    app.fetch_vote_data_only().await;
+    // Don't wait for initial data fetch - let UI show immediately
+    // Vote data will be fetched in the first refresh cycle
 
     // Create refresh interval
     let mut refresh_interval = interval(Duration::from_secs(5));
@@ -155,11 +160,7 @@ impl<'a> StatusApp<'a> {
                 &validator_pair.vote_pubkey,
             ).await {
                 Ok(data) => Some(data),
-                Err(e) => {
-                    eprintln!("DEBUG: Failed to fetch vote data for {}: {}", validator_pair.vote_pubkey, e);
-                    eprintln!("DEBUG: RPC URL: {}", validator_pair.rpc);
-                    None
-                },
+                Err(_) => None,
             };
             
             // Check if there's a new increment
@@ -229,11 +230,7 @@ impl<'a> StatusApp<'a> {
                 &validator_pair.vote_pubkey,
             ).await {
                 Ok(data) => Some(data),
-                Err(e) => {
-                    eprintln!("DEBUG: Failed to fetch vote data for {}: {}", validator_pair.vote_pubkey, e);
-                    eprintln!("DEBUG: RPC URL: {}", validator_pair.rpc);
-                    None
-                },
+                Err(_) => None,
             };
             
             self.vote_data.push(vote_data);
@@ -330,45 +327,71 @@ async fn run_app(
     app: &mut StatusApp<'_>,
     refresh_interval: &mut tokio::time::Interval,
 ) -> Result<()> {
+    // Initial draw - show UI immediately
+    terminal.draw(|f| ui(f, app))?;
+    
+    // Create a separate interval for UI updates (1 second)
+    let mut ui_interval = interval(Duration::from_secs(1));
+    ui_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    
+    // Start initial data fetch immediately in background
+    app.is_refreshing = true;
+    terminal.draw(|f| ui(f, app))?;
+    
+    // Fetch initial data
+    app.fetch_vote_data_only().await;
+    app.last_refresh = std::time::Instant::now();
+    app.is_refreshing = false;
+    terminal.draw(|f| ui(f, app))?;
+    
     loop {
-        terminal.draw(|f| ui(f, app))?;
-
-        // Handle events
-        if event::poll(Duration::from_millis(100))? {
+        // Check for keyboard events synchronously
+        if event::poll(Duration::from_millis(10))? {
             if let Event::Key(key) = event::read()? {
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => {
-                        app.should_quit = true;
+                        return Ok(());
                     }
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        app.should_quit = true;
+                        return Ok(());
                     }
                     _ => {}
                 }
             }
         }
-
-        if app.should_quit {
-            return Ok(());
-        }
-
-        // Check if it's time to refresh
-        if refresh_interval.tick().now_or_never().is_some() {
-            app.is_refreshing = true;
-            app.refresh_count += 1;
-            terminal.draw(|f| ui(f, app))?; // Show refresh indicator
+        
+        tokio::select! {
+            biased;
             
-            app.fetch_vote_data_only().await; // Only fetch vote data, not catchup
-            app.last_refresh = std::time::Instant::now();
-            app.is_refreshing = false;
+            // UI update every second (for clock)
+            _ = ui_interval.tick() => {
+                terminal.draw(|f| ui(f, app))?;
+            }
             
-            // Force redraw with new data
-            terminal.draw(|f| ui(f, app))?;
-            
-            // Update catchup status every 30 seconds
-            if app.last_catchup_refresh.elapsed().as_secs() >= 30 {
-                app.fetch_catchup_data_only().await;
-                app.last_catchup_refresh = std::time::Instant::now();
+            // Data refresh every 5 seconds
+            _ = refresh_interval.tick() => {
+                app.is_refreshing = true;
+                app.refresh_count += 1;
+                
+                // Redraw to show refresh indicator
+                terminal.draw(|f| ui(f, app))?;
+                
+                // Check if we need to update catchup status
+                let should_update_catchup = app.last_catchup_refresh.elapsed().as_secs() >= 30;
+                
+                // Fetch data
+                app.fetch_vote_data_only().await;
+                
+                if should_update_catchup {
+                    app.fetch_catchup_data_only().await;
+                    app.last_catchup_refresh = std::time::Instant::now();
+                }
+                
+                app.last_refresh = std::time::Instant::now();
+                app.is_refreshing = false;
+                
+                // Redraw with new data
+                terminal.draw(|f| ui(f, app))?;
             }
         }
     }

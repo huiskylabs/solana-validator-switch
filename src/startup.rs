@@ -4,8 +4,8 @@ use indicatif::{ProgressBar, ProgressStyle};
 use inquire::Confirm;
 use std::io::{self, Write};
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use std::time::Duration;
+use tokio::sync::Mutex;
 
 use crate::config::ConfigManager;
 use crate::ssh::AsyncSshPool;
@@ -44,15 +44,18 @@ pub async fn run_startup_checklist() -> Result<Option<crate::AppState>> {
     // Create logger first
     let logger = StartupLogger::new()?;
     logger.create_latest_symlink()?;
-    
+
     // Clear screen and show startup banner
     println!("\x1B[2J\x1B[1;1H"); // Clear screen
     println!("{}", "🚀 Solana Validator Switch".bright_cyan().bold());
     println!("{}", "Initializing validator management system...".dimmed());
     println!();
-    
+
     // Show log file location
-    println!("{}", format!("📄 Diagnostic log: {}", logger.get_log_path().display()).dimmed());
+    println!(
+        "{}",
+        format!("📄 Diagnostic log: {}", logger.get_log_path().display()).dimmed()
+    );
     println!();
 
     // Create progress bar for overall startup process
@@ -79,7 +82,8 @@ pub async fn run_startup_checklist() -> Result<Option<crate::AppState>> {
     progress_bar.set_position(10);
     progress_bar.set_message("Validating configuration...");
 
-    let mut config = validate_configuration_with_progress(&mut validation, &progress_bar, &logger).await?;
+    let mut config =
+        validate_configuration_with_progress(&mut validation, &progress_bar, &logger).await?;
 
     // Only continue with SSH and other validation if config is valid
     let ssh_pool_and_keys = if validation.config_valid {
@@ -281,10 +285,16 @@ pub async fn run_startup_checklist() -> Result<Option<crate::AppState>> {
         // Log final validation summary
         logger.log_section("Startup Validation Failed")?;
         logger.log(&format!("Config Valid: {}", validation.config_valid))?;
-        logger.log(&format!("SSH Connections Valid: {}", validation.ssh_connections_valid))?;
-        logger.log(&format!("Model Verification Valid: {}", validation.model_verification_valid))?;
+        logger.log(&format!(
+            "SSH Connections Valid: {}",
+            validation.ssh_connections_valid
+        ))?;
+        logger.log(&format!(
+            "Model Verification Valid: {}",
+            validation.model_verification_valid
+        ))?;
         logger.log(&format!("Total Issues: {}", validation.issues.len()))?;
-        
+
         // Show helpful resolution steps
         println!("\n{} Suggested actions:", "💡".bright_blue().bold());
         if !validation.config_valid {
@@ -316,7 +326,14 @@ pub async fn run_startup_checklist() -> Result<Option<crate::AppState>> {
 
         // Show a prompt to acknowledge the error before exiting
         println!();
-        println!("{}", format!("📄 Check the diagnostic log for details: {}", logger.get_log_path().display()).yellow());
+        println!(
+            "{}",
+            format!(
+                "📄 Check the diagnostic log for details: {}",
+                logger.get_log_path().display()
+            )
+            .yellow()
+        );
         println!("{}", "Press Enter to exit...".dimmed());
         let mut input = String::new();
         std::io::stdin().read_line(&mut input).unwrap();
@@ -333,11 +350,11 @@ async fn validate_configuration_with_progress(
     let config_manager = ConfigManager::new()?;
 
     logger.log_section("Configuration Validation")?;
-    
+
     // Configuration file existence check
     progress_bar.set_message("Checking configuration file...");
     logger.log("Checking for configuration file...")?;
-    
+
     if !config_manager.exists() {
         logger.log_error("Configuration", "Configuration file not found")?;
         progress_bar.suspend(|| {
@@ -376,10 +393,13 @@ async fn validate_configuration_with_progress(
     // Configuration loading and validation
     progress_bar.set_message("Loading configuration...");
     logger.log("Loading configuration file...")?;
-    
+
     match config_manager.load() {
         Ok(config) => {
-            logger.log_success(&format!("Configuration file loaded: {}", config_manager.get_config_path().display()))?;
+            logger.log_success(&format!(
+                "Configuration file loaded: {}",
+                config_manager.get_config_path().display()
+            ))?;
             progress_bar.suspend(|| {
                 println!(
                     "  ✅ Configuration file loaded: {}",
@@ -392,7 +412,9 @@ async fn validate_configuration_with_progress(
             logger.log("Checking if configuration needs migration...")?;
             let needs_migration = check_migration_needed(&config);
             if needs_migration {
-                logger.log_warning("Configuration needs migration to include missing public key identifiers")?;
+                logger.log_warning(
+                    "Configuration needs migration to include missing public key identifiers",
+                )?;
                 // Configuration needs migration - mark as invalid but continue to show errors
                 validation.config_valid = false;
                 validation.issues.push(
@@ -425,7 +447,10 @@ async fn validate_configuration_with_progress(
             }
         }
         Err(e) => {
-            logger.log_error("Configuration", &format!("Failed to load configuration: {}", e))?;
+            logger.log_error(
+                "Configuration",
+                &format!("Failed to load configuration: {}", e),
+            )?;
             progress_bar.suspend(|| {
                 println!("  ❌ Failed to load configuration: {}", e);
             });
@@ -553,7 +578,7 @@ async fn validate_ssh_connections_with_progress(
     logger: &StartupLogger,
 ) -> Result<(AsyncSshPool, std::collections::HashMap<String, String>)> {
     logger.log_section("SSH Connection Validation")?;
-    
+
     let ssh_pool = AsyncSshPool::new();
     let mut connection_issues = Vec::new();
     let mut detected_ssh_keys = std::collections::HashMap::new();
@@ -579,7 +604,10 @@ async fn validate_ssh_connections_with_progress(
             let node_name = format!("{} Node {}", validator_name, node_index + 1);
 
             progress_bar.set_message(format!("Detecting SSH key for {}...", node_name));
-            logger.log(&format!("Checking SSH connection to {} ({})", node_name, node.host))?;
+            logger.log(&format!(
+                "Checking SSH connection to {} ({})",
+                node_name, node.host
+            ))?;
 
             // Check if SSH key is already in config
             let mut key_worked = false;
@@ -588,7 +616,10 @@ async fn validate_ssh_connections_with_progress(
                 // Try the configured key first (silently)
                 match ssh_pool.get_session(node, configured_key).await {
                     Ok(_) => {
-                        logger.log_success(&format!("  Connected to {} with configured key", node.host))?;
+                        logger.log_success(&format!(
+                            "  Connected to {} with configured key",
+                            node.host
+                        ))?;
                         _connected_nodes += 1;
                         detected_ssh_keys.insert(node.host.clone(), configured_key.clone());
                         key_worked = true;
@@ -609,7 +640,10 @@ async fn validate_ssh_connections_with_progress(
                         // Try to connect with detected key (silently)
                         match ssh_pool.get_session(node, &detected_key).await {
                             Ok(_) => {
-                                logger.log_success(&format!("  Connected to {} with detected key", node.host))?;
+                                logger.log_success(&format!(
+                                    "  Connected to {} with detected key",
+                                    node.host
+                                ))?;
                                 _connected_nodes += 1;
                                 detected_ssh_keys.insert(node.host.clone(), detected_key);
                             }
@@ -621,7 +655,8 @@ async fn validate_ssh_connections_with_progress(
                         }
                     }
                     Err(detect_err) => {
-                        logger.log_error("SSH", &format!("  Key detection failed: {}", detect_err))?;
+                        logger
+                            .log_error("SSH", &format!("  Key detection failed: {}", detect_err))?;
                         connection_issues.push(format!(
                             "Failed to detect SSH key for {}: {}",
                             node_name, detect_err
@@ -637,7 +672,10 @@ async fn validate_ssh_connections_with_progress(
         logger.log_success("All SSH connections established successfully")?;
         validation.ssh_connections_valid = true;
     } else {
-        logger.log_error("SSH", &format!("{} connection issues found", connection_issues.len()))?;
+        logger.log_error(
+            "SSH",
+            &format!("{} connection issues found", connection_issues.len()),
+        )?;
         validation.issues.extend(connection_issues);
         validation.ssh_connections_valid = false;
     }
@@ -671,7 +709,10 @@ async fn validate_ssh_connections(
             // This function is marked as dead_code anyway
             match Ok::<(), anyhow::Error>(()) {
                 Ok(_) => {
-                    println!("✅ Connected to {}: {}@{}", node_name, _node.user, _node.host);
+                    println!(
+                        "✅ Connected to {}: {}@{}",
+                        node_name, _node.user, _node.host
+                    );
                 }
                 Err(e) => {
                     connection_issues.push(format!("Failed to connect to {}: {}", node_name, e));
@@ -700,7 +741,7 @@ async fn validate_model_verification_with_progress(
     logger: &StartupLogger,
 ) -> Result<()> {
     logger.log_section("System Readiness Verification")?;
-    
+
     // Skip detailed model verification since we already established connections
     // This avoids creating duplicate connections and improves startup performance
     progress_bar.set_message("Verifying system readiness...");
@@ -708,7 +749,7 @@ async fn validate_model_verification_with_progress(
 
     // Simulate a brief validation check
     tokio::time::sleep(Duration::from_millis(500)).await;
-    
+
     logger.log_success("System readiness verified")?;
     progress_bar.suspend(|| {
         println!("  ✅ System readiness verified");
@@ -1139,7 +1180,7 @@ async fn detect_node_statuses_with_progress(
     logger: &StartupLogger,
 ) -> Result<Vec<crate::ValidatorStatus>> {
     logger.log_section("Node Status Detection")?;
-    
+
     let mut validator_statuses = Vec::new();
     let total_nodes: usize = config.validators.iter().map(|v| v.nodes.len()).sum();
     let mut processed_nodes = 0;
@@ -1373,7 +1414,7 @@ async fn detect_node_status_and_executable(
         // Search for agave-validator in either release or bin directories
         let agave_search_cmd = r#"find /opt /home /usr \( -path '*/release/agave-validator' -o -path '*/bin/agave-validator' \) 2>/dev/null | head -1"#;
         // logger.log_ssh_command(&node.host, agave_search_cmd, "", None)?;
-        
+
         if let Ok(output) = ssh_pool
             .execute_command(node, &ssh_key, agave_search_cmd)
             .await
@@ -1466,11 +1507,13 @@ async fn detect_node_status_and_executable(
     };
 
     if !solana_cli.is_empty() {
-        let catchup_cmd = format!(
-            "timeout 10 {} catchup --our-localhost 2>&1",
-            solana_cli
-        );
-        if let Ok(catchup_output) = ssh_pool.execute_command_with_early_exit(node, &ssh_key, &catchup_cmd, |output| output.contains("0 slot(s)") || output.contains("has caught up")).await {
+        let catchup_cmd = format!("timeout 10 {} catchup --our-localhost 2>&1", solana_cli);
+        if let Ok(catchup_output) = ssh_pool
+            .execute_command_with_early_exit(node, &ssh_key, &catchup_cmd, |output| {
+                output.contains("0 slot(s)") || output.contains("has caught up")
+            })
+            .await
+        {
             for line in catchup_output.lines() {
                 // Handle both "has caught up" and "0 slot(s) behind" formats
                 if line.contains("has caught up") || line.contains("0 slot(s) behind") {
@@ -1539,7 +1582,12 @@ async fn detect_node_status_and_executable(
         solana_cli_path
     );
 
-    match ssh_pool.execute_command_with_early_exit(node, &ssh_key, &catchup_cmd, |output| output.contains("0 slot(s)") || output.contains("has caught up")).await {
+    match ssh_pool
+        .execute_command_with_early_exit(node, &ssh_key, &catchup_cmd, |output| {
+            output.contains("0 slot(s)") || output.contains("has caught up")
+        })
+        .await
+    {
         Ok(output) => {
             // Parse the catchup output to find identity
             for line in output.lines() {
@@ -1608,18 +1656,18 @@ async fn detect_node_status_and_executable(
         Err(e) => {
             // logger.log_error("catchup command", &format!("Failed for node {}: {:?}", node.label, e)).ok();
             Ok((
-            crate::types::NodeStatus::Unknown,
-            validator_type,
-            agave_validator_executable,
-            fdctl_executable,
-            solana_cli_executable,
-            version,
-            sync_status,
-            current_identity,
-            ledger_path,
-            Some(swap_ready),
-            swap_issues,
-        ))
+                crate::types::NodeStatus::Unknown,
+                validator_type,
+                agave_validator_executable,
+                fdctl_executable,
+                solana_cli_executable,
+                version,
+                sync_status,
+                current_identity,
+                ledger_path,
+                Some(swap_ready),
+                swap_issues,
+            ))
         }
     }
 }
@@ -1775,11 +1823,13 @@ async fn detect_node_status_and_executable_with_progress(
     let ps_cmd =
         "ps aux | grep -E 'bin/fdctl|bin/agave-validator|release/agave-validator|bin/solana-validator|release/solana-validator' | grep -v grep";
     logger.log_ssh_command(&node.host, ps_cmd, "", None)?;
-    
+
     if let Ok(output) = ssh_pool.execute_command(node, &ssh_key, ps_cmd).await {
         logger.log_ssh_command(&node.host, ps_cmd, &output, None)?;
         let lines: Vec<&str> = output.lines().collect();
-        logger.log(&format!("Found {} process lines", lines.len())).ok();
+        logger
+            .log(&format!("Found {} process lines", lines.len()))
+            .ok();
         for line in lines {
             logger.log(&format!("Processing line: {}", line)).ok();
             let parts: Vec<&str> = line.split_whitespace().collect();
@@ -1808,7 +1858,16 @@ async fn detect_node_status_and_executable_with_progress(
             }
             // Check if this is an Agave/Jito/Solana process
             else if line.contains("agave-validator") || line.contains("solana-validator") {
-                logger.log(&format!("Detected {} validator process", if line.contains("agave-validator") { "Agave" } else { "Solana" })).ok();
+                logger
+                    .log(&format!(
+                        "Detected {} validator process",
+                        if line.contains("agave-validator") {
+                            "Agave"
+                        } else {
+                            "Solana"
+                        }
+                    ))
+                    .ok();
                 validator_type = crate::types::ValidatorType::Agave;
 
                 // Extract validator executable and ledger path
@@ -1824,9 +1883,11 @@ async fn detect_node_status_and_executable_with_progress(
                             _main_validator_executable = Some(part.to_string());
                             // Derive solana CLI path from validator path
                             if part.contains("agave-validator") {
-                                solana_cli_executable = Some(part.replace("agave-validator", "solana"));
+                                solana_cli_executable =
+                                    Some(part.replace("agave-validator", "solana"));
                             } else {
-                                solana_cli_executable = Some(part.replace("solana-validator", "solana"));
+                                solana_cli_executable =
+                                    Some(part.replace("solana-validator", "solana"));
                             }
                         }
                     } else if part == &"--ledger" && i + 1 < parts.len() {
@@ -1843,7 +1904,7 @@ async fn detect_node_status_and_executable_with_progress(
         // Search for agave-validator in either release or bin directories
         let agave_search_cmd = r#"find /opt /home /usr \( -path '*/release/agave-validator' -o -path '*/bin/agave-validator' \) 2>/dev/null | head -1"#;
         // logger.log_ssh_command(&node.host, agave_search_cmd, "", None)?;
-        
+
         if let Ok(output) = ssh_pool
             .execute_command(node, &ssh_key, agave_search_cmd)
             .await
@@ -1864,36 +1925,51 @@ async fn detect_node_status_and_executable_with_progress(
 
     // If no running validator found, search for executables on disk as fallback
     if _main_validator_executable.is_none() {
-        logger.log("No running validator process found, searching for executables on disk...").ok();
-        
+        logger
+            .log("No running validator process found, searching for executables on disk...")
+            .ok();
+
         // Search for agave-validator or solana-validator
         // Try multiple approaches to find the validator
         let search_cmd = "ls /home/solana/.local/share/solana/install/active_release/bin/solana-validator 2>/dev/null || ls /home/solana/.local/share/solana/install/active_release/bin/agave-validator 2>/dev/null || echo ''";
-        logger.log_ssh_command(&node.host, search_cmd, "", None).ok();
-        
+        logger
+            .log_ssh_command(&node.host, search_cmd, "", None)
+            .ok();
+
         match ssh_pool.execute_command(node, &ssh_key, search_cmd).await {
             Ok(output) => {
-                logger.log_ssh_command(&node.host, search_cmd, &output, None).ok();
+                logger
+                    .log_ssh_command(&node.host, search_cmd, &output, None)
+                    .ok();
                 let path = output.trim();
-                if !path.is_empty() && (path.contains("agave-validator") || path.contains("solana-validator")) {
-                if path.contains("agave-validator") {
-                    agave_validator_executable = Some(path.to_string());
-                    _main_validator_executable = Some(path.to_string());
-                    solana_cli_executable = Some(path.replace("agave-validator", "solana"));
-                } else {
-                    // solana-validator found
-                    agave_validator_executable = Some(path.to_string());
-                    _main_validator_executable = Some(path.to_string());
-                    solana_cli_executable = Some(path.replace("solana-validator", "solana"));
-                }
-                validator_type = crate::types::ValidatorType::Agave;
-                logger.log(&format!("Found validator executable at: {}", path)).ok();
+                if !path.is_empty()
+                    && (path.contains("agave-validator") || path.contains("solana-validator"))
+                {
+                    if path.contains("agave-validator") {
+                        agave_validator_executable = Some(path.to_string());
+                        _main_validator_executable = Some(path.to_string());
+                        solana_cli_executable = Some(path.replace("agave-validator", "solana"));
+                    } else {
+                        // solana-validator found
+                        agave_validator_executable = Some(path.to_string());
+                        _main_validator_executable = Some(path.to_string());
+                        solana_cli_executable = Some(path.replace("solana-validator", "solana"));
+                    }
+                    validator_type = crate::types::ValidatorType::Agave;
+                    logger
+                        .log(&format!("Found validator executable at: {}", path))
+                        .ok();
                 } else {
                     logger.log("No validator executable found on disk").ok();
                 }
             }
             Err(e) => {
-                logger.log_error("find command", &format!("Failed to search for executables: {}", e)).ok();
+                logger
+                    .log_error(
+                        "find command",
+                        &format!("Failed to search for executables: {}", e),
+                    )
+                    .ok();
             }
         }
     }
@@ -1904,7 +1980,7 @@ async fn detect_node_status_and_executable_with_progress(
         crate::types::ValidatorType::Jito => "Jito",
         crate::types::ValidatorType::Unknown => "Unknown",
     };
-    
+
     if validator_type == crate::types::ValidatorType::Unknown {
         logger.log_warning("No validator executable detected")?;
     } else {
@@ -2049,11 +2125,13 @@ async fn detect_node_status_and_executable_with_progress(
     };
 
     if !solana_cli.is_empty() {
-        let catchup_cmd = format!(
-            "timeout 10 {} catchup --our-localhost 2>&1",
-            solana_cli
-        );
-        if let Ok(catchup_output) = ssh_pool.execute_command_with_early_exit(node, &ssh_key, &catchup_cmd, |output| output.contains("0 slot(s)") || output.contains("has caught up")).await {
+        let catchup_cmd = format!("timeout 10 {} catchup --our-localhost 2>&1", solana_cli);
+        if let Ok(catchup_output) = ssh_pool
+            .execute_command_with_early_exit(node, &ssh_key, &catchup_cmd, |output| {
+                output.contains("0 slot(s)") || output.contains("has caught up")
+            })
+            .await
+        {
             for line in catchup_output.lines() {
                 // Handle both "has caught up" and "0 slot(s) behind" formats
                 if line.contains("has caught up") || line.contains("0 slot(s) behind") {
@@ -2111,11 +2189,14 @@ async fn detect_node_status_and_executable_with_progress(
 
     let (swap_ready, swap_issues) =
         check_node_swap_readiness(ssh_pool, node, DEFAULT_SSH_KEY, ledger_path.as_ref()).await;
-    
+
     if swap_ready {
         logger.log_success("Node is ready for swap")?;
     } else {
-        logger.log_warning(&format!("Node is not ready for swap: {} issues found", swap_issues.len()))?;
+        logger.log_warning(&format!(
+            "Node is not ready for swap: {} issues found",
+            swap_issues.len()
+        ))?;
         for issue in &swap_issues {
             logger.log(&format!("  - {}", issue))?;
         }
@@ -2127,7 +2208,11 @@ async fn detect_node_status_and_executable_with_progress(
         } else {
             println!(
                 "      ❌ Swap readiness: Not ready ({})",
-                if swap_issues.is_empty() { "Unknown issues".to_string() } else { swap_issues.join(", ") }
+                if swap_issues.is_empty() {
+                    "Unknown issues".to_string()
+                } else {
+                    swap_issues.join(", ")
+                }
             );
         }
     });
@@ -2152,7 +2237,12 @@ async fn detect_node_status_and_executable_with_progress(
             "timeout 10 {} catchup --our-localhost 2>&1",
             solana_cli_fallback
         );
-        if let Ok(catchup_output) = ssh_pool.execute_command_with_early_exit(node, &ssh_key, &catchup_cmd, |output| output.contains("0 slot(s)") || output.contains("has caught up")).await {
+        if let Ok(catchup_output) = ssh_pool
+            .execute_command_with_early_exit(node, &ssh_key, &catchup_cmd, |output| {
+                output.contains("0 slot(s)") || output.contains("has caught up")
+            })
+            .await
+        {
             for line in catchup_output.lines() {
                 if line.contains("has caught up") {
                     if let Some(caught_up_pos) = line.find(" has caught up") {

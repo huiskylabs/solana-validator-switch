@@ -1,11 +1,11 @@
+use crate::types::NodeConfig;
 use anyhow::{anyhow, Result};
 use openssh::{Session, SessionBuilder, Stdio};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
-use tokio::io::{AsyncBufReadExt, BufReader};
 use std::time::Duration;
-use crate::types::NodeConfig;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::sync::RwLock;
 
 /// SSH session pool with async support and connection reuse
 pub struct AsyncSshPool {
@@ -49,7 +49,7 @@ impl AsyncSshPool {
     /// Get or create an SSH session for a node
     pub async fn get_session(&self, node: &NodeConfig, ssh_key_path: &str) -> Result<Arc<Session>> {
         let key = Self::get_connection_key(node, ssh_key_path);
-        
+
         // Try to get existing session
         {
             let sessions = self.sessions.read().await;
@@ -135,29 +135,31 @@ impl AsyncSshPool {
         args: &[&str],
     ) -> Result<String> {
         let session = self.get_session(node, ssh_key_path).await?;
-        
+
         let mut cmd = session.command(command);
         for arg in args {
             cmd.arg(arg);
         }
-        
-        let output = cmd.output().await
+
+        let output = cmd
+            .output()
+            .await
             .map_err(|e| anyhow!("Failed to execute command: {}", e))?;
 
         // For commands with args, always return stdout content if available
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        
+
         // If we have stdout content, return it even if the command "failed"
         if !stdout.is_empty() {
             return Ok(stdout);
         }
-        
+
         // If no stdout but there's stderr, and command failed, return error
         if !output.status.success() && !stderr.is_empty() {
             return Err(anyhow!("Command failed: {}", stderr));
         }
-        
+
         // Otherwise return empty string
         Ok(String::new())
     }
@@ -170,13 +172,19 @@ impl AsyncSshPool {
         command: &str,
     ) -> Result<String> {
         let session = self.get_session(node, ssh_key_path).await?;
-        
+
         // Check if command needs shell features (pipes, redirections, etc.)
-        let needs_shell = command.contains('|') || command.contains('>') || command.contains('<') 
-            || command.contains('&') || command.contains(';') || command.contains('$')
-            || command.contains('`') || command.contains("||") || command.contains("&&")
+        let needs_shell = command.contains('|')
+            || command.contains('>')
+            || command.contains('<')
+            || command.contains('&')
+            || command.contains(';')
+            || command.contains('$')
+            || command.contains('`')
+            || command.contains("||")
+            || command.contains("&&")
             || command.contains("2>&1");
-        
+
         let output = if needs_shell {
             // Use bash -c with proper argument handling for shell features
             session
@@ -198,18 +206,18 @@ impl AsyncSshPool {
         // For commands with 2>&1, stderr is redirected to stdout, so we should always return stdout
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        
+
         // If we have stdout content, return it even if the command "failed"
         // This is important for commands like catchup that might return non-zero exit codes
         if !stdout.is_empty() {
             return Ok(stdout);
         }
-        
+
         // If no stdout but there's stderr, and command failed, return error
         if !output.status.success() && !stderr.is_empty() {
             return Err(anyhow!("Command failed: {}", stderr));
         }
-        
+
         // Otherwise return empty string
         Ok(String::new())
     }
@@ -226,13 +234,19 @@ impl AsyncSshPool {
         F: Fn(&str) -> bool + Send + 'static,
     {
         let session = self.get_session(node, ssh_key_path).await?;
-        
+
         // Check if command needs shell features
-        let needs_shell = command.contains('|') || command.contains('>') || command.contains('<') 
-            || command.contains('&') || command.contains(';') || command.contains('$')
-            || command.contains('`') || command.contains("||") || command.contains("&&")
+        let needs_shell = command.contains('|')
+            || command.contains('>')
+            || command.contains('<')
+            || command.contains('&')
+            || command.contains(';')
+            || command.contains('$')
+            || command.contains('`')
+            || command.contains("||")
+            || command.contains("&&")
             || command.contains("2>&1");
-        
+
         let mut child = if needs_shell {
             session
                 .command("bash")
@@ -253,7 +267,10 @@ impl AsyncSshPool {
                 .map_err(|e| anyhow!("Failed to spawn command: {}", e))?
         };
 
-        let stdout = child.stdout().take().ok_or_else(|| anyhow!("Failed to get stdout"))?;
+        let stdout = child
+            .stdout()
+            .take()
+            .ok_or_else(|| anyhow!("Failed to get stdout"))?;
         let mut reader = BufReader::new(stdout);
         let mut output = String::new();
         let mut line = String::new();
@@ -265,7 +282,7 @@ impl AsyncSshPool {
                 Ok(0) => break, // EOF
                 Ok(_) => {
                     output.push_str(&line);
-                    
+
                     // Check if we should exit early
                     if check_fn(&output) {
                         // Try to terminate the process
@@ -290,13 +307,19 @@ impl AsyncSshPool {
         tx: tokio::sync::mpsc::Sender<String>,
     ) -> Result<()> {
         let session = self.get_session(node, ssh_key_path).await?;
-        
+
         // Check if command needs shell features
-        let needs_shell = command.contains('|') || command.contains('>') || command.contains('<') 
-            || command.contains('&') || command.contains(';') || command.contains('$')
-            || command.contains('`') || command.contains("||") || command.contains("&&")
+        let needs_shell = command.contains('|')
+            || command.contains('>')
+            || command.contains('<')
+            || command.contains('&')
+            || command.contains(';')
+            || command.contains('$')
+            || command.contains('`')
+            || command.contains("||")
+            || command.contains("&&")
             || command.contains("2>&1");
-        
+
         let mut child = if needs_shell {
             session
                 .command("bash")
@@ -317,15 +340,21 @@ impl AsyncSshPool {
                 .map_err(|e| anyhow!("Failed to spawn command: {}", e))?
         };
 
-        let stdout = child.stdout().take().ok_or_else(|| anyhow!("Failed to get stdout"))?;
-        let stderr = child.stderr().take().ok_or_else(|| anyhow!("Failed to get stderr"))?;
+        let stdout = child
+            .stdout()
+            .take()
+            .ok_or_else(|| anyhow!("Failed to get stdout"))?;
+        let stderr = child
+            .stderr()
+            .take()
+            .ok_or_else(|| anyhow!("Failed to get stderr"))?;
 
         // Spawn tasks to read stdout and stderr concurrently
         let tx_stdout = tx.clone();
         let stdout_task = tokio::spawn(async move {
             let mut reader = BufReader::new(stdout);
             let mut line = String::new();
-            
+
             loop {
                 line.clear();
                 match reader.read_line(&mut line).await {
@@ -344,7 +373,7 @@ impl AsyncSshPool {
         let stderr_task = tokio::spawn(async move {
             let mut reader = BufReader::new(stderr);
             let mut line = String::new();
-            
+
             loop {
                 line.clear();
                 match reader.read_line(&mut line).await {
@@ -364,7 +393,10 @@ impl AsyncSshPool {
         let status = child.wait().await?;
 
         if !status.success() {
-            return Err(anyhow!("Command failed with exit code: {:?}", status.code()));
+            return Err(anyhow!(
+                "Command failed with exit code: {:?}",
+                status.code()
+            ));
         }
 
         Ok(())
@@ -379,19 +411,25 @@ impl AsyncSshPool {
         input: &str,
     ) -> Result<String> {
         let session = self.get_session(node, ssh_key_path).await?;
-        
+
         // Check if command needs shell features
-        let needs_shell = command.contains('|') || command.contains('>') || command.contains('<') 
-            || command.contains('&') || command.contains(';') || command.contains('$')
-            || command.contains('`') || command.contains("||") || command.contains("&&")
+        let needs_shell = command.contains('|')
+            || command.contains('>')
+            || command.contains('<')
+            || command.contains('&')
+            || command.contains(';')
+            || command.contains('$')
+            || command.contains('`')
+            || command.contains("||")
+            || command.contains("&&")
             || command.contains("2>&1");
-        
+
         let shell_command = if needs_shell {
             format!("bash -c '{}'", command.replace("'", "'\\'''"))
         } else {
             command.to_string()
         };
-        
+
         // Create command with input via pipe
         let mut child = session
             .command(&shell_command)
@@ -410,7 +448,9 @@ impl AsyncSshPool {
             drop(stdin);
         }
 
-        let output = child.wait_with_output().await
+        let output = child
+            .wait_with_output()
+            .await
             .map_err(|e| anyhow!("Failed to get command output: {}", e))?;
 
         if !output.status.success() {
@@ -430,7 +470,7 @@ impl AsyncSshPool {
         base64_data: &str,
     ) -> Result<()> {
         let session = self.get_session(node, ssh_key_path).await?;
-        
+
         // Start base64 -d on remote, writing to stdout
         let mut base64_child = session
             .command("base64")
@@ -451,7 +491,10 @@ impl AsyncSshPool {
         }
 
         // Read decoded output
-        let mut stdout = base64_child.stdout().take().ok_or_else(|| anyhow!("Failed to get stdout"))?;
+        let mut stdout = base64_child
+            .stdout()
+            .take()
+            .ok_or_else(|| anyhow!("Failed to get stdout"))?;
         let mut decoded = Vec::new();
         tokio::io::copy(&mut stdout, &mut decoded).await?;
 
@@ -498,10 +541,10 @@ impl AsyncSshPool {
         remote_path: &str,
     ) -> Result<()> {
         let session = self.get_session(node, ssh_key_path).await?;
-        
+
         // Read file content
         let content = std::fs::read(local_path)?;
-        
+
         // Use cat command to write to remote file
         let mut child = session
             .command("cat")
@@ -509,14 +552,14 @@ impl AsyncSshPool {
             .stdin(Stdio::piped())
             .spawn()
             .await?;
-            
+
         if let Some(mut stdin) = child.stdin().take() {
             use tokio::io::AsyncWriteExt;
             stdin.write_all(&content).await?;
             stdin.flush().await?;
             drop(stdin);
         }
-        
+
         let status = child.wait().await?;
 
         if !status.success() {
@@ -536,7 +579,7 @@ impl AsyncSshPool {
     pub async fn get_stats(&self) -> PoolStats {
         let sessions = self.sessions.read().await;
         let total = sessions.len();
-        
+
         // Count alive sessions
         let mut alive = 0;
         for session in sessions.values() {
@@ -588,7 +631,8 @@ impl CommandBuilder {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        self.args.extend(args.into_iter().map(|s| s.as_ref().to_string()));
+        self.args
+            .extend(args.into_iter().map(|s| s.as_ref().to_string()));
         self
     }
 

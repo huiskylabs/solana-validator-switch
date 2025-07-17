@@ -5,13 +5,13 @@ use comfy_table::{
     ContentArrangement, Table,
 };
 use std::collections::HashMap;
+use std::io::{stdout, Write};
 use std::time::Duration;
 use tokio::time::interval;
-use std::io::{stdout, Write};
 
+use crate::solana_rpc::{fetch_vote_account_data, ValidatorVoteData};
 use crate::types::{Config, NodeConfig};
 use crate::AppState;
-use crate::solana_rpc::{fetch_vote_account_data, ValidatorVoteData};
 
 pub async fn status_command(app_state: &AppState) -> Result<()> {
     if app_state.config.validators.is_empty() {
@@ -46,59 +46,64 @@ async fn show_auto_refresh_status(app_state: &AppState) -> Result<()> {
     // Set up Ctrl+C handler
     let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let r = running.clone();
-    
+
     ctrlc::set_handler(move || {
         r.store(false, std::sync::atomic::Ordering::SeqCst);
     })?;
-    
+
     // Create a 3-second interval
     let mut refresh_interval = interval(Duration::from_secs(3));
-    
+
     // Display header once
     print!("\x1B[2J\x1B[1;1H"); // Clear screen initially
-    println!("{}", "📋 Validator Status (Auto-refresh every 3s)".bright_cyan().bold());
+    println!(
+        "{}",
+        "📋 Validator Status (Auto-refresh every 3s)"
+            .bright_cyan()
+            .bold()
+    );
     println!("{}", "─".repeat(80).dimmed());
     println!();
-    
+
     // Store cursor position after header
     print!("\x1B[s"); // Save cursor position
     stdout().flush()?;
-    
+
     // First run - display the full table
     if let Err(e) = display_status_with_rpc_data(app_state, true).await {
         eprintln!("Error fetching status: {}", e);
     }
     stdout().flush()?;
-    
+
     // Count lines in the table to know where the last row is
     let table_lines = count_table_lines(app_state);
-    
+
     while running.load(std::sync::atomic::Ordering::SeqCst) {
         // Wait for next tick first
         refresh_interval.tick().await;
-        
+
         // Move cursor to the last row of the table
         print!("\x1B[u"); // Restore to saved position
         print!("\x1B[{}B", table_lines - 1); // Move down to last row
-        
+
         // Clear just the last row
         print!("\x1B[2K"); // Clear current line
-        
+
         // Update only the vote status row
         if let Err(e) = display_vote_status_row_only(app_state).await {
             eprintln!("Error fetching vote status: {}", e);
         }
-        
+
         stdout().flush()?;
     }
-    
+
     Ok(())
 }
 
 async fn display_status_with_rpc_data(app_state: &AppState, full_display: bool) -> Result<()> {
     for (index, validator_status) in app_state.validator_statuses.iter().enumerate() {
         let validator_pair = &validator_status.validator_pair;
-        
+
         if full_display {
             // Display validator info with name if available
             if let Some(ref metadata) = validator_status.metadata {
@@ -126,29 +131,27 @@ async fn display_status_with_rpc_data(app_state: &AppState, full_display: bool) 
                     validator_pair.vote_pubkey
                 );
             }
-            
+
             println!();
         }
-        
+
         // Fetch vote account data from RPC
-        let vote_data = match fetch_vote_account_data(
-            &validator_pair.rpc,
-            &validator_pair.vote_pubkey,
-        ).await {
-            Ok(data) => Some(data),
-            Err(e) => {
-                eprintln!("Failed to fetch vote data: {}", e);
-                None
-            }
-        };
-        
+        let vote_data =
+            match fetch_vote_account_data(&validator_pair.rpc, &validator_pair.vote_pubkey).await {
+                Ok(data) => Some(data),
+                Err(e) => {
+                    eprintln!("Failed to fetch vote data: {}", e);
+                    None
+                }
+            };
+
         if full_display {
             // Get the two nodes with their statuses
             let nodes_with_status = &validator_status.nodes_with_status;
             if nodes_with_status.len() >= 2 {
                 let node_0 = &nodes_with_status[0];
                 let node_1 = &nodes_with_status[1];
-                
+
                 display_simple_status_table_with_rpc(
                     &node_0.node,
                     &node_0.status,
@@ -158,11 +161,11 @@ async fn display_status_with_rpc_data(app_state: &AppState, full_display: bool) 
                     vote_data.as_ref(),
                 );
             }
-            
+
             println!();
         }
     }
-    
+
     Ok(())
 }
 
@@ -174,7 +177,7 @@ fn display_vote_data(vote_data: &ValidatorVoteData) {
         "⚠️ Not Voting".yellow()
     };
     println!("   Status: {}", voting_status);
-    
+
     // Display most recent vote exactly like solana vote-account output
     if let Some(recent_vote) = vote_data.recent_votes.first() {
         println!(
@@ -184,11 +187,15 @@ fn display_vote_data(vote_data: &ValidatorVoteData) {
             recent_vote.latency.to_string().cyan()
         );
     }
-    
+
     // Display credits and commission
     println!(
         "   Credits: {} | Commission: {}%",
-        vote_data.vote_account_info.credits.to_string().bright_white(),
+        vote_data
+            .vote_account_info
+            .credits
+            .to_string()
+            .bright_white(),
         vote_data.vote_account_info.commission
     );
 }
@@ -438,7 +445,7 @@ fn display_simple_status_table_with_rpc(
         Cell::new(node_0_swap),
         Cell::new(node_1_swap),
     ]);
-    
+
     // Add RPC voting status row as the last row
     if let Some(vote_data) = vote_data {
         let voting_status = if vote_data.is_voting {
@@ -446,7 +453,7 @@ fn display_simple_status_table_with_rpc(
         } else {
             "⚠️ Not Voting"
         };
-        
+
         let vote_info = if let Some(recent_vote) = vote_data.recent_votes.first() {
             let current_slot = vote_data.vote_account_info.current_slot.unwrap_or(0);
             let diff = current_slot.saturating_sub(recent_vote.slot);
@@ -454,12 +461,16 @@ fn display_simple_status_table_with_rpc(
         } else {
             "No recent votes".to_string()
         };
-        
+
         table.add_row(vec![
             Cell::new("Vote Status")
                 .add_attribute(Attribute::Bold)
                 .fg(Color::Cyan),
-            Cell::new(voting_status).fg(if vote_data.is_voting { Color::Green } else { Color::Yellow }),
+            Cell::new(voting_status).fg(if vote_data.is_voting {
+                Color::Green
+            } else {
+                Color::Yellow
+            }),
             Cell::new(&vote_info),
         ]);
     }
@@ -2068,23 +2079,21 @@ async fn display_vote_status_row_only(app_state: &AppState) -> Result<()> {
     // Only update the vote status for each validator
     for validator_status in app_state.validator_statuses.iter() {
         let validator_pair = &validator_status.validator_pair;
-        
+
         // Fetch vote account data from RPC
-        let vote_data = match fetch_vote_account_data(
-            &validator_pair.rpc,
-            &validator_pair.vote_pubkey,
-        ).await {
-            Ok(data) => Some(data),
-            Err(_) => None,
-        };
-        
+        let vote_data =
+            match fetch_vote_account_data(&validator_pair.rpc, &validator_pair.vote_pubkey).await {
+                Ok(data) => Some(data),
+                Err(_) => None,
+            };
+
         if let Some(vote_data) = vote_data {
             let voting_status = if vote_data.is_voting {
                 "✅ Voting"
             } else {
                 "⚠️ Not Voting"
             };
-            
+
             let vote_info = if let Some(recent_vote) = vote_data.recent_votes.first() {
                 let current_slot = vote_data.vote_account_info.current_slot.unwrap_or(0);
                 let diff = current_slot.saturating_sub(recent_vote.slot);
@@ -2092,19 +2101,20 @@ async fn display_vote_status_row_only(app_state: &AppState) -> Result<()> {
             } else {
                 "No recent votes".to_string()
             };
-            
+
             // Print the updated row
-            print!("│ {:14} │ {:24} │ {:24} │", 
+            print!(
+                "│ {:14} │ {:24} │ {:24} │",
                 "Vote Status".cyan().bold(),
-                if vote_data.is_voting { 
-                    voting_status.green() 
-                } else { 
-                    voting_status.yellow() 
+                if vote_data.is_voting {
+                    voting_status.green()
+                } else {
+                    voting_status.yellow()
                 },
                 vote_info
             );
         }
     }
-    
+
     Ok(())
 }

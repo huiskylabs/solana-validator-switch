@@ -15,13 +15,13 @@ use std::sync::Arc;
 
 mod commands;
 mod config;
+mod solana_rpc;
 mod ssh;
 mod ssh_key_detector;
 mod startup;
 mod startup_logger;
 mod types;
 mod validator_metadata;
-mod solana_rpc;
 
 use commands::{status_command, switch_command};
 use ssh::AsyncSshPool;

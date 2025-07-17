@@ -1,8 +1,8 @@
 use anyhow::{anyhow, Result};
+use serde::{Deserialize, Serialize};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
-use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VoteAccountInfo {
@@ -36,19 +36,19 @@ pub async fn fetch_vote_account_data(
     vote_pubkey_str: &str,
 ) -> Result<ValidatorVoteData> {
     use std::time::Duration;
-    
+
     // Validate RPC URL
     if rpc_url.is_empty() {
         return Err(anyhow!("RPC URL is empty"));
     }
-    
+
     // Log the RPC URL being used (for debugging)
     // eprintln!("Using RPC URL: {}", rpc_url);
     // eprintln!("Looking for vote account: {}", vote_pubkey_str);
-    
+
     let rpc_client = RpcClient::new_with_timeout(rpc_url.to_string(), Duration::from_secs(3));
-    let vote_pubkey = Pubkey::from_str(vote_pubkey_str)
-        .map_err(|e| anyhow!("Invalid vote pubkey: {}", e))?;
+    let vote_pubkey =
+        Pubkey::from_str(vote_pubkey_str).map_err(|e| anyhow!("Invalid vote pubkey: {}", e))?;
 
     // Get vote account info
     let vote_account = rpc_client
@@ -100,7 +100,7 @@ pub async fn fetch_vote_account_data(
         } else {
             1 // Default latency for oldest vote
         };
-        
+
         recent_votes.push(RecentVote {
             slot: lockout.slot(),
             confirmation_count: (i + 1) as u32,
@@ -116,10 +116,12 @@ pub async fn fetch_vote_account_data(
     };
 
     // Get recent timestamp if available
-    let recent_timestamp = Some(format!("{}", 
+    let recent_timestamp = Some(format!(
+        "{}",
         chrono::DateTime::<chrono::Utc>::from_timestamp(vote_state.last_timestamp.timestamp, 0)
             .unwrap_or_default()
-            .format("%Y-%m-%dT%H:%M:%SZ")));
+            .format("%Y-%m-%dT%H:%M:%SZ")
+    ));
 
     Ok(ValidatorVoteData {
         vote_account_info: VoteAccountInfo {

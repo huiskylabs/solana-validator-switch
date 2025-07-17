@@ -4,10 +4,9 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Table},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table},
     Terminal,
 };
-use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -41,25 +40,14 @@ pub struct UiState {
     // Catchup status for each node
     pub catchup_data: Vec<NodePairStatus>,
     
-    // SSH logs for each host
-    pub host_logs: HashMap<String, Vec<String>>,
-    pub selected_host: Option<String>,
-    pub log_scroll_offset: usize,
-    
     // Refresh state
     pub last_vote_refresh: Instant,
     pub last_catchup_refresh: Instant,
     pub is_refreshing: bool,
     
-    // UI state
-    pub focused_pane: FocusedPane,
 }
 
-#[derive(Clone, Copy, PartialEq)]
-pub enum FocusedPane {
-    Summary,
-    Logs,
-}
+// Removed FocusedPane enum as logs are no longer displayed
 
 #[derive(Clone)]
 pub struct NodePairStatus {
@@ -98,9 +86,8 @@ impl EnhancedStatusApp {
         // Initialize UI state
         let mut initial_vote_data = Vec::new();
         let mut initial_catchup_data = Vec::new();
-        let mut host_logs = HashMap::new();
         
-        for validator_status in &app_state.validator_statuses {
+        for _validator_status in &app_state.validator_statuses {
             initial_vote_data.push(None);
             
             let node_pair = NodePairStatus {
@@ -108,11 +95,6 @@ impl EnhancedStatusApp {
                 node_1: None,
             };
             initial_catchup_data.push(node_pair);
-            
-            // Initialize logs for each host
-            for node in &validator_status.nodes_with_status {
-                host_logs.insert(node.node.host.clone(), Vec::new());
-            }
         }
         
         let ui_state = Arc::new(RwLock::new(UiState {
@@ -120,13 +102,9 @@ impl EnhancedStatusApp {
             previous_last_slots: Vec::new(),
             increment_times: Vec::new(),
             catchup_data: initial_catchup_data,
-            host_logs,
-            selected_host: None,
-            log_scroll_offset: 0,
             last_vote_refresh: Instant::now(),
             last_catchup_refresh: Instant::now(),
             is_refreshing: false,
-            focused_pane: FocusedPane::Summary,
         }));
         
         Ok(Self {
@@ -358,25 +336,11 @@ pub async fn run_enhanced_ui(app: &mut EnhancedStatusApp) -> Result<()> {
     // Spawn background tasks
     app.spawn_background_tasks();
     
-    // Process log messages in background
-    let ui_state = Arc::clone(&app.ui_state);
+    // Process log messages in background (keeping for internal use but not displaying)
     let mut log_receiver = app.log_sender.subscribe();
     tokio::spawn(async move {
-        while let Ok(log_msg) = log_receiver.recv().await {
-            let mut state = ui_state.write().await;
-            if let Some(logs) = state.host_logs.get_mut(&log_msg.host) {
-                let formatted = format!(
-                    "[{}] {}",
-                    chrono::Local::now().format("%H:%M:%S"),
-                    log_msg.message
-                );
-                logs.push(formatted);
-                
-                // Keep only last 1000 lines per host
-                if logs.len() > 1000 {
-                    logs.drain(0..logs.len() - 1000);
-                }
-            }
+        while let Ok(_log_msg) = log_receiver.recv().await {
+            // Messages are received but not stored for UI display
         }
     });
     
@@ -419,7 +383,7 @@ async fn handle_key_event(
     ui_state: &Arc<RwLock<UiState>>,
     should_quit: &Arc<RwLock<bool>>,
 ) -> Result<()> {
-    let mut state = ui_state.write().await;
+    let _state = ui_state.write().await;
     
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => {
@@ -427,60 +391,6 @@ async fn handle_key_event(
         }
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             *should_quit.write().await = true;
-        }
-        KeyCode::Tab => {
-            // Switch focus between panes
-            state.focused_pane = match state.focused_pane {
-                FocusedPane::Summary => FocusedPane::Logs,
-                FocusedPane::Logs => FocusedPane::Summary,
-            };
-        }
-        KeyCode::Up => {
-            if state.focused_pane == FocusedPane::Logs && state.log_scroll_offset > 0 {
-                state.log_scroll_offset -= 1;
-            }
-        }
-        KeyCode::Down => {
-            if state.focused_pane == FocusedPane::Logs {
-                state.log_scroll_offset += 1;
-            }
-        }
-        KeyCode::PageUp => {
-            if state.focused_pane == FocusedPane::Logs && state.log_scroll_offset > 10 {
-                state.log_scroll_offset -= 10;
-            } else {
-                state.log_scroll_offset = 0;
-            }
-        }
-        KeyCode::PageDown => {
-            if state.focused_pane == FocusedPane::Logs {
-                state.log_scroll_offset += 10;
-            }
-        }
-        KeyCode::Home => {
-            if state.focused_pane == FocusedPane::Logs {
-                state.log_scroll_offset = 0;
-            }
-        }
-        KeyCode::End => {
-            if state.focused_pane == FocusedPane::Logs {
-                if let Some(host) = &state.selected_host {
-                    if let Some(logs) = state.host_logs.get(host) {
-                        state.log_scroll_offset = logs.len().saturating_sub(1);
-                    }
-                }
-            }
-        }
-        KeyCode::Char(c) if c >= '1' && c <= '9' => {
-            // Select host by number
-            if let Some(idx) = c.to_digit(10) {
-                let idx = (idx as usize).saturating_sub(1);
-                let hosts: Vec<_> = state.host_logs.keys().cloned().collect();
-                if idx < hosts.len() {
-                    state.selected_host = Some(hosts[idx].clone());
-                    state.log_scroll_offset = 0;
-                }
-            }
         }
         _ => {}
     }
@@ -494,8 +404,7 @@ fn draw_ui(f: &mut ratatui::Frame, ui_state: &UiState, app_state: &AppState) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),    // Header
-            Constraint::Percentage(60), // Summary tables
-            Constraint::Min(10),      // Logs
+            Constraint::Min(0),       // Validator tables take all remaining space
             Constraint::Length(2),    // Footer
         ])
         .split(f.size());
@@ -506,11 +415,8 @@ fn draw_ui(f: &mut ratatui::Frame, ui_state: &UiState, app_state: &AppState) {
     // Draw validator summaries
     draw_validator_summaries(f, chunks[1], ui_state, app_state);
     
-    // Draw logs
-    draw_logs(f, chunks[2], ui_state);
-    
     // Draw footer
-    draw_footer(f, chunks[3], ui_state);
+    draw_footer(f, chunks[2], ui_state);
 }
 
 fn draw_header(f: &mut ratatui::Frame, area: Rect, ui_state: &UiState) {
@@ -563,40 +469,127 @@ fn draw_validator_table(
     let validator_name = validator_status.metadata.as_ref()
         .and_then(|m| m.name.as_ref())
         .cloned()
-        .unwrap_or_else(|| "Validator".to_string());
+        .unwrap_or_else(|| validator_status.validator_pair.vote_pubkey.chars().take(8).collect::<String>() + "...");
+    
+    // Include metadata info in title if available
+    let mut title = validator_name.clone();
+    if let Some(metadata) = &validator_status.metadata {
+        if let Some(details) = &metadata.details {
+            title.push_str(&format!(" - {}", details));
+        }
+    }
     
     let mut rows = vec![];
     
-    // Node status row
+    // Vote and Identity pubkeys row
+    rows.push(Row::new(vec![
+        Cell::from("Vote/Identity"),
+        Cell::from(format!("{} / {}", 
+            validator_status.validator_pair.vote_pubkey.chars().take(6).collect::<String>() + "...",
+            validator_status.validator_pair.identity_pubkey.chars().take(6).collect::<String>() + "..."
+        )),
+        Cell::from(validator_status.validator_pair.rpc.as_str()),
+    ]));
+    
+    // Node status row with host and status
     if validator_status.nodes_with_status.len() >= 2 {
         let node_0 = &validator_status.nodes_with_status[0];
         let node_1 = &validator_status.nodes_with_status[1];
         
+        // Status row
         rows.push(Row::new(vec![
             Cell::from("Status"),
-            Cell::from(format!("{} ({})", node_0.node.label, 
+            Cell::from(format!("{} ({})", 
                 match node_0.status {
-                    crate::types::NodeStatus::Active => "ACTIVE",
-                    crate::types::NodeStatus::Standby => "STANDBY",
-                    crate::types::NodeStatus::Unknown => "UNKNOWN",
-                }
+                    crate::types::NodeStatus::Active => "🟢 ACTIVE",
+                    crate::types::NodeStatus::Standby => "🟡 STANDBY",
+                    crate::types::NodeStatus::Unknown => "🔴 UNKNOWN",
+                },
+                node_0.node.label
             )).style(Style::default().fg(match node_0.status {
                 crate::types::NodeStatus::Active => Color::Green,
                 crate::types::NodeStatus::Standby => Color::Yellow,
-                crate::types::NodeStatus::Unknown => Color::DarkGray,
+                crate::types::NodeStatus::Unknown => Color::Red,
             })),
-            Cell::from(format!("{} ({})", node_1.node.label,
+            Cell::from(format!("{} ({})",
                 match node_1.status {
-                    crate::types::NodeStatus::Active => "ACTIVE",
-                    crate::types::NodeStatus::Standby => "STANDBY",
-                    crate::types::NodeStatus::Unknown => "UNKNOWN",
-                }
+                    crate::types::NodeStatus::Active => "🟢 ACTIVE",
+                    crate::types::NodeStatus::Standby => "🟡 STANDBY",
+                    crate::types::NodeStatus::Unknown => "🔴 UNKNOWN",
+                },
+                node_1.node.label
             )).style(Style::default().fg(match node_1.status {
                 crate::types::NodeStatus::Active => Color::Green,
                 crate::types::NodeStatus::Standby => Color::Yellow,
-                crate::types::NodeStatus::Unknown => Color::DarkGray,
+                crate::types::NodeStatus::Unknown => Color::Red,
             })),
         ]));
+        
+        // Host info row
+        rows.push(Row::new(vec![
+            Cell::from("Host"),
+            Cell::from(node_0.node.host.as_str()),
+            Cell::from(node_1.node.host.as_str()),
+        ]));
+        
+        // Validator type and version row
+        rows.push(Row::new(vec![
+            Cell::from("Type/Version"),
+            Cell::from(format!("{} {}", 
+                match node_0.validator_type {
+                    crate::types::ValidatorType::Firedancer => "Firedancer",
+                    crate::types::ValidatorType::Agave => "Agave",
+                    crate::types::ValidatorType::Jito => "Jito",
+                    crate::types::ValidatorType::Unknown => "Unknown",
+                },
+                node_0.version.as_deref().unwrap_or("")
+            )),
+            Cell::from(format!("{} {}",
+                match node_1.validator_type {
+                    crate::types::ValidatorType::Firedancer => "Firedancer",
+                    crate::types::ValidatorType::Agave => "Agave",
+                    crate::types::ValidatorType::Jito => "Jito",
+                    crate::types::ValidatorType::Unknown => "Unknown",
+                },
+                node_1.version.as_deref().unwrap_or("")
+            )),
+        ]));
+        
+        // Identity row
+        rows.push(Row::new(vec![
+            Cell::from("Identity"),
+            Cell::from(node_0.current_identity.as_deref().unwrap_or("Unknown")),
+            Cell::from(node_1.current_identity.as_deref().unwrap_or("Unknown")),
+        ]));
+        
+        // Swap readiness row
+        rows.push(Row::new(vec![
+            Cell::from("Swap Ready"),
+            Cell::from(if node_0.swap_ready.unwrap_or(false) { "✅ Ready" } else { "❌ Not Ready" })
+                .style(Style::default().fg(if node_0.swap_ready.unwrap_or(false) { Color::Green } else { Color::Red })),
+            Cell::from(if node_1.swap_ready.unwrap_or(false) { "✅ Ready" } else { "❌ Not Ready" })
+                .style(Style::default().fg(if node_1.swap_ready.unwrap_or(false) { Color::Green } else { Color::Red })),
+        ]));
+        
+        // Sync status row if available
+        if node_0.sync_status.is_some() || node_1.sync_status.is_some() {
+            rows.push(Row::new(vec![
+                Cell::from("Sync Status"),
+                Cell::from(node_0.sync_status.as_deref().unwrap_or("N/A")),
+                Cell::from(node_1.sync_status.as_deref().unwrap_or("N/A")),
+            ]));
+        }
+        
+        // Ledger path row if available
+        if node_0.ledger_path.is_some() || node_1.ledger_path.is_some() {
+            rows.push(Row::new(vec![
+                Cell::from("Ledger Path"),
+                Cell::from(node_0.ledger_path.as_deref().unwrap_or("N/A")
+                    .split('/').last().unwrap_or("N/A")),
+                Cell::from(node_1.ledger_path.as_deref().unwrap_or("N/A")
+                    .split('/').last().unwrap_or("N/A")),
+            ]));
+        }
     }
     
     // Catchup status
@@ -627,45 +620,62 @@ fn draw_validator_table(
         ]));
     }
     
-    // Vote status
+    // Vote account info
     if let Some(vote_data) = vote_data {
+        // Vote status row
         let vote_status = if vote_data.is_voting {
             "✅ Voting"
         } else {
             "⚠️ Not Voting"
         };
         
-        let mut vote_display = String::new();
-        if !vote_data.recent_votes.is_empty() {
-            let first = vote_data.recent_votes.first().unwrap().slot;
-            let last = vote_data.recent_votes.last().unwrap().slot;
-            vote_display = if vote_data.recent_votes.len() > 1 {
-                format!("{} ... {}", first, last)
-            } else {
-                format!("{}", first)
-            };
+        rows.push(Row::new(vec![
+            Cell::from("Vote Status"),
+            Cell::from(vote_status).style(Style::default().fg(if vote_data.is_voting { Color::Green } else { Color::Yellow })),
+            Cell::from(""),
+        ]));
+        
+        // Last voted slot row
+        if let Some(last_vote) = vote_data.recent_votes.last() {
+            let last_slot = last_vote.slot;
+            let mut slot_display = format!("{}", last_slot);
             
             // Add increment if applicable
             if let Some(prev) = previous_last_slot {
-                if last > prev {
-                    let inc = format!(" (+{})", last - prev);
-                    if increment_time.map(|t| t.elapsed().as_secs() < 2).unwrap_or(false) {
-                        vote_display.push_str(&inc);
+                if last_slot > prev {
+                    let inc = format!(" (+{})", last_slot - prev);
+                    if increment_time.map(|t| t.elapsed().as_secs() < 3).unwrap_or(false) {
+                        slot_display.push_str(&inc);
                     }
                 }
             }
+            
+            rows.push(Row::new(vec![
+                Cell::from("Last Vote"),
+                Cell::from(slot_display).style(
+                    if increment_time.map(|t| t.elapsed().as_secs() < 3).unwrap_or(false) {
+                        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    }
+                ),
+                Cell::from(""),
+            ]));
         }
         
+        // Vote count and commission info
         rows.push(Row::new(vec![
-            Cell::from("Votes"),
-            Cell::from(vote_status).style(
-                if vote_data.is_voting {
-                    Style::default().fg(Color::Green)
-                } else {
-                    Style::default().fg(Color::Yellow)
-                }
-            ),
-            Cell::from(vote_display),
+            Cell::from("Votes/Commission"),
+            Cell::from(format!("{} votes / {}%", vote_data.recent_votes.len(), vote_data.vote_account_info.commission)),
+            Cell::from(""),
+        ]));
+        
+        // Activated stake info
+        let activated_stake_sol = vote_data.vote_account_info.activated_stake as f64 / 1e9;
+        rows.push(Row::new(vec![
+            Cell::from("Activated Stake"),
+            Cell::from(format!("{:.2} SOL", activated_stake_sol)),
+            Cell::from(""),
         ]));
     }
     
@@ -679,7 +689,7 @@ fn draw_validator_table(
     )
     .block(
         Block::default()
-            .title(validator_name)
+            .title(title)
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::DarkGray))
     );
@@ -687,87 +697,10 @@ fn draw_validator_table(
     f.render_widget(table, area);
 }
 
-fn draw_logs(f: &mut ratatui::Frame, area: Rect, ui_state: &UiState) {
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(20), // Host list
-            Constraint::Min(0),     // Log content
-        ])
-        .split(area);
-    
-    // Draw host list
-    let hosts: Vec<_> = ui_state.host_logs.keys().cloned().collect();
-    let host_items: Vec<_> = hosts.iter().enumerate()
-        .map(|(idx, host)| {
-            let selected = ui_state.selected_host.as_ref() == Some(host);
-            let style = if selected {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-            ListItem::new(format!("{}: {}", idx + 1, host)).style(style)
-        })
-        .collect();
-    
-    let host_list = List::new(host_items)
-        .block(
-            Block::default()
-                .title("Hosts")
-                .borders(Borders::ALL)
-                .border_style(if ui_state.focused_pane == FocusedPane::Logs {
-                    Style::default().fg(Color::Yellow)
-                } else {
-                    Style::default().fg(Color::DarkGray)
-                })
-        );
-    
-    f.render_widget(host_list, chunks[0]);
-    
-    // Draw log content
-    if let Some(selected_host) = &ui_state.selected_host {
-        if let Some(logs) = ui_state.host_logs.get(selected_host) {
-            let visible_height = (chunks[1].height.saturating_sub(2)) as usize;
-            let start = ui_state.log_scroll_offset;
-            let end = (start + visible_height).min(logs.len());
-            
-            let visible_logs: Vec<_> = logs[start..end].iter()
-                .map(|log| ListItem::new(log.as_str()))
-                .collect();
-            
-            let log_list = List::new(visible_logs)
-                .block(
-                    Block::default()
-                        .title(format!("Logs: {} [{}/{}]", selected_host, start + 1, logs.len()))
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::DarkGray))
-                );
-            
-            f.render_widget(log_list, chunks[1]);
-        }
-    } else {
-        let help = Paragraph::new("Select a host from the list (press 1-9)")
-            .block(
-                Block::default()
-                    .title("Logs")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::DarkGray))
-            )
-            .alignment(Alignment::Center);
-        
-        f.render_widget(help, chunks[1]);
-    }
-}
+// Removed draw_logs function as logs are no longer displayed
 
-fn draw_footer(f: &mut ratatui::Frame, area: Rect, ui_state: &UiState) {
-    let help_text = match ui_state.focused_pane {
-        FocusedPane::Summary => {
-            "Tab: Switch to logs | q/Esc: Quit"
-        }
-        FocusedPane::Logs => {
-            "Tab: Switch to summary | ↑↓: Scroll | PgUp/PgDn: Page | 1-9: Select host | q/Esc: Quit"
-        }
-    };
+fn draw_footer(f: &mut ratatui::Frame, area: Rect, _ui_state: &UiState) {
+    let help_text = "q/Esc: Quit | Ctrl+C: Exit | Auto-refresh: 5s";
     
     let footer = Paragraph::new(help_text)
         .style(Style::default().fg(Color::DarkGray))

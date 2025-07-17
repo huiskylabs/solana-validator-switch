@@ -424,24 +424,9 @@ fn draw_ui(f: &mut ratatui::Frame, ui_state: &UiState, app_state: &AppState) {
     draw_footer(f, chunks[2], ui_state);
 }
 
-fn draw_header(f: &mut ratatui::Frame, area: Rect, ui_state: &UiState) {
-    let current_time = chrono::Local::now().format("%H:%M:%S").to_string();
-    
-    let header_text = if ui_state.is_refreshing {
-        format!("📋 Enhanced Validator Status - {} 🔄", current_time)
-    } else {
-        format!("📋 Enhanced Validator Status - {}", current_time)
-    };
-    
-    let header = Paragraph::new(vec![
-        Line::from(vec![Span::styled(
-            header_text,
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-        )]),
-        Line::from("─".repeat(area.width as usize)),
-    ])
-    .alignment(Alignment::Left);
-    
+fn draw_header(f: &mut ratatui::Frame, area: Rect, _ui_state: &UiState) {
+    // Just leave empty - header will be in the table border
+    let header = Paragraph::new("");
     f.render_widget(header, area);
 }
 
@@ -471,38 +456,18 @@ fn draw_validator_table(
     previous_last_slot: Option<u64>,
     increment_time: Option<Instant>,
 ) {
-    let validator_name = validator_status.metadata.as_ref()
-        .and_then(|m| m.name.as_ref())
-        .cloned()
-        .unwrap_or_else(|| validator_status.validator_pair.vote_pubkey.chars().take(8).collect::<String>() + "...");
-    
-    // Include metadata info in title if available
-    let mut title = validator_name.clone();
-    if let Some(metadata) = &validator_status.metadata {
-        if let Some(details) = &metadata.details {
-            title.push_str(&format!(" - {}", details));
-        }
-    }
-    
-    let mut rows = vec![];
-    
-    // Vote and Identity pubkeys row - format as ascd...edsas
     let vote_key = &validator_status.validator_pair.vote_pubkey;
-    let identity_key = &validator_status.validator_pair.identity_pubkey;
     let vote_formatted = format!("{}…{}", 
         vote_key.chars().take(4).collect::<String>(), 
         vote_key.chars().rev().take(4).collect::<String>().chars().rev().collect::<String>()
     );
-    let identity_formatted = format!("{}…{}", 
-        identity_key.chars().take(4).collect::<String>(),
-        identity_key.chars().rev().take(4).collect::<String>().chars().rev().collect::<String>()
-    );
     
-    rows.push(Row::new(vec![
-        Cell::from("Vote/Identity"),
-        Cell::from(format!("{} / {}", vote_formatted, identity_formatted)),
-        Cell::from("-"),
-    ]));
+    let validator_name = validator_status.metadata.as_ref()
+        .and_then(|m| m.name.as_ref())
+        .cloned()
+        .unwrap_or_else(|| vote_formatted);
+    
+    let mut rows = vec![];
     
     // Node status row with host and status
     if validator_status.nodes_with_status.len() >= 2 {
@@ -514,7 +479,7 @@ fn draw_validator_table(
             Cell::from("Status"),
             Cell::from(format!("{} ({})", 
                 match node_0.status {
-                    crate::types::NodeStatus::Active => "🟪 ACTIVE",
+                    crate::types::NodeStatus::Active => "🟢 ACTIVE",
                     crate::types::NodeStatus::Standby => "🟡 STANDBY",
                     crate::types::NodeStatus::Unknown => "🔴 UNKNOWN",
                 },
@@ -526,7 +491,7 @@ fn draw_validator_table(
             })),
             Cell::from(format!("{} ({})",
                 match node_1.status {
-                    crate::types::NodeStatus::Active => "🟪 ACTIVE",
+                    crate::types::NodeStatus::Active => "🟢 ACTIVE",
                     crate::types::NodeStatus::Standby => "🟡 STANDBY",
                     crate::types::NodeStatus::Unknown => "🔴 UNKNOWN",
                 },
@@ -548,24 +513,38 @@ fn draw_validator_table(
         // Validator type and version row
         rows.push(Row::new(vec![
             Cell::from("Type/Version"),
-            Cell::from(format!("{} {}", 
-                match node_0.validator_type {
-                    crate::types::ValidatorType::Firedancer => "Firedancer",
-                    crate::types::ValidatorType::Agave => "Agave",
-                    crate::types::ValidatorType::Jito => "Jito",
-                    crate::types::ValidatorType::Unknown => "Unknown",
-                },
-                node_0.version.as_deref().unwrap_or("")
-            )),
-            Cell::from(format!("{} {}",
-                match node_1.validator_type {
-                    crate::types::ValidatorType::Firedancer => "Firedancer",
-                    crate::types::ValidatorType::Agave => "Agave",
-                    crate::types::ValidatorType::Jito => "Jito",
-                    crate::types::ValidatorType::Unknown => "Unknown",
-                },
-                node_1.version.as_deref().unwrap_or("")
-            )),
+            Cell::from({
+                let version = node_0.version.as_deref().unwrap_or("");
+                let cleaned_version = version
+                    .replace("Firedancer ", "")
+                    .replace("Agave ", "")
+                    .replace("Jito ", "");
+                format!("{} {}", 
+                    match node_0.validator_type {
+                        crate::types::ValidatorType::Firedancer => "Firedancer",
+                        crate::types::ValidatorType::Agave => "Agave",
+                        crate::types::ValidatorType::Jito => "Jito",
+                        crate::types::ValidatorType::Unknown => "Unknown",
+                    },
+                    cleaned_version
+                )
+            }),
+            Cell::from({
+                let version = node_1.version.as_deref().unwrap_or("");
+                let cleaned_version = version
+                    .replace("Firedancer ", "")
+                    .replace("Agave ", "")
+                    .replace("Jito ", "");
+                format!("{} {}",
+                    match node_1.validator_type {
+                        crate::types::ValidatorType::Firedancer => "Firedancer",
+                        crate::types::ValidatorType::Agave => "Agave",
+                        crate::types::ValidatorType::Jito => "Jito",
+                        crate::types::ValidatorType::Unknown => "Unknown",
+                    },
+                    cleaned_version
+                )
+            }),
         ]));
         
         // Identity row - format as ascd...edsas
@@ -709,21 +688,6 @@ fn draw_validator_table(
             }
         }
         
-        // Vote count and stake info - show for active validator
-        if validator_status.nodes_with_status.len() >= 2 {
-            let node_0 = &validator_status.nodes_with_status[0];
-            let node_1 = &validator_status.nodes_with_status[1];
-            
-            let vote_info = format!("{} votes / {}%", vote_data.recent_votes.len(), vote_data.vote_account_info.commission);
-            let activated_stake_sol = vote_data.vote_account_info.activated_stake as f64 / 1e9;
-            let stake_info = format!("{:.2} SOL", activated_stake_sol);
-            
-            rows.push(Row::new(vec![
-                Cell::from("Votes/Stake"),
-                Cell::from(if node_0.status == crate::types::NodeStatus::Active { format!("{} / {}", vote_info, stake_info) } else { "-".to_string() }),
-                Cell::from(if node_1.status == crate::types::NodeStatus::Active { format!("{} / {}", vote_info, stake_info) } else { "-".to_string() }),
-            ]));
-        }
     }
     
     let table = Table::new(
@@ -736,7 +700,11 @@ fn draw_validator_table(
     )
     .block(
         Block::default()
-            .title(title)
+            .title(format!("{} | Validator Status - {}", 
+                validator_name,
+                chrono::Local::now().format("%H:%M:%S")
+            ))
+            .title_alignment(Alignment::Center)
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::DarkGray))
     );

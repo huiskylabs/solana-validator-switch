@@ -138,7 +138,8 @@ impl AsyncSshPool {
         // Check if command needs shell features (pipes, redirections, etc.)
         let needs_shell = command.contains('|') || command.contains('>') || command.contains('<') 
             || command.contains('&') || command.contains(';') || command.contains('$')
-            || command.contains('`') || command.contains("||") || command.contains("&&");
+            || command.contains('`') || command.contains("||") || command.contains("&&")
+            || command.contains("2>&1");
         
         let output = if needs_shell {
             // Use bash -c with proper argument handling for shell features
@@ -158,14 +159,23 @@ impl AsyncSshPool {
                 .map_err(|e| anyhow!("Failed to execute command: {}", e))?
         };
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if !stderr.is_empty() {
-                return Err(anyhow!("Command failed: {}", stderr));
-            }
+        // For commands with 2>&1, stderr is redirected to stdout, so we should always return stdout
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        
+        // If we have stdout content, return it even if the command "failed"
+        // This is important for commands like catchup that might return non-zero exit codes
+        if !stdout.is_empty() {
+            return Ok(stdout);
         }
-
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        
+        // If no stdout but there's stderr, and command failed, return error
+        if !output.status.success() && !stderr.is_empty() {
+            return Err(anyhow!("Command failed: {}", stderr));
+        }
+        
+        // Otherwise return empty string
+        Ok(String::new())
     }
 
     /// Execute a command with early exit based on output
@@ -184,7 +194,8 @@ impl AsyncSshPool {
         // Check if command needs shell features
         let needs_shell = command.contains('|') || command.contains('>') || command.contains('<') 
             || command.contains('&') || command.contains(';') || command.contains('$')
-            || command.contains('`') || command.contains("||") || command.contains("&&");
+            || command.contains('`') || command.contains("||") || command.contains("&&")
+            || command.contains("2>&1");
         
         let mut child = if needs_shell {
             session
@@ -247,7 +258,8 @@ impl AsyncSshPool {
         // Check if command needs shell features
         let needs_shell = command.contains('|') || command.contains('>') || command.contains('<') 
             || command.contains('&') || command.contains(';') || command.contains('$')
-            || command.contains('`') || command.contains("||") || command.contains("&&");
+            || command.contains('`') || command.contains("||") || command.contains("&&")
+            || command.contains("2>&1");
         
         let mut child = if needs_shell {
             session
@@ -335,7 +347,8 @@ impl AsyncSshPool {
         // Check if command needs shell features
         let needs_shell = command.contains('|') || command.contains('>') || command.contains('<') 
             || command.contains('&') || command.contains(';') || command.contains('$')
-            || command.contains('`') || command.contains("||") || command.contains("&&");
+            || command.contains('`') || command.contains("||") || command.contains("&&")
+            || command.contains("2>&1");
         
         let shell_command = if needs_shell {
             format!("bash -c '{}'", command.replace("'", "'\\'''"))

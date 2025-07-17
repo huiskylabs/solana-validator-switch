@@ -348,14 +348,30 @@ async fn fetch_catchup_for_node(
         }
     }
     
+    // Test if we can run solana --version
+    let version_cmd = format!("{} --version 2>&1", solana_cli);
+    match ssh_pool.execute_command(&node.node, ssh_key, &version_cmd).await {
+        Ok(output) => {
+            let _ = log_sender.send(LogMessage {
+                host: node.node.host.clone(),
+                message: format!("Solana CLI version output: {}", output.trim()),
+                timestamp: Instant::now(),
+                level: LogLevel::Info,
+            });
+        }
+        Err(e) => {
+            let _ = log_sender.send(LogMessage {
+                host: node.node.host.clone(),
+                message: format!("Failed to run solana --version: {}", e),
+                timestamp: Instant::now(),
+                level: LogLevel::Error,
+            });
+        }
+    }
+    
     // Try different catchup command formats based on validator type
-    let catchup_cmd = if node.validator_type == crate::types::ValidatorType::Firedancer {
-        // For Firedancer, use --our-localhost
-        format!("{} catchup --our-localhost", solana_cli)
-    } else {
-        // For Agave/Jito, use localhost
-        format!("{} catchup localhost", solana_cli)
-    };
+    // Both Firedancer and Agave support --our-localhost
+    let catchup_cmd = format!("timeout 10 {} catchup --our-localhost 2>&1", solana_cli);
     
     let _ = log_sender.send(LogMessage {
         host: node.node.host.clone(),
@@ -364,12 +380,8 @@ async fn fetch_catchup_for_node(
         level: LogLevel::Info,
     });
     
-    match ssh_pool.execute_command_with_early_exit(
-        &node.node,
-        ssh_key,
-        &catchup_cmd,
-        |output| output.contains("0 slot(s)") || output.contains("has caught up")
-    ).await {
+    // Try executing the command without early exit to get full output
+    match ssh_pool.execute_command(&node.node, ssh_key, &catchup_cmd).await {
         Ok(output) => {
             // Log the raw output for debugging
             let _ = log_sender.send(LogMessage {
@@ -393,7 +405,16 @@ async fn fetch_catchup_for_node(
                 // If there's an error, show a cleaner message
                 "Error".to_string()
             } else if output.trim().is_empty() {
-                "No output".to_string()
+                // Try a simple test command to verify SSH is working
+                if let Ok(test_output) = ssh_pool.execute_command(&node.node, ssh_key, "echo 'test'").await {
+                    if test_output.contains("test") {
+                        "No catchup output".to_string()
+                    } else {
+                        "SSH issue".to_string()
+                    }
+                } else {
+                    "SSH error".to_string()
+                }
             } else {
                 // For debugging: show first 50 chars of output
                 let debug_msg = output.trim().chars().take(50).collect::<String>();
@@ -440,16 +461,11 @@ pub async fn run_enhanced_ui(app: &mut EnhancedStatusApp) -> Result<()> {
     // Spawn background tasks
     app.spawn_background_tasks();
     
-    // Process log messages in background - temporarily print to stderr for debugging
+    // Process log messages in background (keeping for internal use but not displaying)
     let mut log_receiver = app.log_sender.subscribe();
     tokio::spawn(async move {
-        while let Ok(log_msg) = log_receiver.recv().await {
-            // Temporarily print to stderr for debugging
-            eprintln!("[{}] {}: {}", 
-                chrono::Local::now().format("%H:%M:%S"),
-                log_msg.host, 
-                log_msg.message
-            );
+        while let Ok(_log_msg) = log_receiver.recv().await {
+            // Messages are received but not stored for UI display
         }
     });
     
@@ -564,6 +580,12 @@ fn draw_validator_table(
     let vote_formatted = format!("{}…{}", 
         vote_key.chars().take(4).collect::<String>(), 
         vote_key.chars().rev().take(4).collect::<String>().chars().rev().collect::<String>()
+    );
+    
+    let identity_key = &validator_status.validator_pair.identity_pubkey;
+    let identity_formatted = format!("{}…{}", 
+        identity_key.chars().take(4).collect::<String>(), 
+        identity_key.chars().rev().take(4).collect::<String>().chars().rev().collect::<String>()
     );
     
     let _validator_name = validator_status.metadata.as_ref()
@@ -819,8 +841,28 @@ fn draw_validator_table(
                 
                 rows.push(Row::new(vec![
                     Cell::from("Last Vote"),
-                    Cell::from(if node_0.status == crate::types::NodeStatus::Active { slot_display.clone() } else { "-".to_string() }),
-                    Cell::from(if node_1.status == crate::types::NodeStatus::Active { slot_display } else { "-".to_string() }),
+                    Cell::from(if node_0.status == crate::types::NodeStatus::Active { 
+                        slot_display.clone() 
+                    } else { 
+                        "-".to_string() 
+                    }).style(
+                        if node_0.status == crate::types::NodeStatus::Active && increment_time.map(|t| t.elapsed().as_secs() < 3).unwrap_or(false) {
+                            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default()
+                        }
+                    ),
+                    Cell::from(if node_1.status == crate::types::NodeStatus::Active { 
+                        slot_display 
+                    } else { 
+                        "-".to_string() 
+                    }).style(
+                        if node_1.status == crate::types::NodeStatus::Active && increment_time.map(|t| t.elapsed().as_secs() < 3).unwrap_or(false) {
+                            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default()
+                        }
+                    ),
                 ]));
             }
         }
@@ -837,7 +879,8 @@ fn draw_validator_table(
     )
     .block(
         Block::default()
-            .title(format!("Vote: {} | Time: {}", 
+            .title(format!("Identity: {} | Vote: {} | Time: {}", 
+                identity_formatted,
                 vote_formatted,
                 chrono::Local::now().format("%H:%M:%S")
             ))

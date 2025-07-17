@@ -550,16 +550,15 @@ impl SwitchManager {
             };
             spinner.stop_with_message("");
 
-            let write_cmd = format!("base64 -d > {}", dest_path);
             let spinner = ProgressSpinner::new("Transferring tower file...");
             let ssh_key_standby = self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
             {
                 let pool = self.ssh_pool.clone();
                 match pool
-                    .execute_command_with_input(
+                    .transfer_base64_to_file(
                         &self.standby_node_with_status.node,
                         &ssh_key_standby,
-                        &write_cmd,
+                        &dest_path,
                         &data,
                     )
                     .await

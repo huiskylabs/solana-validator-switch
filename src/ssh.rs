@@ -421,6 +421,74 @@ impl AsyncSshPool {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
+    /// Optimized tower transfer using base64 -d streaming + dd
+    pub async fn transfer_base64_to_file(
+        &self,
+        node: &NodeConfig,
+        ssh_key_path: &str,
+        remote_path: &str,
+        base64_data: &str,
+    ) -> Result<()> {
+        let session = self.get_session(node, ssh_key_path).await?;
+        
+        // Start base64 -d on remote, writing to stdout
+        let mut base64_child = session
+            .command("base64")
+            .arg("-d")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .await
+            .map_err(|e| anyhow!("Failed to spawn base64 command: {}", e))?;
+
+        // Pipe input data
+        if let Some(mut stdin) = base64_child.stdin().take() {
+            use tokio::io::AsyncWriteExt;
+            stdin.write_all(base64_data.as_bytes()).await?;
+            stdin.flush().await?;
+            drop(stdin); // Close pipe
+        }
+
+        // Read decoded output
+        let mut stdout = base64_child.stdout().take().ok_or_else(|| anyhow!("Failed to get stdout"))?;
+        let mut decoded = Vec::new();
+        tokio::io::copy(&mut stdout, &mut decoded).await?;
+
+        // Wait for base64 command to complete
+        let status = base64_child.wait().await?;
+        if !status.success() {
+            return Err(anyhow!("base64 -d command failed"));
+        }
+
+        // Now send this decoded content to a remote file using dd
+        let mut dd_child = session
+            .command("dd")
+            .arg(format!("of={}", remote_path))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .await
+            .map_err(|e| anyhow!("Failed to spawn dd command: {}", e))?;
+
+        // Write decoded content to dd stdin
+        if let Some(mut dd_stdin) = dd_child.stdin().take() {
+            use tokio::io::AsyncWriteExt;
+            dd_stdin.write_all(&decoded).await?;
+            dd_stdin.flush().await?;
+            drop(dd_stdin);
+        }
+
+        // Wait for dd command to complete
+        let dd_status = dd_child.wait().await?;
+        if !dd_status.success() {
+            return Err(anyhow!("dd command failed"));
+        }
+
+        Ok(())
+    }
+
     /// Copy a file to remote host
     pub async fn copy_file_to_remote(
         &self,

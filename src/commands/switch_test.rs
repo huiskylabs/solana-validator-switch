@@ -274,7 +274,7 @@ mod tests {
         
         let history = ssh_pool_arc.lock().unwrap().command_history.lock().unwrap().clone();
         assert!(history.iter().any(|(_, cmd)| cmd.contains("base64 /mnt/solana_ledger/tower-1_9-12345.bin")));
-        assert!(history.iter().any(|(_, cmd)| cmd.contains("base64 -d > /mnt/solana_ledger/tower-1_9-12345.bin")));
+        // Note: The new optimized approach uses transfer_base64_to_file which doesn't use shell redirection
     }
     
     #[tokio::test]

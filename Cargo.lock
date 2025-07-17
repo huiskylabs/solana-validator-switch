@@ -4621,6 +4621,7 @@ dependencies = [
  "openssh",
  "openssh-sftp-client",
  "openssl",
+ "openssl-sys",
  "ratatui",
  "reqwest",
  "serde",

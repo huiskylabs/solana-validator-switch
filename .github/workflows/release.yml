@@ -61,18 +61,15 @@ jobs:
           tool: cross
       
       
-      - name: Set up OpenSSL environment
-        if: matrix.cross
-        run: |
-          echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
-          echo "OPENSSL_VENDORED=1" >> $GITHUB_ENV
-
       - name: Build (native)
         if: '!matrix.cross'
         run: cargo build --release --target ${{ matrix.target }}
       
       - name: Build (cross)
         if: matrix.cross
+        env:
+          OPENSSL_STATIC: 1
+          OPENSSL_VENDORED: 1
         run: cross build --release --target ${{ matrix.target }}
       
       - name: Prepare artifacts (Unix)

@@ -898,7 +898,7 @@ async fn get_jito_agave_version(
 
     // Fallback to standard commands
     if let Ok(version_output) = pool
-        .execute_command(node, ssh_key_path, "agave-validator --version")
+        .execute_command_with_args(node, ssh_key_path, "agave-validator", &["--version"])
         .await
     {
         if let Some(version_line) = version_output.lines().next() {
@@ -911,7 +911,7 @@ async fn get_jito_agave_version(
 
     // Final fallback
     if let Ok(version_output) = pool
-        .execute_command(node, ssh_key_path, "solana-validator --version")
+        .execute_command_with_args(node, ssh_key_path, "solana-validator", &["--version"])
         .await
     {
         if let Some(version_line) = version_output.lines().next() {

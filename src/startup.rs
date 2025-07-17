@@ -748,8 +748,9 @@ async fn verify_keypair_files(
 
     for (path, description) in keypairs {
         // Check if file exists
+        let test_f_args = vec!["-f", path];
         if let Err(_) = ssh_pool
-            .execute_command(node, ssh_key_path, &format!("test -f '{}'", path))
+            .execute_command_with_args(node, ssh_key_path, "test", &test_f_args)
             .await
         {
             issues.push(format!("{} missing: {}", description, path));
@@ -757,8 +758,9 @@ async fn verify_keypair_files(
         }
 
         // Check if file is readable
+        let test_r_args = vec!["-r", path];
         if let Err(_) = ssh_pool
-            .execute_command(node, ssh_key_path, &format!("test -r '{}'", path))
+            .execute_command_with_args(node, ssh_key_path, "test", &test_r_args)
             .await
         {
             issues.push(format!("{} not readable: {}", description, path));

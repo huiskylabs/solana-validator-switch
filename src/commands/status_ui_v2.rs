@@ -267,13 +267,102 @@ async fn fetch_catchup_for_node(
     ssh_key: &str,
     log_sender: &tokio::sync::broadcast::Sender<LogMessage>,
 ) -> Option<CatchupStatus> {
-    let solana_cli = node.solana_cli_executable.as_ref()
-        .or(node.agave_validator_executable.as_ref()
-            .map(|path| path.replace("agave-validator", "solana"))
-            .as_ref())
-        .cloned()?;
+    // Log the executable paths for debugging
+    let _ = log_sender.send(LogMessage {
+        host: node.node.host.clone(),
+        message: format!("Executables - Solana CLI: {:?}, Agave: {:?}, Fdctl: {:?}",
+            node.solana_cli_executable,
+            node.agave_validator_executable,
+            node.fdctl_executable
+        ),
+        timestamp: Instant::now(),
+        level: LogLevel::Info,
+    });
     
-    let catchup_cmd = format!("{} catchup localhost", solana_cli);
+    let solana_cli = if let Some(cli) = node.solana_cli_executable.as_ref() {
+        cli.clone()
+    } else if let Some(validator) = node.agave_validator_executable.as_ref() {
+        // Try to derive solana CLI path from agave-validator path
+        let derived = validator.replace("agave-validator", "solana");
+        let _ = log_sender.send(LogMessage {
+            host: node.node.host.clone(),
+            message: format!("Deriving solana CLI from agave-validator: {} -> {}", validator, derived),
+            timestamp: Instant::now(),
+            level: LogLevel::Info,
+        });
+        derived
+    } else if node.validator_type == crate::types::ValidatorType::Firedancer {
+        // For Firedancer, try to use fdctl to get status instead
+        if let Some(fdctl) = node.fdctl_executable.as_ref() {
+            // Use fdctl status instead of solana catchup for Firedancer
+            let status_cmd = format!("{} status", fdctl);
+            match ssh_pool.execute_command(&node.node, ssh_key, &status_cmd).await {
+                Ok(output) => {
+                    let status = if output.contains("running") {
+                        "Caught up".to_string()
+                    } else {
+                        "Unknown".to_string()
+                    };
+                    return Some(CatchupStatus {
+                        status,
+                        last_updated: Instant::now(),
+                    });
+                }
+                Err(_) => return None,
+            }
+        }
+        return None;
+    } else {
+        // Log that we couldn't find solana CLI
+        let _ = log_sender.send(LogMessage {
+            host: node.node.host.clone(),
+            message: "Cannot find solana CLI executable".to_string(),
+            timestamp: Instant::now(),
+            level: LogLevel::Error,
+        });
+        return None;
+    };
+    
+    // First check if the solana CLI exists
+    let check_cmd = format!("test -f {} && echo 'exists' || echo 'not found'", solana_cli);
+    match ssh_pool.execute_command(&node.node, ssh_key, &check_cmd).await {
+        Ok(output) => {
+            if !output.contains("exists") {
+                let _ = log_sender.send(LogMessage {
+                    host: node.node.host.clone(),
+                    message: format!("Solana CLI not found at: {}", solana_cli),
+                    timestamp: Instant::now(),
+                    level: LogLevel::Error,
+                });
+                return Some(CatchupStatus {
+                    status: "CLI not found".to_string(),
+                    last_updated: Instant::now(),
+                });
+            }
+        }
+        Err(_) => {
+            return Some(CatchupStatus {
+                status: "Error".to_string(),
+                last_updated: Instant::now(),
+            });
+        }
+    }
+    
+    // Try different catchup command formats based on validator type
+    let catchup_cmd = if node.validator_type == crate::types::ValidatorType::Firedancer {
+        // For Firedancer, use --our-localhost
+        format!("{} catchup --our-localhost", solana_cli)
+    } else {
+        // For Agave/Jito, use localhost
+        format!("{} catchup localhost", solana_cli)
+    };
+    
+    let _ = log_sender.send(LogMessage {
+        host: node.node.host.clone(),
+        message: format!("Executing catchup command: {}", catchup_cmd),
+        timestamp: Instant::now(),
+        level: LogLevel::Info,
+    });
     
     match ssh_pool.execute_command_with_early_exit(
         &node.node,
@@ -282,6 +371,14 @@ async fn fetch_catchup_for_node(
         |output| output.contains("0 slot(s)") || output.contains("has caught up")
     ).await {
         Ok(output) => {
+            // Log the raw output for debugging
+            let _ = log_sender.send(LogMessage {
+                host: node.node.host.clone(),
+                message: format!("Catchup raw output: {}", output.chars().take(200).collect::<String>()),
+                timestamp: Instant::now(),
+                level: LogLevel::Info,
+            });
+            
             let status = if output.contains("0 slot(s)") || output.contains("has caught up") {
                 "Caught up".to_string()
             } else if let Some(pos) = output.find(" slot(s) behind") {
@@ -296,10 +393,11 @@ async fn fetch_catchup_for_node(
                 // If there's an error, show a cleaner message
                 "Error".to_string()
             } else if output.trim().is_empty() {
-                "Checking...".to_string()
+                "No output".to_string()
             } else {
-                // Show "Checking..." instead of raw output
-                "Checking...".to_string()
+                // For debugging: show first 50 chars of output
+                let debug_msg = output.trim().chars().take(50).collect::<String>();
+                format!("Unknown: {}", debug_msg)
             };
             
             let _ = log_sender.send(LogMessage {
@@ -342,11 +440,16 @@ pub async fn run_enhanced_ui(app: &mut EnhancedStatusApp) -> Result<()> {
     // Spawn background tasks
     app.spawn_background_tasks();
     
-    // Process log messages in background (keeping for internal use but not displaying)
+    // Process log messages in background - temporarily print to stderr for debugging
     let mut log_receiver = app.log_sender.subscribe();
     tokio::spawn(async move {
-        while let Ok(_log_msg) = log_receiver.recv().await {
-            // Messages are received but not stored for UI display
+        while let Ok(log_msg) = log_receiver.recv().await {
+            // Temporarily print to stderr for debugging
+            eprintln!("[{}] {}: {}", 
+                chrono::Local::now().format("%H:%M:%S"),
+                log_msg.host, 
+                log_msg.message
+            );
         }
     });
     
@@ -600,6 +703,31 @@ fn draw_validator_table(
                     .split('/').last().unwrap_or("N/A")),
                 Cell::from(node_1.ledger_path.as_deref().unwrap_or("N/A")
                     .split('/').last().unwrap_or("N/A")),
+            ]));
+        }
+        
+        // Executable paths
+        if node_0.solana_cli_executable.is_some() || node_1.solana_cli_executable.is_some() {
+            rows.push(Row::new(vec![
+                Cell::from("Solana CLI"),
+                Cell::from(node_0.solana_cli_executable.as_deref().unwrap_or("N/A")),
+                Cell::from(node_1.solana_cli_executable.as_deref().unwrap_or("N/A")),
+            ]));
+        }
+        
+        if node_0.fdctl_executable.is_some() || node_1.fdctl_executable.is_some() {
+            rows.push(Row::new(vec![
+                Cell::from("Fdctl Path"),
+                Cell::from(node_0.fdctl_executable.as_deref().unwrap_or("N/A")),
+                Cell::from(node_1.fdctl_executable.as_deref().unwrap_or("N/A")),
+            ]));
+        }
+        
+        if node_0.agave_validator_executable.is_some() || node_1.agave_validator_executable.is_some() {
+            rows.push(Row::new(vec![
+                Cell::from("Agave Path"),
+                Cell::from(node_0.agave_validator_executable.as_deref().unwrap_or("N/A")),
+                Cell::from(node_1.agave_validator_executable.as_deref().unwrap_or("N/A")),
             ]));
         }
     }

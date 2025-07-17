@@ -2,9 +2,9 @@ use anyhow::Result;
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style, Stylize},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, BorderType, Cell, Paragraph, Row, Table},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table},
     Terminal,
 };
 use std::io;
@@ -436,12 +436,11 @@ fn draw_header(f: &mut ratatui::Frame, area: Rect, ui_state: &UiState) {
     let header = Paragraph::new(vec![
         Line::from(vec![Span::styled(
             header_text,
-            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
         )]),
-        Line::from("═".repeat(area.width as usize)),
+        Line::from("─".repeat(area.width as usize)),
     ])
-    .alignment(Alignment::Left)
-    .style(Style::default().fg(Color::Green));
+    .alignment(Alignment::Left);
     
     f.render_widget(header, area);
 }
@@ -487,13 +486,21 @@ fn draw_validator_table(
     
     let mut rows = vec![];
     
-    // Vote and Identity pubkeys row
+    // Vote and Identity pubkeys row - format as ascd...edsas
+    let vote_key = &validator_status.validator_pair.vote_pubkey;
+    let identity_key = &validator_status.validator_pair.identity_pubkey;
+    let vote_formatted = format!("{}…{}", 
+        vote_key.chars().take(4).collect::<String>(), 
+        vote_key.chars().rev().take(4).collect::<String>().chars().rev().collect::<String>()
+    );
+    let identity_formatted = format!("{}…{}", 
+        identity_key.chars().take(4).collect::<String>(),
+        identity_key.chars().rev().take(4).collect::<String>().chars().rev().collect::<String>()
+    );
+    
     rows.push(Row::new(vec![
         Cell::from("Vote/Identity"),
-        Cell::from(format!("{} / {}", 
-            validator_status.validator_pair.vote_pubkey.chars().take(6).collect::<String>() + "...",
-            validator_status.validator_pair.identity_pubkey.chars().take(6).collect::<String>() + "..."
-        )),
+        Cell::from(format!("{} / {}", vote_formatted, identity_formatted)),
         Cell::from("-"),
     ]));
     
@@ -504,43 +511,43 @@ fn draw_validator_table(
         
         // Status row
         rows.push(Row::new(vec![
-            Cell::from("Status").style(Style::default().fg(Color::Green).add_modifier(Modifier::DIM)),
-            Cell::from(format!("[{}] {}", 
+            Cell::from("Status"),
+            Cell::from(format!("{} ({})", 
                 match node_0.status {
-                    crate::types::NodeStatus::Active => "ACTIVE",
-                    crate::types::NodeStatus::Standby => "STANDBY",
-                    crate::types::NodeStatus::Unknown => "UNKNOWN",
+                    crate::types::NodeStatus::Active => "🟪 ACTIVE",
+                    crate::types::NodeStatus::Standby => "🟡 STANDBY",
+                    crate::types::NodeStatus::Unknown => "🔴 UNKNOWN",
                 },
                 node_0.node.label
             )).style(Style::default().fg(match node_0.status {
                 crate::types::NodeStatus::Active => Color::Green,
-                crate::types::NodeStatus::Standby => Color::DarkGray,
+                crate::types::NodeStatus::Standby => Color::Yellow,
                 crate::types::NodeStatus::Unknown => Color::Red,
-            }).add_modifier(if node_0.status == crate::types::NodeStatus::Active { Modifier::BOLD } else { Modifier::empty() })),
-            Cell::from(format!("[{}] {}",
+            })),
+            Cell::from(format!("{} ({})",
                 match node_1.status {
-                    crate::types::NodeStatus::Active => "ACTIVE",
-                    crate::types::NodeStatus::Standby => "STANDBY",
-                    crate::types::NodeStatus::Unknown => "UNKNOWN",
+                    crate::types::NodeStatus::Active => "🟪 ACTIVE",
+                    crate::types::NodeStatus::Standby => "🟡 STANDBY",
+                    crate::types::NodeStatus::Unknown => "🔴 UNKNOWN",
                 },
                 node_1.node.label
             )).style(Style::default().fg(match node_1.status {
                 crate::types::NodeStatus::Active => Color::Green,
-                crate::types::NodeStatus::Standby => Color::DarkGray,
+                crate::types::NodeStatus::Standby => Color::Yellow,
                 crate::types::NodeStatus::Unknown => Color::Red,
-            }).add_modifier(if node_1.status == crate::types::NodeStatus::Active { Modifier::BOLD } else { Modifier::empty() })),
+            })),
         ]));
         
         // Host info row
         rows.push(Row::new(vec![
-            Cell::from("Host").style(Style::default().fg(Color::Green).add_modifier(Modifier::DIM)),
-            Cell::from(node_0.node.host.as_str()).style(Style::default().fg(Color::Green)),
-            Cell::from(node_1.node.host.as_str()).style(Style::default().fg(Color::Green)),
+            Cell::from("Host"),
+            Cell::from(node_0.node.host.as_str()),
+            Cell::from(node_1.node.host.as_str()),
         ]));
         
         // Validator type and version row
         rows.push(Row::new(vec![
-            Cell::from("Type/Version").style(Style::default().fg(Color::Green).add_modifier(Modifier::DIM)),
+            Cell::from("Type/Version"),
             Cell::from(format!("{} {}", 
                 match node_0.validator_type {
                     crate::types::ValidatorType::Firedancer => "Firedancer",
@@ -549,7 +556,7 @@ fn draw_validator_table(
                     crate::types::ValidatorType::Unknown => "Unknown",
                 },
                 node_0.version.as_deref().unwrap_or("")
-            )).style(Style::default().fg(Color::Green)),
+            )),
             Cell::from(format!("{} {}",
                 match node_1.validator_type {
                     crate::types::ValidatorType::Firedancer => "Firedancer",
@@ -558,42 +565,61 @@ fn draw_validator_table(
                     crate::types::ValidatorType::Unknown => "Unknown",
                 },
                 node_1.version.as_deref().unwrap_or("")
-            )).style(Style::default().fg(Color::Green)),
+            )),
         ]));
         
-        // Identity row
+        // Identity row - format as ascd...edsas
+        let id0 = node_0.current_identity.as_deref().unwrap_or("Unknown");
+        let id1 = node_1.current_identity.as_deref().unwrap_or("Unknown");
+        let id0_formatted = if id0 != "Unknown" && id0.len() > 8 {
+            format!("{}…{}", 
+                id0.chars().take(4).collect::<String>(),
+                id0.chars().rev().take(4).collect::<String>().chars().rev().collect::<String>()
+            )
+        } else {
+            id0.to_string()
+        };
+        let id1_formatted = if id1 != "Unknown" && id1.len() > 8 {
+            format!("{}…{}", 
+                id1.chars().take(4).collect::<String>(),
+                id1.chars().rev().take(4).collect::<String>().chars().rev().collect::<String>()
+            )
+        } else {
+            id1.to_string()
+        };
+        
         rows.push(Row::new(vec![
-            Cell::from("Identity").style(Style::default().fg(Color::Green).add_modifier(Modifier::DIM)),
-            Cell::from(node_0.current_identity.as_deref().unwrap_or("Unknown")).style(Style::default().fg(Color::Green)),
-            Cell::from(node_1.current_identity.as_deref().unwrap_or("Unknown")).style(Style::default().fg(Color::Green)),
+            Cell::from("Identity"),
+            Cell::from(id0_formatted),
+            Cell::from(id1_formatted),
         ]));
         
         // Swap readiness row
         rows.push(Row::new(vec![
-            Cell::from("Swap Ready").style(Style::default().fg(Color::Green).add_modifier(Modifier::DIM)),
-            Cell::from(if node_0.swap_ready.unwrap_or(false) { "[READY]" } else { "[NOT READY]" })
-                .style(Style::default().fg(if node_0.swap_ready.unwrap_or(false) { Color::Green } else { Color::DarkGray })),
-            Cell::from(if node_1.swap_ready.unwrap_or(false) { "[READY]" } else { "[NOT READY]" })
-                .style(Style::default().fg(if node_1.swap_ready.unwrap_or(false) { Color::Green } else { Color::DarkGray })),
+            Cell::from("Swap Ready"),
+            Cell::from(if node_0.swap_ready.unwrap_or(false) { "✅ Ready" } else { "❌ Not Ready" })
+                .style(Style::default().fg(if node_0.swap_ready.unwrap_or(false) { Color::Green } else { Color::Red })),
+            Cell::from(if node_1.swap_ready.unwrap_or(false) { "✅ Ready" } else { "❌ Not Ready" })
+                .style(Style::default().fg(if node_1.swap_ready.unwrap_or(false) { Color::Green } else { Color::Red })),
         ]));
         
         // Sync status row if available
         if node_0.sync_status.is_some() || node_1.sync_status.is_some() {
             rows.push(Row::new(vec![
-                Cell::from("Sync Status").style(Style::default().fg(Color::Green).add_modifier(Modifier::DIM)),
-                Cell::from(node_0.sync_status.as_deref().unwrap_or("N/A")).style(Style::default().fg(Color::Green)),
-                Cell::from(node_1.sync_status.as_deref().unwrap_or("N/A")).style(Style::default().fg(Color::Green)),
+                Cell::from("Sync Status"),
+                Cell::from(node_0.sync_status.as_deref().unwrap_or("N/A")),
+                Cell::from(node_1.sync_status.as_deref().unwrap_or("N/A")),
             ]));
         }
         
         // Ledger path row if available
         if node_0.ledger_path.is_some() || node_1.ledger_path.is_some() {
             rows.push(Row::new(vec![
-                Cell::from("Ledger Path").style(Style::default().fg(Color::Green).add_modifier(Modifier::DIM)),
+                Cell::from("Ledger Path"),
                 Cell::from(node_0.ledger_path.as_deref().unwrap_or("N/A")
-                    .split('/').last().unwrap_or("N/A")).style(Style::default().fg(Color::Green)),
+                    .split('/').last().unwrap_or("N/A")),
                 Cell::from(node_1.ledger_path.as_deref().unwrap_or("N/A")
-                    .split('/').last().unwrap_or("N/A")).style(Style::default().fg(Color::Green)),
+                    .split('/').last().unwrap_or("N/A")),
             ]));
         }
     }
@@ -608,12 +634,10 @@ fn draw_validator_table(
             .unwrap_or_else(|| "N/A".to_string());
         
         rows.push(Row::new(vec![
-            Cell::from("Catchup").style(Style::default().fg(Color::Green).add_modifier(Modifier::DIM)),
+            Cell::from("Catchup"),
             Cell::from(node_0_status.clone()).style(
                 if node_0_status.contains("Caught up") {
                     Style::default().fg(Color::Green)
-                } else if node_0_status == "N/A" {
-                    Style::default().fg(Color::DarkGray)
                 } else {
                     Style::default().fg(Color::Yellow)
                 }
@@ -621,8 +645,6 @@ fn draw_validator_table(
             Cell::from(node_1_status.clone()).style(
                 if node_1_status.contains("Caught up") {
                     Style::default().fg(Color::Green)
-                } else if node_1_status == "N/A" {
-                    Style::default().fg(Color::DarkGray)
                 } else {
                     Style::default().fg(Color::Yellow)
                 }
@@ -638,17 +660,17 @@ fn draw_validator_table(
             
             // Vote status row - show which node is voting
             let vote_status = if vote_data.is_voting {
-                "[VOTING]"
+                "✅ Voting"
             } else {
-                "[NOT VOTING]"
+                "⚠️ Not Voting"
             };
             
             rows.push(Row::new(vec![
-                Cell::from("Vote Status").style(Style::default().fg(Color::Green).add_modifier(Modifier::DIM)),
+                Cell::from("Vote Status"),
                 Cell::from(if node_0.status == crate::types::NodeStatus::Active { vote_status } else { "-" })
-                    .style(Style::default().fg(if node_0.status == crate::types::NodeStatus::Active && vote_data.is_voting { Color::Green } else { Color::DarkGray })),
+                    .style(Style::default().fg(if node_0.status == crate::types::NodeStatus::Active && vote_data.is_voting { Color::Green } else { Color::Yellow })),
                 Cell::from(if node_1.status == crate::types::NodeStatus::Active { vote_status } else { "-" })
-                    .style(Style::default().fg(if node_1.status == crate::types::NodeStatus::Active && vote_data.is_voting { Color::Green } else { Color::DarkGray })),
+                    .style(Style::default().fg(if node_1.status == crate::types::NodeStatus::Active && vote_data.is_voting { Color::Green } else { Color::Yellow })),
             ]));
         }
         
@@ -680,7 +702,7 @@ fn draw_validator_table(
                 );
                 
                 rows.push(Row::new(vec![
-                    Cell::from("Last Vote").style(Style::default().fg(Color::Green).add_modifier(Modifier::DIM)),
+                    Cell::from("Last Vote"),
                     Cell::from(if node_0.status == crate::types::NodeStatus::Active { slot_display.clone() } else { "-".to_string() }),
                     Cell::from(if node_1.status == crate::types::NodeStatus::Active { slot_display } else { "-".to_string() }),
                 ]));
@@ -697,7 +719,7 @@ fn draw_validator_table(
             let stake_info = format!("{:.2} SOL", activated_stake_sol);
             
             rows.push(Row::new(vec![
-                Cell::from("Votes/Stake").style(Style::default().fg(Color::Green).add_modifier(Modifier::DIM)),
+                Cell::from("Votes/Stake"),
                 Cell::from(if node_0.status == crate::types::NodeStatus::Active { format!("{} / {}", vote_info, stake_info) } else { "-".to_string() }),
                 Cell::from(if node_1.status == crate::types::NodeStatus::Active { format!("{} / {}", vote_info, stake_info) } else { "-".to_string() }),
             ]));
@@ -716,11 +738,8 @@ fn draw_validator_table(
         Block::default()
             .title(title)
             .borders(Borders::ALL)
-            .border_type(BorderType::Double)
-            .border_style(Style::default().fg(Color::Green))
-            .style(Style::default().fg(Color::Green))
-    )
-    .style(Style::default().fg(Color::Green));
+            .border_style(Style::default().fg(Color::DarkGray))
+    );
     
     f.render_widget(table, area);
 }
@@ -728,17 +747,11 @@ fn draw_validator_table(
 // Removed draw_logs function as logs are no longer displayed
 
 fn draw_footer(f: &mut ratatui::Frame, area: Rect, _ui_state: &UiState) {
-    let help_text = "[q/Esc: Quit] [Ctrl+C: Exit] [Auto-refresh: 5s]";
+    let help_text = "q/Esc: Quit | Ctrl+C: Exit | Auto-refresh: 5s";
     
     let footer = Paragraph::new(help_text)
-        .style(Style::default().fg(Color::Green))
-        .alignment(Alignment::Center)
-        .block(
-            Block::default()
-                .borders(Borders::TOP)
-                .border_type(BorderType::Double)
-                .border_style(Style::default().fg(Color::Green))
-        );
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
     
     f.render_widget(footer, area);
 }

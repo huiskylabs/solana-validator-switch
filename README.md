@@ -61,10 +61,12 @@ See [config.example.yaml](config.example.yaml) for the full configuration templa
 
 ## Key Features
 
-- **Ultra-Fast Switching**: Get the fastest switch possible with optimized operations
+- **Ultra-Fast Switching**: Get the fastest switch possible with optimized streaming operations
 - **Runtime Status Detection**: Automatic active/standby node detection using validator monitor
-- **SSH Connection Pooling**: Persistent connections for ultra-fast operations
+- **SSH Connection Pooling**: Persistent connections with multiplexing for ultra-fast operations
+- **Optimized Tower Transfer**: Streaming base64 decode + dd for minimal latency
 - **Universal Support**: Works with Firedancer, Agave, Solana, and Jito validators
+- **Interactive Dashboard**: Real-time monitoring with Ratatui-based terminal UI
 
 ## Security
 
@@ -91,13 +93,15 @@ If SVS saves you time and SOL, consider:
 ## Roadmap
 
 ### ✅ Completed
-- [x] **Ultra-fast switching** - Sub-second identity switches with optimized operations
+- [x] **Ultra-fast switching** - Sub-second identity switches with optimized streaming operations
 - [x] **Universal validator support** - Works with Firedancer, Agave, Solana, and Jito
 - [x] **Interactive CLI** - User-friendly menu system with guided workflows  
 - [x] **Dry-run mode** - Test switches without executing for safety
-- [x] **SSH connection pooling** - Persistent connections for instant commands
+- [x] **SSH connection pooling** - Persistent connections with multiplexing for instant commands
 - [x] **Auto-detect active/standby** - Runtime detection of validator states
-- [x] **Tower file transfer** - Automated tower synchronization with progress tracking
+- [x] **Optimized tower transfer** - Streaming base64 decode + dd for minimal latency
+- [x] **Interactive dashboard** - Real-time monitoring with Ratatui-based terminal UI
+- [x] **Modern async architecture** - Tokio-based async runtime with Arc<Session> efficiency
 
 ### 🚧 In Progress
 - [ ] **Continuous monitoring** - Real-time validator health monitoring with configurable alerts

@@ -211,7 +211,7 @@ impl EnhancedStatusApp {
         let log_sender = self.log_sender.clone();
         
         tokio::spawn(async move {
-            let mut interval = interval(Duration::from_secs(30));
+            let mut interval = interval(Duration::from_secs(5));
             
             loop {
                 interval.tick().await;
@@ -293,12 +293,13 @@ async fn fetch_catchup_for_node(
                     "Checking...".to_string()
                 }
             } else if output.contains("Error") || output.contains("error") {
-                // If there's an error, return N/A instead of Unknown
-                "N/A".to_string()
+                // If there's an error, show a cleaner message
+                "Error".to_string()
+            } else if output.trim().is_empty() {
+                "Checking...".to_string()
             } else {
-                // For debugging - show first part of output
-                let debug_output = output.chars().take(50).collect::<String>().replace('\n', " ");
-                format!("Unknown: {}", debug_output).to_string()
+                // Show "Checking..." instead of raw output
+                "Checking...".to_string()
             };
             
             let _ = log_sender.send(LogMessage {
@@ -462,10 +463,10 @@ fn draw_validator_table(
         vote_key.chars().rev().take(4).collect::<String>().chars().rev().collect::<String>()
     );
     
-    let validator_name = validator_status.metadata.as_ref()
+    let _validator_name = validator_status.metadata.as_ref()
         .and_then(|m| m.name.as_ref())
         .cloned()
-        .unwrap_or_else(|| vote_formatted);
+        .unwrap_or_else(|| vote_formatted.clone());
     
     let mut rows = vec![];
     
@@ -607,16 +608,20 @@ fn draw_validator_table(
     if let Some(catchup) = catchup_data {
         let node_0_status = catchup.node_0.as_ref()
             .map(|c| c.status.clone())
-            .unwrap_or_else(|| "N/A".to_string());
+            .unwrap_or_else(|| "Checking...".to_string());
         let node_1_status = catchup.node_1.as_ref()
             .map(|c| c.status.clone())
-            .unwrap_or_else(|| "N/A".to_string());
+            .unwrap_or_else(|| "Checking...".to_string());
         
         rows.push(Row::new(vec![
             Cell::from("Catchup"),
             Cell::from(node_0_status.clone()).style(
                 if node_0_status.contains("Caught up") {
                     Style::default().fg(Color::Green)
+                } else if node_0_status.contains("Error") {
+                    Style::default().fg(Color::Red)
+                } else if node_0_status.contains("Checking") {
+                    Style::default().fg(Color::DarkGray)
                 } else {
                     Style::default().fg(Color::Yellow)
                 }
@@ -624,6 +629,10 @@ fn draw_validator_table(
             Cell::from(node_1_status.clone()).style(
                 if node_1_status.contains("Caught up") {
                     Style::default().fg(Color::Green)
+                } else if node_1_status.contains("Error") {
+                    Style::default().fg(Color::Red)
+                } else if node_1_status.contains("Checking") {
+                    Style::default().fg(Color::DarkGray)
                 } else {
                     Style::default().fg(Color::Yellow)
                 }
@@ -700,8 +709,8 @@ fn draw_validator_table(
     )
     .block(
         Block::default()
-            .title(format!("{} | Validator Status - {}", 
-                validator_name,
+            .title(format!("Vote: {} | Time: {}", 
+                vote_formatted,
                 chrono::Local::now().format("%H:%M:%S")
             ))
             .title_alignment(Alignment::Center)

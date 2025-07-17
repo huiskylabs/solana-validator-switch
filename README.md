@@ -67,6 +67,7 @@ See [config.example.yaml](config.example.yaml) for the full configuration templa
 - **Optimized Tower Transfer**: Streaming base64 decode + dd for minimal latency
 - **Universal Support**: Works with Firedancer, Agave, Solana, and Jito validators
 - **Interactive Dashboard**: Real-time monitoring with Ratatui-based terminal UI
+- **Pre-commit Hooks**: Automated CI checks before commits to ensure code quality
 
 ## Security
 
@@ -110,6 +111,33 @@ If SVS saves you time and SOL, consider:
 - [ ] **Slack/Discord notifications** - Get alerts when primary node is stopped voting and when switches occur
 
 Have ideas? [Open an issue](https://github.com/huiskylabs/solana-validator-switch/issues) or contribute!
+
+## Development
+
+### Pre-commit Hooks
+
+To ensure code quality and prevent CI failures, set up pre-commit hooks:
+
+```bash
+# Install pre-commit hooks
+./setup-hooks.sh
+
+# The hook will now run automatically on every commit
+git commit -m "Your commit message"
+
+# To bypass the hook in emergencies
+git commit --no-verify -m "Emergency commit"
+
+# To run checks manually
+.githooks/pre-commit
+```
+
+The pre-commit hook runs the exact same checks as GitHub Actions CI:
+- Code formatting check (`cargo fmt -- --check`)
+- Clippy linting (`cargo clippy -- -D warnings`)
+- Tests (`cargo test --verbose`)
+- Build verification (`cargo build --verbose --release`)
+- Security audit (`cargo audit`)
 
 ## License
 

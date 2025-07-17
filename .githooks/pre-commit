@@ -4,7 +4,7 @@
 
 set -e
 
-echo "🚀 Running pre-commit checks..."
+echo "🚀 Running pre-commit checks (matching GitHub Actions CI)..."
 
 # Colors for output
 RED='\033[0;31m'
@@ -31,8 +31,10 @@ if [ ! -f "Cargo.toml" ]; then
     exit 1
 fi
 
-# 1. Check formatting
-echo "🔍 Checking code formatting..."
+echo "📋 Running the same checks as GitHub Actions CI..."
+
+# 1. Check formatting (exactly as in CI)
+echo "🔍 Check formatting..."
 if cargo fmt -- --check; then
     print_status "Code formatting is correct"
 else
@@ -41,18 +43,18 @@ else
     exit 1
 fi
 
-# 2. Run clippy (allow warnings for now, just check for errors)
-echo "🔍 Running clippy..."
-if cargo clippy; then
+# 2. Run clippy (exactly as in CI: -D warnings)
+echo "🔍 Run clippy..."
+if cargo clippy -- -D warnings; then
     print_status "Clippy checks passed"
 else
     print_error "Clippy check failed"
-    echo "Fix clippy errors before committing"
+    echo "Fix clippy warnings before committing"
     exit 1
 fi
 
-# 3. Run tests
-echo "🔍 Running tests..."
+# 3. Run tests (exactly as in CI)
+echo "🔍 Run tests..."
 if cargo test --verbose; then
     print_status "All tests passed"
 else
@@ -61,9 +63,9 @@ else
     exit 1
 fi
 
-# 4. Check if project builds
-echo "🔍 Building project..."
-if cargo build --verbose; then
+# 4. Build (exactly as in CI: --verbose --release)
+echo "🔍 Build..."
+if cargo build --verbose --release; then
     print_status "Project builds successfully"
 else
     print_error "Build failed"
@@ -71,29 +73,27 @@ else
     exit 1
 fi
 
-# 5. Run security audit (optional, but recommended)
-echo "🔍 Running security audit..."
+# 5. Run security audit (exactly as in CI)
+echo "🔍 Run security audit..."
 if command -v cargo-audit &> /dev/null; then
     if cargo audit; then
         print_status "Security audit passed"
     else
-        print_warning "Security audit found issues"
-        echo "Review security audit results"
-        # Don't fail the commit for security audit, just warn
+        print_error "Security audit found issues"
+        echo "Fix security audit issues before committing"
+        exit 1
     fi
 else
-    print_warning "cargo-audit not installed, skipping security audit"
-    echo "Install with: cargo install cargo-audit"
-fi
-
-# 6. Check for large files (> 10MB)
-echo "🔍 Checking for large files..."
-large_files=$(find . -type f -size +10M -not -path "./target/*" -not -path "./.git/*" 2>/dev/null || true)
-if [ -n "$large_files" ]; then
-    print_warning "Large files detected:"
-    echo "$large_files"
-    echo "Consider using Git LFS for large files"
+    print_warning "cargo-audit not installed, installing..."
+    cargo install cargo-audit
+    if cargo audit; then
+        print_status "Security audit passed"
+    else
+        print_error "Security audit found issues"
+        echo "Fix security audit issues before committing"
+        exit 1
+    fi
 fi
 
 print_status "All pre-commit checks passed!"
-echo "🎉 Ready to commit!"
+echo "🎉 Ready to commit! (All GitHub Actions checks will pass)"

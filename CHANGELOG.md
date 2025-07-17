@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2024-12-18
+
 ### Added
 - GitHub Actions workflow for automated releases
 - Cross-platform binary builds (Linux, macOS, Windows)
@@ -15,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optimized tower transfer with streaming base64 decode + dd
 - Enhanced SSH connection pooling with Arc<Session> efficiency
 - Modern async architecture with Tokio runtime optimizations
+- Interactive dashboard with real-time monitoring
+- Comprehensive documentation updates
 
 ### Changed
 - Simplified tower file transfer output for better readability
@@ -22,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Improved tower transfer latency from 200-500ms to 100-300ms
 - Enhanced SSH command execution with execute_command_with_args optimization
 - Updated technical documentation to reflect current implementation
+- Optimized SSH connection management with multiplexing
 
 ## [1.0.0] - 2024-XX-XX
 

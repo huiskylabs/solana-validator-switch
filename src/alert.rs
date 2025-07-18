@@ -1,5 +1,4 @@
 use anyhow::Result;
-use chrono::Local;
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Instant;
@@ -206,8 +205,6 @@ pub struct TelegramBot {
     last_update_id: Arc<RwLock<Option<i64>>>,
     log_sender:
         Option<tokio::sync::mpsc::UnboundedSender<crate::commands::status_ui_v2::LogMessage>>,
-    view_change_sender:
-        Option<tokio::sync::mpsc::UnboundedSender<crate::commands::status_ui_v2::ViewState>>,
 }
 
 impl TelegramBot {
@@ -216,7 +213,6 @@ impl TelegramBot {
             config,
             last_update_id: Arc::new(RwLock::new(None)),
             log_sender: None,
-            view_change_sender: None,
         }
     }
 
@@ -225,14 +221,6 @@ impl TelegramBot {
         log_sender: tokio::sync::mpsc::UnboundedSender<crate::commands::status_ui_v2::LogMessage>,
     ) -> Self {
         self.log_sender = Some(log_sender);
-        self
-    }
-
-    pub fn with_view_change_sender(
-        mut self,
-        sender: tokio::sync::mpsc::UnboundedSender<crate::commands::status_ui_v2::ViewState>,
-    ) -> Self {
-        self.view_change_sender = Some(sender);
         self
     }
 
@@ -313,78 +301,23 @@ impl TelegramBot {
         }
 
         match command.as_str() {
-            "/status" | "status" => {
-                // Change view to Status
-                if let Some(view_sender) = &self.view_change_sender {
-                    let _ = view_sender.send(crate::commands::status_ui_v2::ViewState::Status);
-                }
-
+            "/switch" | "switch" | "/s" | "s" => {
+                // Execute the switch directly
                 if let Some(log_sender) = &self.log_sender {
                     let _ = log_sender.send(crate::commands::status_ui_v2::LogMessage {
                         host: "telegram-bot".to_string(),
-                        message: "📋 Generating status snapshot for Telegram...".to_string(),
-                        timestamp: Instant::now(),
-                        level: crate::commands::status_ui_v2::LogLevel::Info,
-                    });
-                }
-
-                let status_text = self.format_status_snapshot(app_state).await?;
-                self.send_message(&status_text).await?;
-
-                if let Some(log_sender) = &self.log_sender {
-                    let _ = log_sender.send(crate::commands::status_ui_v2::LogMessage {
-                        host: "telegram-bot".to_string(),
-                        message: "✅ Status snapshot sent to Telegram".to_string(),
-                        timestamp: Instant::now(),
-                        level: crate::commands::status_ui_v2::LogLevel::Info,
-                    });
-                }
-            }
-            "/switch" | "switch" | "s" => {
-                // Change view to DryRunSwitch
-                if let Some(view_sender) = &self.view_change_sender {
-                    let _ =
-                        view_sender.send(crate::commands::status_ui_v2::ViewState::DryRunSwitch);
-                }
-
-                if let Some(log_sender) = &self.log_sender {
-                    let _ = log_sender.send(crate::commands::status_ui_v2::LogMessage {
-                        host: "telegram-bot".to_string(),
-                        message: "🔄 Performing dry-run switch analysis...".to_string(),
+                        message: "⚠️ Executing validator switch...".to_string(),
                         timestamp: Instant::now(),
                         level: crate::commands::status_ui_v2::LogLevel::Warning,
                     });
                 }
 
-                let switch_result = self.perform_dry_run_switch(app_state).await?;
+                let switch_result = self.perform_real_switch(app_state).await?;
                 self.send_message(&switch_result).await?;
-
-                if let Some(log_sender) = &self.log_sender {
-                    let _ = log_sender.send(crate::commands::status_ui_v2::LogMessage {
-                        host: "telegram-bot".to_string(),
-                        message:
-                            "✅ Dry-run switch results sent to Telegram (no actual changes made)"
-                                .to_string(),
-                        timestamp: Instant::now(),
-                        level: crate::commands::status_ui_v2::LogLevel::Info,
-                    });
-                }
             }
             _ => {
-                let help_text = "🤖 *Available Commands:*\n\n\
-                    `/status` - View current validator status\n\
-                    `/switch` or `s` - Perform a dry-run switch\n\n\
-                    Just type `status` or `s` for quick access!";
+                let help_text = "Use `/s` or `s` to switch validators";
                 self.send_message(help_text).await?;
-
-                if let Some(log_sender) = &self.log_sender {
-                    let _ = log_sender.send(crate::commands::status_ui_v2::LogMessage {
-                        host: "telegram-bot".to_string(),
-                        message: format!("ℹ️ Unknown command '{}' - sent help message", command),
-                        timestamp: Instant::now(),
-                        level: crate::commands::status_ui_v2::LogLevel::Info,
-                    });
-                }
             }
         }
 
@@ -415,94 +348,9 @@ impl TelegramBot {
         Ok(())
     }
 
-    async fn format_status_snapshot(&self, app_state: &Arc<AppState>) -> Result<String> {
-        let mut output = String::from("📋 *Validator Status*\n\n");
-
-        for (idx, validator_status) in app_state.validator_statuses.iter().enumerate() {
-            let validator_pair = &validator_status.validator_pair;
-
-            // Add validator header
-            if let Some(ref metadata) = validator_status.metadata {
-                if let Some(ref name) = metadata.name {
-                    output.push_str(&format!("*{}*\n", name));
-                } else {
-                    output.push_str(&format!("*Validator {}*\n", idx + 1));
-                }
-            } else {
-                output.push_str(&format!("*Validator {}*\n", idx + 1));
-            }
-
-            output.push_str(&format!("Vote: `{}`\n", validator_pair.vote_pubkey));
-            output.push_str(&format!(
-                "Identity: `{}`\n\n",
-                validator_pair.identity_pubkey
-            ));
-
-            // Format nodes in a table-like structure
-            if validator_status.nodes_with_status.len() >= 2 {
-                let node_0 = &validator_status.nodes_with_status[0];
-                let node_1 = &validator_status.nodes_with_status[1];
-
-                let status_0 = match node_0.status {
-                    crate::types::NodeStatus::Active => "🟢 ACTIVE",
-                    crate::types::NodeStatus::Standby => "🟡 STANDBY",
-                    crate::types::NodeStatus::Unknown => "⚫ UNKNOWN",
-                };
-
-                let status_1 = match node_1.status {
-                    crate::types::NodeStatus::Active => "🟢 ACTIVE",
-                    crate::types::NodeStatus::Standby => "🟡 STANDBY",
-                    crate::types::NodeStatus::Unknown => "⚫ UNKNOWN",
-                };
-
-                output.push_str("```\n");
-                output.push_str(&format!(
-                    "{:<20} {:<20}\n",
-                    format!("{} ({})", node_0.node.label, status_0),
-                    format!("{} ({})", node_1.node.label, status_1)
-                ));
-                output.push_str(&format!("{:<20} {:<20}\n", "─".repeat(19), "─".repeat(19)));
-                output.push_str(&format!(
-                    "Host: {:<14} Host: {:<14}\n",
-                    node_0.node.host, node_1.node.host
-                ));
-
-                // Add validator type
-                let type_str_0 = match &node_0.validator_type {
-                    crate::types::ValidatorType::Agave => "Agave",
-                    crate::types::ValidatorType::Jito => "Jito",
-                    crate::types::ValidatorType::Firedancer => "Firedancer",
-                    crate::types::ValidatorType::Unknown => "Unknown",
-                };
-                let type_str_1 = match &node_1.validator_type {
-                    crate::types::ValidatorType::Agave => "Agave",
-                    crate::types::ValidatorType::Jito => "Jito",
-                    crate::types::ValidatorType::Firedancer => "Firedancer",
-                    crate::types::ValidatorType::Unknown => "Unknown",
-                };
-                output.push_str(&format!(
-                    "Type: {:<14} Type: {:<14}\n",
-                    type_str_0, type_str_1
-                ));
-
-                output.push_str("```\n\n");
-            }
-        }
-
-        output.push_str(&format!(
-            "_Last updated: {}_",
-            Local::now().format("%H:%M:%S")
-        ));
-
-        Ok(output)
-    }
-
-    async fn perform_dry_run_switch(&self, app_state: &Arc<AppState>) -> Result<String> {
-        let mut output = String::from("🔄 *Dry Run Switch*\n\n");
-
+    async fn perform_real_switch(&self, app_state: &Arc<AppState>) -> Result<String> {
         if app_state.config.validators.is_empty() {
-            output.push_str("❌ No validators configured");
-            return Ok(output);
+            return Ok("❌ No validators configured".to_string());
         }
 
         // Use the first validator
@@ -518,32 +366,27 @@ impl TelegramBot {
             .iter()
             .find(|n| n.status == crate::types::NodeStatus::Standby);
 
-        if let (Some(active), Some(standby)) = (active_node, standby_node) {
-            output.push_str("*Current State:*\n");
-            output.push_str(&format!("• {} → ACTIVE\n", active.node.label));
-            output.push_str(&format!("• {} → STANDBY\n\n", standby.node.label));
+        if let (Some(_active), Some(standby)) = (active_node, standby_node) {
+            let new_active = standby.node.label.clone();
+            let new_active_host = standby.node.host.clone();
 
-            output.push_str("*After Switch:*\n");
-            output.push_str(&format!(
-                "• {} → STANDBY _(was active)_\n",
-                active.node.label
-            ));
-            output.push_str(&format!(
-                "• {} → ACTIVE _(was standby)_\n\n",
-                standby.node.label
-            ));
+            // Perform the actual switch using the switch command (skip confirmation for Telegram)
+            // Set environment variable to suppress output
+            std::env::set_var("SVS_SILENT_MODE", "1");
+            let result =
+                crate::commands::switch::switch_command_with_confirmation(false, app_state, false)
+                    .await;
+            std::env::remove_var("SVS_SILENT_MODE");
 
-            output.push_str("*Actions to be performed:*\n");
-            output.push_str("1️⃣ Switch active node to unfunded identity\n");
-            output.push_str("2️⃣ Transfer tower file to standby node\n");
-            output.push_str("3️⃣ Switch standby node to funded identity\n\n");
-
-            output.push_str("✅ *Dry run complete* - No actual changes made\n\n");
-            output.push_str("_To perform actual switch, use the CLI command_");
+            match result {
+                Ok(_) => Ok(format!(
+                    "✅ Switch successful\nNew active: {} ({})",
+                    new_active, new_active_host
+                )),
+                Err(e) => Ok(format!("❌ Switch failed: {}", e)),
+            }
         } else {
-            output.push_str("❌ Unable to determine active/standby nodes");
+            Ok("❌ Unable to determine active/standby nodes".to_string())
         }
-
-        Ok(output)
     }
 }

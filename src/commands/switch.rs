@@ -4,7 +4,52 @@ use colored::*;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+// Check if we're in silent mode (called from Telegram)
+fn is_silent_mode() -> bool {
+    std::env::var("SVS_SILENT_MODE").unwrap_or_default() == "1"
+}
+
+// Macro for conditional printing
+macro_rules! println_if_not_silent {
+    ($($arg:tt)*) => {
+        if !is_silent_mode() {
+            println!($($arg)*);
+        }
+    };
+}
+
+// Wrapper for progress spinner that respects silent mode
+struct ConditionalSpinner {
+    spinner: Option<ProgressSpinner>,
+}
+
+impl ConditionalSpinner {
+    fn new(message: &str) -> Self {
+        Self {
+            spinner: if is_silent_mode() {
+                None
+            } else {
+                Some(ProgressSpinner::new(message))
+            },
+        }
+    }
+
+    fn stop_with_message(self, message: &str) {
+        if let Some(spinner) = self.spinner {
+            spinner.stop_with_message(message);
+        }
+    }
+}
+
 pub async fn switch_command(dry_run: bool, app_state: &crate::AppState) -> Result<bool> {
+    switch_command_with_confirmation(dry_run, app_state, !dry_run).await
+}
+
+pub async fn switch_command_with_confirmation(
+    dry_run: bool,
+    app_state: &crate::AppState,
+    require_confirmation: bool,
+) -> Result<bool> {
     // Validate we have at least one validator configured
     if app_state.config.validators.is_empty() {
         return Err(anyhow!("No validators configured"));
@@ -39,7 +84,7 @@ pub async fn switch_command(dry_run: bool, app_state: &crate::AppState) -> Resul
             }
         };
 
-    println!(
+    println_if_not_silent!(
         "\n{}",
         format!(
             "🔄 Validator Switch - {} Mode",
@@ -48,18 +93,18 @@ pub async fn switch_command(dry_run: bool, app_state: &crate::AppState) -> Resul
         .bright_cyan()
         .bold()
     );
-    println!("{}", "━".repeat(50).dimmed());
+    println_if_not_silent!("{}", "━".repeat(50).dimmed());
 
     if dry_run {
-        println!(
+        println_if_not_silent!(
             "{}",
             "ℹ️  This is a DRY RUN - showing what would be executed".yellow()
         );
-        println!(
+        println_if_not_silent!(
             "{}",
             "ℹ️  Tower file transfer will be performed to measure timing".yellow()
         );
-        println!();
+        println_if_not_silent!();
     }
 
     let mut switch_manager = SwitchManager::new(
@@ -72,7 +117,7 @@ pub async fn switch_command(dry_run: bool, app_state: &crate::AppState) -> Resul
 
     // Pre-warm SSH connections to both nodes for faster switching
     if !dry_run {
-        let spinner = ProgressSpinner::new("Pre-warming SSH connections...");
+        let spinner = ConditionalSpinner::new("Pre-warming SSH connections...");
 
         // Get SSH keys for both nodes
         let active_ssh_key = app_state
@@ -100,13 +145,15 @@ pub async fn switch_command(dry_run: bool, app_state: &crate::AppState) -> Resul
     }
 
     // Execute the switch process
-    let show_status = switch_manager.execute_switch(dry_run).await?;
+    let show_status = switch_manager
+        .execute_switch(dry_run, require_confirmation)
+        .await?;
 
     // Show completion message with timing breakdown
     if !dry_run {
         if let Some(total_time) = switch_manager.identity_switch_time {
-            println!("\n{}", "━".repeat(50).dimmed());
-            println!(
+            println_if_not_silent!("\n{}", "━".repeat(50).dimmed());
+            println_if_not_silent!(
                 "{} {}",
                 "✅ Validator swap completed successfully in"
                     .bright_green()
@@ -117,35 +164,35 @@ pub async fn switch_command(dry_run: bool, app_state: &crate::AppState) -> Resul
             );
 
             // Show timing breakdown
-            println!("\n{}", "📊 Timing breakdown:".dimmed());
+            println_if_not_silent!("\n{}", "📊 Timing breakdown:".dimmed());
             if let Some(active_time) = switch_manager.active_switch_time {
-                println!(
+                println_if_not_silent!(
                     "   Active → Standby:  {}",
                     format!("{}ms", active_time.as_millis()).bright_yellow()
                 );
             }
             if let Some(tower_time) = switch_manager.tower_transfer_time {
-                println!(
+                println_if_not_silent!(
                     "   Tower transfer:    {}",
                     format!("{}ms", tower_time.as_millis()).bright_yellow()
                 );
             }
             if let Some(standby_time) = switch_manager.standby_switch_time {
-                println!(
+                println_if_not_silent!(
                     "   Standby → Active:  {}",
                     format!("{}ms", standby_time.as_millis()).bright_yellow()
                 );
             }
         } else {
-            println!(
+            println_if_not_silent!(
                 "\n{}",
                 "✅ Validator swap completed successfully"
                     .bright_green()
                     .bold()
             );
         }
-        println!();
-        println!("{}", "Press any key to view status...".dimmed());
+        println_if_not_silent!();
+        println_if_not_silent!("{}", "Press any key to view status...".dimmed());
         let _ = std::io::stdin().read_line(&mut String::new());
     }
 
@@ -196,9 +243,9 @@ impl SwitchManager {
             .ok_or_else(|| anyhow!("No SSH key detected for host: {}", host))
     }
 
-    async fn execute_switch(&mut self, dry_run: bool) -> Result<bool> {
+    async fn execute_switch(&mut self, dry_run: bool, require_confirmation: bool) -> Result<bool> {
         // Show confirmation dialog (except for dry run)
-        if !dry_run {
+        if !dry_run && require_confirmation {
             println!(
                 "\n{}",
                 "⚠️  Validator Switch Confirmation".bright_yellow().bold()
@@ -258,7 +305,7 @@ impl SwitchManager {
         let total_switch_start = Instant::now();
 
         // Step 1: Switch active node to unfunded identity
-        println!(
+        println_if_not_silent!(
             "{}",
             "🔄 Switch Active Node to Unfunded Identity"
                 .bright_blue()
@@ -268,7 +315,7 @@ impl SwitchManager {
         self.switch_primary_to_unfunded(dry_run).await?;
         self.active_switch_time = Some(active_switch_start.elapsed());
         if !dry_run {
-            println!(
+            println_if_not_silent!(
                 "   ✓ Completed in {}",
                 format!("{}ms", self.active_switch_time.unwrap().as_millis())
                     .bright_yellow()
@@ -277,12 +324,12 @@ impl SwitchManager {
         }
 
         // Step 2: Transfer tower file
-        println!("\n{}", "📤 Transfer Tower File".bright_blue().bold());
+        println_if_not_silent!("\n{}", "📤 Transfer Tower File".bright_blue().bold());
         self.transfer_tower_file(dry_run).await?;
         // Note: tower_transfer_time is set inside transfer_tower_file method
 
         // Step 3: Switch standby node to funded identity
-        println!(
+        println_if_not_silent!(
             "\n{}",
             "🚀 Switch Standby Node to Funded Identity"
                 .bright_blue()
@@ -292,7 +339,7 @@ impl SwitchManager {
         self.switch_backup_to_funded(dry_run).await?;
         self.standby_switch_time = Some(standby_switch_start.elapsed());
         if !dry_run {
-            println!(
+            println_if_not_silent!(
                 "   ✓ Completed in {}",
                 format!("{}ms", self.standby_switch_time.unwrap().as_millis())
                     .bright_yellow()
@@ -306,7 +353,7 @@ impl SwitchManager {
         }
 
         // Step 4: Verify new active node catchup (former standby)
-        println!(
+        println_if_not_silent!(
             "\n{}",
             "✅ Verify New Active Node (Former Standby)"
                 .bright_blue()
@@ -410,8 +457,8 @@ impl SwitchManager {
             )
         };
 
-        println!("{}", subtitle.dimmed());
-        println!(
+        println_if_not_silent!("{}", subtitle.dimmed());
+        println_if_not_silent!(
             "ssh {}@{} '{}'",
             self.active_node_with_status.node.user,
             self.active_node_with_status.node.host,
@@ -420,7 +467,7 @@ impl SwitchManager {
 
         if !dry_run {
             let spinner =
-                ProgressSpinner::new("Switching active validator to unfunded identity...");
+                ConditionalSpinner::new("Switching active validator to unfunded identity...");
             {
                 let ssh_key = self.get_ssh_key_for_node(&self.active_node_with_status.node.host)?;
                 let pool = self.ssh_pool.clone();
@@ -530,7 +577,7 @@ impl SwitchManager {
 
         let dest_path = format!("{}/{}", standby_ledger_path, tower_filename);
 
-        println!(
+        println_if_not_silent!(
             "  📤 {}@{} → {}@{}",
             self.active_node_with_status.node.user,
             self.active_node_with_status.node.host,
@@ -542,7 +589,7 @@ impl SwitchManager {
 
         // Execute the streaming transfer using base64 encoding
         let encoded_data = if !dry_run {
-            let spinner = ProgressSpinner::new("Reading tower file...");
+            let spinner = ConditionalSpinner::new("Reading tower file...");
             let ssh_key_active =
                 self.get_ssh_key_for_node(&self.active_node_with_status.node.host)?;
             let data = {
@@ -566,7 +613,7 @@ impl SwitchManager {
             };
             spinner.stop_with_message("");
 
-            let spinner = ProgressSpinner::new("Transferring tower file...");
+            let spinner = ConditionalSpinner::new("Transferring tower file...");
             let ssh_key_standby =
                 self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
             {
@@ -601,7 +648,7 @@ impl SwitchManager {
         let file_size = encoded_data.len() as u64 * 3 / 4; // approximate original size from base64
         let speed_mbps = (file_size as f64 / 1024.0 / 1024.0) / transfer_duration.as_secs_f64();
 
-        println!(
+        println_if_not_silent!(
             "  ✅ Transferred in {} ({:.2} MB/s)",
             format!("{}ms", transfer_duration.as_millis())
                 .bright_green()
@@ -722,8 +769,8 @@ impl SwitchManager {
             )
         };
 
-        println!("{}", subtitle.dimmed());
-        println!(
+        println_if_not_silent!("{}", subtitle.dimmed());
+        println_if_not_silent!(
             "ssh {}@{} '{}'",
             self.standby_node_with_status.node.user,
             self.standby_node_with_status.node.host,
@@ -731,7 +778,8 @@ impl SwitchManager {
         );
 
         if !dry_run {
-            let spinner = ProgressSpinner::new("Switching standby validator to funded identity...");
+            let spinner =
+                ConditionalSpinner::new("Switching standby validator to funded identity...");
             {
                 let ssh_key =
                     self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;

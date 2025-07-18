@@ -1087,12 +1087,8 @@ async fn show_ready_prompt() {
 
     // Skip wait for status command
     if std::env::args().any(|arg| arg == "status") {
-        // Clear the ready prompt immediately for status command
-        print!("\x1B[8A\x1B[2K"); // Move up 8 lines and clear
-        for _ in 0..8 {
-            print!("\x1B[2K\x1B[1B"); // Clear line and move down
-        }
-        print!("\x1B[8A"); // Move back up to original position
+        // For status command, just clear everything
+        print!("\x1B[2J\x1B[1;1H"); // Clear entire screen and move to top
         io::stdout().flush().unwrap();
     } else {
         // Wait for any key press

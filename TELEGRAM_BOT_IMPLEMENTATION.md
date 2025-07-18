@@ -11,22 +11,32 @@ We've successfully implemented an interactive Telegram bot that integrates with 
 - Rich formatted messages with validator details
 
 ### 2. Interactive Bot Commands
-- **`status`** - View current validator status snapshot
+- **`v`** - View current validator status
   - Shows validator names, vote/identity pubkeys
   - Displays node status (Active/Standby)
   - Shows host information and validator types
   
-- **`s` or `switch`** - Perform dry-run switch analysis
+- **`sd`** - Perform dry-run switch analysis
   - Shows current active/standby nodes
   - Displays what would happen after switch
   - Lists actions that would be performed
+  - No actual changes made
+
+- **`s` or `switch`** - Perform REAL validator switch
+  - Executes actual validator switch operation WITHOUT confirmation prompt
+  - Shows progress and results in Telegram
+  - Does NOT change the CLI UI view (prevents UI overlap issues)
+  - ⚠️ BE CAREFUL - this performs actual changes immediately!
 
 ### 3. CLI View Integration
 - **Real-time View Changes**: When you send a command to Telegram, the SVS CLI automatically changes its view
-- **Status View**: Default view showing validator table with auto-refresh
-- **Dry-Run Switch View**: Shows dry-run switch information for 10 seconds
-- **Auto-Return**: After 10 seconds, the dry-run view automatically returns to status view
-- **Manual Toggle**: Press 's' in the CLI to manually switch between views
+- **Validator Status View**: Default view showing validator table with auto-refresh (press 'v')
+- **Dry-Run Switch View**: Shows dry-run switch information for 10 seconds (press 'd')
+- **Auto-Return**: Views automatically return to status view after timeout
+- **Keyboard Shortcuts**:
+  - `v` - Validator status view
+  - `d` - Dry-run switch view
+  - `q`/`Esc` - Quit
 
 ## Technical Implementation
 
@@ -58,11 +68,13 @@ alert_config:
 
 1. Run `svs status` to start the monitoring UI
 2. Send commands to your Telegram bot:
-   - `status` - Get validator status
-   - `s` or `switch` - Trigger dry-run switch view
-3. Observe the CLI view changes in real-time
+   - `v` - Get validator status and change UI to status view
+   - `sd` - Perform dry-run switch and change UI to dry-run view
+   - `s` - Execute REAL switch (no UI change, no confirmation prompt!)
+3. Observe the CLI view changes for 'v' and 'sd' commands
+4. Monitor logs for 's' command execution (UI stays on current view)
 
 ## Security Considerations
 - Bot only responds to messages from configured chat_id
-- No actual switch operations performed (dry-run only)
+- Real switch command ('s') executes immediately without confirmation - use with caution!
 - Sensitive information (keys) are masked in messages

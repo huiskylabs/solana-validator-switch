@@ -12,7 +12,7 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Paragraph, Row, Table},
     Terminal,
 };
-use std::io;
+use std::io::{self, Write};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -37,8 +37,6 @@ pub struct EnhancedStatusApp {
     pub log_sender: tokio::sync::mpsc::UnboundedSender<LogMessage>,
     pub should_quit: Arc<RwLock<bool>>,
     pub view_state: Arc<RwLock<ViewState>>,
-    pub view_change_sender: tokio::sync::mpsc::UnboundedSender<ViewState>,
-    pub view_change_receiver: tokio::sync::mpsc::UnboundedReceiver<ViewState>,
 }
 
 /// UI State that can be shared across threads
@@ -124,8 +122,6 @@ impl EnhancedStatusApp {
             is_refreshing: false,
         }));
 
-        let (view_change_sender, view_change_receiver) = tokio::sync::mpsc::unbounded_channel();
-
         Ok(Self {
             app_state,
             ssh_pool,
@@ -133,8 +129,6 @@ impl EnhancedStatusApp {
             log_sender,
             should_quit: Arc::new(RwLock::new(false)),
             view_state: Arc::new(RwLock::new(ViewState::Status)),
-            view_change_sender,
-            view_change_receiver,
         })
     }
 
@@ -400,14 +394,12 @@ impl EnhancedStatusApp {
         // Telegram bot polling task (if configured)
         let app_state = Arc::clone(&self.app_state);
         let log_sender = self.log_sender.clone();
-        let view_change_sender = self.view_change_sender.clone();
 
         if let Some(alert_config) = &app_state.config.alert_config {
             if alert_config.enabled {
                 if let Some(telegram_config) = &alert_config.telegram {
                     let telegram_bot = crate::alert::TelegramBot::new(telegram_config.clone())
-                        .with_log_sender(log_sender)
-                        .with_view_change_sender(view_change_sender);
+                        .with_log_sender(log_sender);
 
                     tokio::spawn(async move {
                         telegram_bot.start_polling(app_state).await;
@@ -649,26 +641,17 @@ pub async fn run_enhanced_ui(app: &mut EnhancedStatusApp) -> Result<()> {
             break;
         }
 
-        // Check for view changes from Telegram
-        if let Ok(new_view) = app.view_change_receiver.try_recv() {
-            let mut view_state = app.view_state.write().await;
-            *view_state = new_view;
-
-            // Auto-return to status view after 10 seconds if in dry-run view
-            if new_view == ViewState::DryRunSwitch {
-                let view_state_clone = Arc::clone(&app.view_state);
-                tokio::spawn(async move {
-                    tokio::time::sleep(Duration::from_secs(10)).await;
-                    let mut view = view_state_clone.write().await;
-                    *view = ViewState::Status;
-                });
-            }
-        }
-
         // Handle keyboard events
         if event::poll(Duration::from_millis(10))? {
             if let Event::Key(key) = event::read()? {
-                handle_key_event(key, &app.ui_state, &app.should_quit, &app.view_state).await?;
+                handle_key_event(
+                    key,
+                    &app.ui_state,
+                    &app.should_quit,
+                    &app.view_state,
+                    &app.app_state,
+                )
+                .await?;
             }
         }
 
@@ -702,6 +685,7 @@ async fn handle_key_event(
     ui_state: &Arc<RwLock<UiState>>,
     should_quit: &Arc<RwLock<bool>>,
     view_state: &Arc<RwLock<ViewState>>,
+    _app_state: &Arc<AppState>,
 ) -> Result<()> {
     let _state = ui_state.write().await;
 
@@ -712,14 +696,17 @@ async fn handle_key_event(
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             *should_quit.write().await = true;
         }
-        KeyCode::Char('s') | KeyCode::Char('S') => {
-            // Toggle dry-run switch view
+        KeyCode::Char('v') | KeyCode::Char('V') => {
+            // Show validator status view
             let mut view = view_state.write().await;
-            *view = match *view {
-                ViewState::Status => ViewState::DryRunSwitch,
-                ViewState::DryRunSwitch => ViewState::Status,
-            };
+            *view = ViewState::Status;
         }
+        KeyCode::Char('d') | KeyCode::Char('D') => {
+            // Show dry-run switch view (SD = Switch Dry-run, but just 'd' in CLI)
+            let mut view = view_state.write().await;
+            *view = ViewState::DryRunSwitch;
+        }
+        // Removed 's' key handling - real switch should only be done via CLI command or Telegram
         _ => {}
     }
 
@@ -1247,7 +1234,7 @@ fn draw_validator_table(
 // Removed draw_logs function as logs are no longer displayed
 
 fn draw_footer(f: &mut ratatui::Frame, area: Rect, _ui_state: &UiState) {
-    let help_text = "q/Esc: Quit | Ctrl+C: Exit | s: Dry-run switch view | Auto-refresh: 5s";
+    let help_text = "q/Esc: Quit | v: Validator view | d: Dry-run switch | Auto-refresh: 5s";
 
     let footer = Paragraph::new(help_text)
         .style(Style::default().fg(Color::DarkGray))
@@ -1445,6 +1432,13 @@ fn shorten_path(path: &str, max_len: usize) -> String {
 
 /// Entry point for the enhanced UI
 pub async fn show_enhanced_status_ui(app_state: &AppState) -> Result<()> {
+    // Clear any startup output before starting the TUI
+    print!("\x1B[2J\x1B[1;1H"); // Clear screen and move cursor to top
+    std::io::stdout().flush()?;
+
+    // Small delay to ensure all startup output is complete
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
     let app_state_arc = Arc::new(app_state.clone());
     let mut app = EnhancedStatusApp::new(app_state_arc).await?;
     run_enhanced_ui(&mut app).await

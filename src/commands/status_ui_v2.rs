@@ -8,7 +8,6 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::Text,
     widgets::{Block, Borders, Cell, Paragraph, Row, Table},
     Terminal,
 };
@@ -844,11 +843,11 @@ fn draw_validator_table(
                 Cell::from("Solana CLI"),
                 Cell::from(shorten_path(
                     node_0.solana_cli_executable.as_deref().unwrap_or("N/A"),
-                    25,
+                    30,
                 )),
                 Cell::from(shorten_path(
                     node_1.solana_cli_executable.as_deref().unwrap_or("N/A"),
-                    25,
+                    30,
                 )),
             ]));
         }
@@ -858,11 +857,11 @@ fn draw_validator_table(
                 Cell::from("Fdctl Path"),
                 Cell::from(shorten_path(
                     node_0.fdctl_executable.as_deref().unwrap_or("N/A"),
-                    25,
+                    30,
                 )),
                 Cell::from(shorten_path(
                     node_1.fdctl_executable.as_deref().unwrap_or("N/A"),
-                    25,
+                    30,
                 )),
             ]));
         }
@@ -873,12 +872,18 @@ fn draw_validator_table(
             rows.push(Row::new(vec![
                 Cell::from("Agave Path"),
                 Cell::from(shorten_path(
-                    node_0.agave_validator_executable.as_deref().unwrap_or("N/A"),
-                    25,
+                    node_0
+                        .agave_validator_executable
+                        .as_deref()
+                        .unwrap_or("N/A"),
+                    30,
                 )),
                 Cell::from(shorten_path(
-                    node_1.agave_validator_executable.as_deref().unwrap_or("N/A"),
-                    25,
+                    node_1
+                        .agave_validator_executable
+                        .as_deref()
+                        .unwrap_or("N/A"),
+                    30,
                 )),
             ]));
         }
@@ -1008,9 +1013,9 @@ fn draw_validator_table(
                             Style::default()
                                 .fg(Color::Green)
                                 .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default()
-                    },
+                        } else {
+                            Style::default()
+                        },
                     ),
                 ]));
             } else {
@@ -1071,27 +1076,71 @@ fn draw_footer(f: &mut ratatui::Frame, area: Rect, _ui_state: &UiState) {
     f.render_widget(footer, area);
 }
 
-/// Helper function to shorten paths to "xxx...xxx" format
+/// Helper function to shorten paths intelligently
 fn shorten_path(path: &str, max_len: usize) -> String {
     if path == "N/A" || path.len() <= max_len {
-        path.to_string()
-    } else {
-        let parts: Vec<&str> = path.split('/').collect();
-        if let Some(filename) = parts.last() {
-            // If filename is short enough, show more of the path
-            if filename.len() < max_len / 2 {
-                let remaining = max_len - filename.len() - 4; // 4 for "..."
-                let start_len = remaining / 2;
-                let start = &path[..start_len];
-                format!("{}...{}", start, filename)
-            } else {
-                // Shorten the whole path
-                let side_len = (max_len - 3) / 2; // 3 for "..."
-                format!("{}...{}", &path[..side_len], &path[path.len() - side_len..])
-            }
-        } else {
-            path.to_string()
+        return path.to_string();
+    }
+
+    let parts: Vec<&str> = path.split('/').collect();
+
+    // Always try to keep the filename intact
+    if let Some(filename) = parts.last() {
+        if filename.len() >= max_len - 3 {
+            // If filename alone is too long, just truncate it
+            return format!(
+                "...{}",
+                &filename[filename.len().saturating_sub(max_len - 3)..]
+            );
         }
+
+        // We have room for some path + filename
+        let available = max_len - filename.len() - 4; // 4 for ".../filename"
+
+        // Try to fit as much of the beginning path as possible
+        let mut result = String::new();
+        let mut used = 0;
+
+        for (i, part) in parts[..parts.len() - 1].iter().enumerate() {
+            if i == 0 && part.is_empty() {
+                // Handle absolute paths
+                continue;
+            }
+
+            let part_len = if i == 0 { part.len() + 1 } else { part.len() }; // +1 for leading /
+
+            if used + part_len <= available {
+                if i == 0 {
+                    result.push('/');
+                }
+                result.push_str(part);
+                if i < parts.len() - 2 {
+                    result.push('/');
+                }
+                used += part_len + 1;
+            } else if used == 0 && !part.is_empty() {
+                // If we haven't added anything yet, at least add a shortened version of the first part
+                let shortened = if part.len() > 4 { &part[..3] } else { part };
+                result.push('/');
+                result.push_str(shortened);
+                result.push_str("...");
+                break;
+            } else {
+                result.push_str("...");
+                break;
+            }
+        }
+
+        if result.is_empty() {
+            result = "...".to_string();
+        } else if !result.ends_with("...") && !result.ends_with('/') {
+            result.push('/');
+        }
+
+        result.push_str(filename);
+        result
+    } else {
+        path.to_string()
     }
 }
 

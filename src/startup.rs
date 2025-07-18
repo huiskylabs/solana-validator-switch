@@ -817,18 +817,16 @@ async fn verify_public_key_matches(
     _node: &NodeConfig,
     _ssh_key_path: &str,
 ) -> Vec<String> {
-    let issues = Vec::new();
-
     // Note: Public key verification will be handled separately with access to the shared validator config
     // For now, skip this validation as it needs the full config structure
 
-    issues
+    Vec::new()
 }
 
 #[allow(dead_code)]
 async fn verify_validator_paths(
     _ssh_pool: &AsyncSshPool,
-    node: &NodeConfig,
+    _node: &NodeConfig,
     _ssh_key_path: &str,
 ) -> Vec<String> {
     // This function is deprecated as paths are now detected dynamically
@@ -1653,7 +1651,7 @@ async fn detect_node_status_and_executable(
                 swap_issues,
             ))
         }
-        Err(e) => {
+        Err(_e) => {
             // logger.log_error("catchup command", &format!("Failed for node {}: {:?}", node.label, e)).ok();
             Ok((
                 crate::types::NodeStatus::Unknown,

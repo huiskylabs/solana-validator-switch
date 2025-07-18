@@ -30,7 +30,6 @@ impl StartupLogger {
 
         let file = OpenOptions::new()
             .create(true)
-            .write(true)
             .append(true)
             .open(&log_path)?;
 

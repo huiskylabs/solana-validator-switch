@@ -150,6 +150,51 @@ impl AlertManager {
 
         Ok(())
     }
+
+    pub async fn send_switch_result(
+        &self,
+        success: bool,
+        active_node: &str,
+        standby_node: &str,
+        total_time: Option<std::time::Duration>,
+        error: Option<&str>,
+    ) -> Result<()> {
+        if !self.config.enabled {
+            return Ok(());
+        }
+
+        if let Some(telegram) = &self.config.telegram {
+            let message = if success {
+                let time_str = if let Some(time) = total_time {
+                    format!(" in {}ms", time.as_millis())
+                } else {
+                    String::new()
+                };
+
+                format!(
+                    "✅ *VALIDATOR SWITCH SUCCESSFUL*{}\n\n\
+                    *Previous Active:* {}\n\
+                    *New Active:* {}\n\n\
+                    Switch completed successfully!",
+                    time_str, active_node, standby_node
+                )
+            } else {
+                let error_msg = error.unwrap_or("Unknown error");
+                format!(
+                    "❌ *VALIDATOR SWITCH FAILED*\n\n\
+                    *Active Node:* {}\n\
+                    *Standby Node:* {}\n\
+                    *Error:* {}\n\n\
+                    ⚠️ *Manual intervention may be required*",
+                    active_node, standby_node, error_msg
+                )
+            };
+
+            self.send_telegram_message(telegram, &message).await?;
+        }
+
+        Ok(())
+    }
 }
 
 // Helper to track alert cooldowns per validator

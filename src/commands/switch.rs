@@ -150,9 +150,46 @@ pub async fn switch_command_with_confirmation(
     }
 
     // Execute the switch process
-    let show_status = switch_manager
+    let switch_result = switch_manager
         .execute_switch(dry_run, require_confirmation)
-        .await?;
+        .await;
+
+    // Send Telegram notification for switch result (only for live switches)
+    if !dry_run {
+        if let Some(alert_config) = &app_state.config.alert_config {
+            let alert_manager = crate::alert::AlertManager::new(alert_config.clone());
+
+            match &switch_result {
+                Ok(_) => {
+                    // Send success notification
+                    let _ = alert_manager
+                        .send_switch_result(
+                            true,
+                            &active_node_with_status.node.label,
+                            &standby_node_with_status.node.label,
+                            switch_manager.identity_switch_time,
+                            None,
+                        )
+                        .await;
+                }
+                Err(e) => {
+                    // Send failure notification
+                    let _ = alert_manager
+                        .send_switch_result(
+                            false,
+                            &active_node_with_status.node.label,
+                            &standby_node_with_status.node.label,
+                            None,
+                            Some(&e.to_string()),
+                        )
+                        .await;
+                }
+            }
+        }
+    }
+
+    // Re-check the result and propagate any error
+    let show_status = switch_result?;
 
     // Show completion message with timing breakdown
     if !dry_run {

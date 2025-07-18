@@ -58,6 +58,22 @@ validators:
           fundedIdentity: /home/solana/keypairs/funded-validator-keypair.json
           unfundedIdentity: /home/solana/keypairs/unfunded-validator-keypair.json
           voteKeypair: /home/solana/keypairs/vote-account-keypair.json
+# Alert configuration (optional)
+# Sends alerts when validators stop voting for a specified time
+alert_config:
+  enabled: true
+  delinquency_threshold_seconds: 30 # Alert after 30 seconds without voting
+
+  # Telegram configuration (optional)
+  # To set up Telegram alerts:
+  # 1. Create a bot via @BotFather on Telegram
+  # 2. Get your bot token from @BotFather
+  # 3. Add the bot to a group/channel or start a chat with it
+  # 4. Get your chat ID (see: https://stackoverflow.com/a/32572159)
+  telegram:
+    bot_token: "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+    chat_id: "-1001234567890" # Negative for groups/channels, positive for private chats
+
 # Example: Multiple validator pairs (uncomment if needed)
 # - votePubkey: SECOND_VOTE_ACCOUNT_PUBKEY
 #   identityPubkey: SECOND_VALIDATOR_IDENTITY_PUBKEY
@@ -84,3 +100,4 @@ validators:
 # - The tool will automatically detect your SSH keys
 # - Tries common locations: ~/.ssh/id_rsa, ~/.ssh/id_ed25519, etc.
 # - Ensure SSH key authentication is set up for both nodes
+

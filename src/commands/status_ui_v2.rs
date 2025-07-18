@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tokio::time::interval;
 
+use crate::alert::{AlertManager, AlertTracker};
 use crate::solana_rpc::{fetch_vote_account_data, ValidatorVoteData};
 use crate::{ssh::AsyncSshPool, AppState};
 
@@ -35,6 +36,9 @@ pub struct UiState {
     pub vote_data: Vec<Option<ValidatorVoteData>>,
     pub previous_last_slots: Vec<Option<u64>>,
     pub increment_times: Vec<Option<Instant>>,
+
+    // Track when each validator's last vote slot changed
+    pub last_vote_slot_times: Vec<Option<(u64, Instant)>>, // (slot, time when slot last changed)
 
     // Catchup status for each node
     pub catchup_data: Vec<NodePairStatus>,
@@ -99,6 +103,7 @@ impl EnhancedStatusApp {
             vote_data: initial_vote_data,
             previous_last_slots: Vec::new(),
             increment_times: Vec::new(),
+            last_vote_slot_times: vec![None; app_state.validator_statuses.len()],
             catchup_data: initial_catchup_data,
             last_vote_refresh: Instant::now(),
             last_catchup_refresh: Instant::now(),
@@ -123,6 +128,16 @@ impl EnhancedStatusApp {
 
         tokio::spawn(async move {
             let mut interval = interval(Duration::from_secs(5));
+
+            // Initialize alert manager and tracker if alerts are configured
+            let alert_manager = app_state
+                .config
+                .alert_config
+                .as_ref()
+                .filter(|config| config.enabled)
+                .map(|config| AlertManager::new(config.clone()));
+
+            let mut alert_tracker = AlertTracker::new(app_state.validator_statuses.len());
 
             loop {
                 interval.tick().await;
@@ -165,37 +180,135 @@ impl EnhancedStatusApp {
                 // Update UI state
                 let mut state = ui_state.write().await;
 
-                // Calculate increments
+                // Calculate increments and track slot changes
                 let mut new_increments = Vec::new();
+                let mut new_slot_times = Vec::new();
+
                 for (idx, new_data) in new_vote_data.iter().enumerate() {
-                    if let (Some(new), Some(old)) =
-                        (new_data, state.vote_data.get(idx).and_then(|v| v.as_ref()))
-                    {
-                        if let (Some(new_last), Some(old_last)) = (
-                            new.recent_votes.last().map(|v| v.slot),
-                            old.recent_votes.last().map(|v| v.slot),
-                        ) {
-                            if new_last > old_last {
-                                new_increments.push(Some(Instant::now()));
+                    if let Some(new) = new_data {
+                        let new_last_slot = new.recent_votes.last().map(|v| v.slot);
+
+                        // Check if this is a new slot
+                        if let Some(new_slot) = new_last_slot {
+                            // Check against our tracked slot time
+                            let should_update_slot_time = if let Some(tracked) =
+                                state.last_vote_slot_times.get(idx).and_then(|&v| v)
+                            {
+                                tracked.0 != new_slot // Slot has changed
                             } else {
-                                // Keep existing increment if still valid
-                                if let Some(existing) =
-                                    state.increment_times.get(idx).and_then(|&v| v)
+                                true // No previous tracking
+                            };
+
+                            if should_update_slot_time {
+                                new_slot_times.push(Some((new_slot, Instant::now())));
+                                // Reset alert tracker since slot is advancing
+                                alert_tracker.reset(idx);
+                            } else {
+                                // Slot hasn't changed, keep existing time
+                                new_slot_times
+                                    .push(state.last_vote_slot_times.get(idx).and_then(|&v| v));
+
+                                // Check for delinquency
+                                if let (Some(alert_mgr), Some((_, last_change_time))) = (
+                                    alert_manager.as_ref(),
+                                    state.last_vote_slot_times.get(idx).and_then(|&v| v),
+                                ) {
+                                    let seconds_since_vote = last_change_time.elapsed().as_secs();
+                                    let threshold = app_state
+                                        .config
+                                        .alert_config
+                                        .as_ref()
+                                        .map(|c| c.delinquency_threshold_seconds)
+                                        .unwrap_or(30);
+
+                                    if seconds_since_vote >= threshold
+                                        && alert_tracker.should_send_alert(idx)
+                                    {
+                                        // Find which node is active
+                                        let active_node = if let Some(node_with_status) = app_state
+                                            .validator_statuses[idx]
+                                            .nodes_with_status
+                                            .iter()
+                                            .find(|n| n.status == crate::types::NodeStatus::Active)
+                                        {
+                                            &node_with_status.node
+                                        } else {
+                                            &app_state.validator_statuses[idx].nodes_with_status[0]
+                                                .node
+                                        };
+
+                                        let is_active = app_state.validator_statuses[idx]
+                                            .nodes_with_status
+                                            .iter()
+                                            .any(|n| n.status == crate::types::NodeStatus::Active);
+
+                                        // Send alert
+                                        if let Err(e) = alert_mgr
+                                            .send_delinquency_alert(
+                                                &app_state.validator_statuses[idx]
+                                                    .validator_pair
+                                                    .identity_pubkey,
+                                                &active_node.label,
+                                                is_active,
+                                                new_slot,
+                                                seconds_since_vote,
+                                            )
+                                            .await
+                                        {
+                                            let _ = log_sender.send(LogMessage {
+                                                host: format!("validator-{}", idx),
+                                                message: format!(
+                                                    "Failed to send delinquency alert: {}",
+                                                    e
+                                                ),
+                                                timestamp: Instant::now(),
+                                                level: LogLevel::Error,
+                                            });
+                                        } else {
+                                            let _ = log_sender.send(LogMessage {
+                                                host: format!("validator-{}", idx),
+                                                message: format!("Delinquency alert sent: {} seconds without vote", seconds_since_vote),
+                                                timestamp: Instant::now(),
+                                                level: LogLevel::Warning,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Handle increment display (visual indicator)
+                            if let Some(old) = state.vote_data.get(idx).and_then(|v| v.as_ref()) {
+                                if let Some(old_last_slot) = old.recent_votes.last().map(|v| v.slot)
                                 {
-                                    if existing.elapsed().as_secs() < 2 {
-                                        new_increments.push(Some(existing));
+                                    if new_slot > old_last_slot {
+                                        new_increments.push(Some(Instant::now()));
                                     } else {
-                                        new_increments.push(None);
+                                        // Keep existing increment if still valid
+                                        if let Some(existing) =
+                                            state.increment_times.get(idx).and_then(|&v| v)
+                                        {
+                                            if existing.elapsed().as_secs() < 2 {
+                                                new_increments.push(Some(existing));
+                                            } else {
+                                                new_increments.push(None);
+                                            }
+                                        } else {
+                                            new_increments.push(None);
+                                        }
                                     }
                                 } else {
                                     new_increments.push(None);
                                 }
+                            } else {
+                                new_increments.push(None);
                             }
                         } else {
                             new_increments.push(None);
+                            new_slot_times.push(None);
                         }
                     } else {
                         new_increments.push(None);
+                        new_slot_times.push(None);
                     }
                 }
 
@@ -211,6 +324,7 @@ impl EnhancedStatusApp {
 
                 state.vote_data = new_vote_data;
                 state.increment_times = new_increments;
+                state.last_vote_slot_times = new_slot_times;
                 state.last_vote_refresh = Instant::now();
             }
         });

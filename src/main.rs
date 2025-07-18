@@ -13,6 +13,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::sync::Arc;
 
+mod alert;
 mod commands;
 mod config;
 mod solana_rpc;
@@ -23,7 +24,7 @@ mod startup_logger;
 mod types;
 mod validator_metadata;
 
-use commands::{status_command, switch_command};
+use commands::{status_command, switch_command, test_alert_command};
 use ssh::AsyncSshPool;
 
 #[derive(Parser)]
@@ -45,6 +46,8 @@ enum Commands {
         #[arg(short, long)]
         dry_run: bool,
     },
+    /// Test alert configuration
+    TestAlert,
 }
 
 /// Application state that persists throughout the CLI session
@@ -98,6 +101,14 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
+        Some(Commands::TestAlert) => {
+            if let Some(state) = app_state.as_ref() {
+                test_alert_command(state).await?;
+            } else {
+                // Startup validation already showed detailed error messages
+                std::process::exit(1);
+            }
+        }
         None => {
             // Interactive main menu only if app state is valid
             if let Some(state) = app_state.as_ref() {
@@ -137,6 +148,7 @@ async fn show_interactive_menu(app_state: Option<&AppState>) -> Result<()> {
         let mut options = vec![
             "📋 Status - Check current validator status",
             "🔄 Switch - Switch between primary and backup validators",
+            "🔔 Test Alert - Test alert configuration",
         ];
 
         options.push("❌ Exit");
@@ -156,6 +168,14 @@ async fn show_interactive_menu(app_state: Option<&AppState>) -> Result<()> {
             }
             1 => show_switch_menu(app_state).await?,
             2 => {
+                if let Some(state) = &app_state {
+                    test_alert_command(state).await?;
+                } else {
+                    // This should never happen since we only show menu with valid state
+                    std::process::exit(1);
+                }
+            }
+            3 => {
                 // Exit
                 println!("{}", "👋 Goodbye!".bright_green());
                 break;

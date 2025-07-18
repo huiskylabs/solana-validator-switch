@@ -1,9 +1,36 @@
 use serde::{Deserialize, Serialize};
 
+// Default functions for serde
+fn default_enabled() -> bool {
+    true
+}
+
+fn default_delinquency_threshold() -> u64 {
+    30
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub version: String,
     pub validators: Vec<ValidatorPair>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alert_config: Option<AlertConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlertConfig {
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_delinquency_threshold")]
+    pub delinquency_threshold_seconds: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub telegram: Option<TelegramConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelegramConfig {
+    pub bot_token: String,
+    pub chat_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

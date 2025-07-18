@@ -156,6 +156,9 @@ pub async fn run_startup_checklist() -> Result<Option<crate::AppState>> {
         progress_bar.set_message("🔍 Detecting validator statuses...");
         progress_bar.set_position(85);
 
+        // Finish the progress bar before detailed detection output
+        progress_bar.finish_with_message("✅ Starting validator detection...");
+
         let mut statuses = detect_node_statuses_with_progress(
             &config.as_ref().unwrap(),
             &ssh_pool_and_keys.as_ref().unwrap().0,
@@ -164,10 +167,8 @@ pub async fn run_startup_checklist() -> Result<Option<crate::AppState>> {
             &logger,
         )
         .await?;
-        progress_bar.set_position(95);
 
         // Fetch validator metadata
-        progress_bar.set_message("🔍 Fetching validator metadata...");
         for status in &mut statuses {
             if let Ok(metadata) = crate::validator_metadata::fetch_validator_metadata(
                 &status.validator_pair.rpc,
@@ -1808,9 +1809,7 @@ async fn detect_node_status_and_executable_with_progress(
     let mut firedancer_config_path = None;
 
     // Step 2: Executable Detection
-    progress_bar.suspend(|| {
-        println!("      🔍 Detecting validator executables...");
-    });
+    // Removed println to prevent progress bar corruption
     logger.log("Detecting validator executables...")?;
 
     // First, check what validator is actually running

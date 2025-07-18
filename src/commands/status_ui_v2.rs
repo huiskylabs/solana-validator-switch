@@ -391,22 +391,7 @@ impl EnhancedStatusApp {
             }
         });
 
-        // Telegram bot polling task (if configured)
-        let app_state = Arc::clone(&self.app_state);
-        let log_sender = self.log_sender.clone();
-
-        if let Some(alert_config) = &app_state.config.alert_config {
-            if alert_config.enabled {
-                if let Some(telegram_config) = &alert_config.telegram {
-                    let telegram_bot = crate::alert::TelegramBot::new(telegram_config.clone())
-                        .with_log_sender(log_sender);
-
-                    tokio::spawn(async move {
-                        telegram_bot.start_polling(app_state).await;
-                    });
-                }
-            }
-        }
+        // Telegram bot polling has been removed - bot only responds to messages now
     }
 }
 

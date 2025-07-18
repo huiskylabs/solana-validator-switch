@@ -1,6 +1,7 @@
 use crate::commands::error_handler::ProgressSpinner;
 use anyhow::{anyhow, Result};
 use colored::*;
+use std::io::Write;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -42,6 +43,10 @@ impl ConditionalSpinner {
 }
 
 pub async fn switch_command(dry_run: bool, app_state: &crate::AppState) -> Result<bool> {
+    // Clear screen and ensure clean output after menu selection
+    print!("\x1B[2J\x1B[1;1H");
+    std::io::stdout().flush()?;
+
     switch_command_with_confirmation(dry_run, app_state, !dry_run).await
 }
 
@@ -167,19 +172,19 @@ pub async fn switch_command_with_confirmation(
             println_if_not_silent!("\n{}", "📊 Timing breakdown:".dimmed());
             if let Some(active_time) = switch_manager.active_switch_time {
                 println_if_not_silent!(
-                    "   Active → Standby:  {}",
+                    "   Step 1 - Active → Unfunded:  {}",
                     format!("{}ms", active_time.as_millis()).bright_yellow()
                 );
             }
             if let Some(tower_time) = switch_manager.tower_transfer_time {
                 println_if_not_silent!(
-                    "   Tower transfer:    {}",
+                    "   Step 2 - Tower transfer:     {}",
                     format!("{}ms", tower_time.as_millis()).bright_yellow()
                 );
             }
             if let Some(standby_time) = switch_manager.standby_switch_time {
                 println_if_not_silent!(
-                    "   Standby → Active:  {}",
+                    "   Step 3 - Standby → Funded:   {}",
                     format!("{}ms", standby_time.as_millis()).bright_yellow()
                 );
             }
@@ -193,7 +198,9 @@ pub async fn switch_command_with_confirmation(
         }
         println_if_not_silent!();
         println_if_not_silent!("{}", "Press any key to view status...".dimmed());
-        let _ = std::io::stdin().read_line(&mut String::new());
+        if !is_silent_mode() {
+            let _ = std::io::stdin().read_line(&mut String::new());
+        }
     }
 
     Ok(show_status)
@@ -244,7 +251,7 @@ impl SwitchManager {
     }
 
     async fn execute_switch(&mut self, dry_run: bool, require_confirmation: bool) -> Result<bool> {
-        // Show confirmation dialog (except for dry run)
+        // Show confirmation dialog (except for dry run or when explicitly disabled)
         if !dry_run && require_confirmation {
             println!(
                 "\n{}",
@@ -299,6 +306,8 @@ impl SwitchManager {
                 return Ok(false);
             }
             println!();
+            // Ensure output is flushed after confirmation
+            std::io::stdout().flush()?;
         }
 
         // Start timing the entire switch operation
@@ -306,8 +315,8 @@ impl SwitchManager {
 
         // Step 1: Switch active node to unfunded identity
         println_if_not_silent!(
-            "{}",
-            "🔄 Switch Active Node to Unfunded Identity"
+            "\n{}",
+            "🔄 Step 1: Switch Active Node to Unfunded Identity"
                 .bright_blue()
                 .bold()
         );
@@ -324,14 +333,17 @@ impl SwitchManager {
         }
 
         // Step 2: Transfer tower file
-        println_if_not_silent!("\n{}", "📤 Transfer Tower File".bright_blue().bold());
+        println_if_not_silent!(
+            "\n{}",
+            "📤 Step 2: Transfer Tower File".bright_blue().bold()
+        );
         self.transfer_tower_file(dry_run).await?;
         // Note: tower_transfer_time is set inside transfer_tower_file method
 
         // Step 3: Switch standby node to funded identity
         println_if_not_silent!(
             "\n{}",
-            "🚀 Switch Standby Node to Funded Identity"
+            "🚀 Step 3: Switch Standby Node to Funded Identity"
                 .bright_blue()
                 .bold()
         );
@@ -355,7 +367,7 @@ impl SwitchManager {
         // Step 4: Verify new active node catchup (former standby)
         println_if_not_silent!(
             "\n{}",
-            "✅ Verify New Active Node (Former Standby)"
+            "✅ Step 4: Verify New Active Node (Former Standby)"
                 .bright_blue()
                 .bold()
         );
@@ -861,7 +873,7 @@ impl SwitchManager {
             .unwrap_or(&default_solana);
 
         let catchup_cmd = format!("{} catchup --our-localhost", solana_cli);
-        println!(
+        println_if_not_silent!(
             "ssh {}@{} '{}'",
             self.standby_node_with_status.node.user,
             self.standby_node_with_status.node.host,
@@ -870,7 +882,7 @@ impl SwitchManager {
 
         if !dry_run {
             // No sleep - verify immediately!
-            let spinner = ProgressSpinner::new(
+            let spinner = ConditionalSpinner::new(
                 "Verifying new active validator (former standby) catchup status...",
             );
 
@@ -908,14 +920,16 @@ impl SwitchManager {
     }
 
     fn print_summary(&self, dry_run: bool) {
-        println!();
+        println_if_not_silent!();
         if dry_run {
-            println!("✅ Dry run completed successfully");
-            println!();
-            println!("{}", "Press any key to continue...".dimmed());
-            let _ = std::io::stdin().read_line(&mut String::new());
+            println_if_not_silent!("✅ Dry run completed successfully");
+            println_if_not_silent!();
+            println_if_not_silent!("{}", "Press any key to continue...".dimmed());
+            if !is_silent_mode() {
+                let _ = std::io::stdin().read_line(&mut String::new());
+            }
         } else {
-            println!("✅ Validator identity switch completed successfully");
+            println_if_not_silent!("✅ Validator identity switch completed successfully");
         }
     }
 }

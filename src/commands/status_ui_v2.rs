@@ -842,42 +842,7 @@ fn draw_validator_table(
             ]));
         }
 
-        // Executable paths
-        if node_0.solana_cli_executable.is_some() || node_1.solana_cli_executable.is_some() {
-            rows.push(Row::new(vec![
-                Cell::from("Solana CLI"),
-                Cell::from(node_0.solana_cli_executable.as_deref().unwrap_or("N/A")),
-                Cell::from(node_1.solana_cli_executable.as_deref().unwrap_or("N/A")),
-            ]));
-        }
-
-        if node_0.fdctl_executable.is_some() || node_1.fdctl_executable.is_some() {
-            rows.push(Row::new(vec![
-                Cell::from("Fdctl Path"),
-                Cell::from(node_0.fdctl_executable.as_deref().unwrap_or("N/A")),
-                Cell::from(node_1.fdctl_executable.as_deref().unwrap_or("N/A")),
-            ]));
-        }
-
-        if node_0.agave_validator_executable.is_some()
-            || node_1.agave_validator_executable.is_some()
-        {
-            rows.push(Row::new(vec![
-                Cell::from("Agave Path"),
-                Cell::from(
-                    node_0
-                        .agave_validator_executable
-                        .as_deref()
-                        .unwrap_or("N/A"),
-                ),
-                Cell::from(
-                    node_1
-                        .agave_validator_executable
-                        .as_deref()
-                        .unwrap_or("N/A"),
-                ),
-            ]));
-        }
+        // Skip executable paths to save space for vote info
     }
 
     // Catchup status

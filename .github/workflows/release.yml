@@ -38,11 +38,6 @@ jobs:
             binary: svs
             archive: tar.gz
           
-          # Windows builds
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            binary: svs.exe
-            archive: zip
 
     runs-on: ${{ matrix.os }}
     
@@ -72,26 +67,16 @@ jobs:
           OPENSSL_VENDORED: 1
         run: cross build --release --target ${{ matrix.target }}
       
-      - name: Prepare artifacts (Unix)
-        if: matrix.os != 'windows-latest'
+      - name: Prepare artifacts
         run: |
           cd target/${{ matrix.target }}/release
           tar czf ../../../svs-${{ matrix.target }}.tar.gz ${{ matrix.binary }}
-      
-      - name: Prepare artifacts (Windows)
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          cd target\${{ matrix.target }}\release
-          Compress-Archive -Path ${{ matrix.binary }} -DestinationPath ..\..\..\svs-${{ matrix.target }}.zip
       
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: binary-${{ matrix.target }}
-          path: |
-            svs-*.tar.gz
-            svs-*.zip
+          path: svs-*.tar.gz
 
   release:
     name: Release
@@ -109,9 +94,7 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          files: |
-            svs-*.tar.gz
-            svs-*.zip
+          files: svs-*.tar.gz
           draft: false
           prerelease: false
           generate_release_notes: true

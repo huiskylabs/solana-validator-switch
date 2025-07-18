@@ -26,6 +26,7 @@ pub struct RecentVote {
 
 #[derive(Debug, Clone)]
 pub struct ValidatorVoteData {
+    #[allow(dead_code)]
     pub vote_account_info: VoteAccountInfo,
     pub recent_votes: Vec<RecentVote>,
     pub is_voting: bool,

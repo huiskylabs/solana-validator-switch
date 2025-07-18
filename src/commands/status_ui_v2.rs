@@ -8,6 +8,7 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
+    text::Line,
     widgets::{Block, Borders, Cell, Paragraph, Row, Table},
     Terminal,
 };
@@ -21,13 +22,23 @@ use crate::alert::{AlertManager, AlertTracker};
 use crate::solana_rpc::{fetch_vote_account_data, ValidatorVoteData};
 use crate::{ssh::AsyncSshPool, AppState};
 
+/// View states for the UI
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ViewState {
+    Status,
+    DryRunSwitch,
+}
+
 /// Enhanced UI App state with async support
 pub struct EnhancedStatusApp {
     pub app_state: Arc<AppState>,
     pub ssh_pool: Arc<AsyncSshPool>,
     pub ui_state: Arc<RwLock<UiState>>,
-    pub log_sender: tokio::sync::broadcast::Sender<LogMessage>,
+    pub log_sender: tokio::sync::mpsc::UnboundedSender<LogMessage>,
     pub should_quit: Arc<RwLock<bool>>,
+    pub view_state: Arc<RwLock<ViewState>>,
+    pub view_change_sender: tokio::sync::mpsc::UnboundedSender<ViewState>,
+    pub view_change_receiver: tokio::sync::mpsc::UnboundedReceiver<ViewState>,
 }
 
 /// UI State that can be shared across threads
@@ -46,6 +57,7 @@ pub struct UiState {
     // Refresh state
     pub last_vote_refresh: Instant,
     pub last_catchup_refresh: Instant,
+    #[allow(dead_code)]
     pub is_refreshing: bool,
 }
 
@@ -60,10 +72,12 @@ pub struct NodePairStatus {
 #[derive(Clone)]
 pub struct CatchupStatus {
     pub status: String,
+    #[allow(dead_code)]
     pub last_updated: Instant,
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct LogMessage {
     pub host: String,
     pub message: String,
@@ -82,8 +96,8 @@ impl EnhancedStatusApp {
     pub async fn new(app_state: Arc<AppState>) -> Result<Self> {
         let ssh_pool = Arc::clone(&app_state.ssh_pool);
 
-        // Create broadcast channel for log messages
-        let (log_sender, _) = tokio::sync::broadcast::channel(1000);
+        // Create unbounded channel for log messages
+        let (log_sender, _log_receiver) = tokio::sync::mpsc::unbounded_channel();
 
         // Initialize UI state
         let mut initial_vote_data = Vec::new();
@@ -110,12 +124,17 @@ impl EnhancedStatusApp {
             is_refreshing: false,
         }));
 
+        let (view_change_sender, view_change_receiver) = tokio::sync::mpsc::unbounded_channel();
+
         Ok(Self {
             app_state,
             ssh_pool,
             ui_state,
             log_sender,
             should_quit: Arc::new(RwLock::new(false)),
+            view_state: Arc::new(RwLock::new(ViewState::Status)),
+            view_change_sender,
+            view_change_receiver,
         })
     }
 
@@ -377,6 +396,25 @@ impl EnhancedStatusApp {
                 state.last_catchup_refresh = Instant::now();
             }
         });
+
+        // Telegram bot polling task (if configured)
+        let app_state = Arc::clone(&self.app_state);
+        let log_sender = self.log_sender.clone();
+        let view_change_sender = self.view_change_sender.clone();
+
+        if let Some(alert_config) = &app_state.config.alert_config {
+            if alert_config.enabled {
+                if let Some(telegram_config) = &alert_config.telegram {
+                    let telegram_bot = crate::alert::TelegramBot::new(telegram_config.clone())
+                        .with_log_sender(log_sender)
+                        .with_view_change_sender(view_change_sender);
+
+                    tokio::spawn(async move {
+                        telegram_bot.start_polling(app_state).await;
+                    });
+                }
+            }
+        }
     }
 }
 
@@ -384,7 +422,7 @@ async fn fetch_catchup_for_node(
     ssh_pool: &AsyncSshPool,
     node: &crate::types::NodeWithStatus,
     ssh_key: &str,
-    log_sender: &tokio::sync::broadcast::Sender<LogMessage>,
+    log_sender: &tokio::sync::mpsc::UnboundedSender<LogMessage>,
 ) -> Option<CatchupStatus> {
     // Log the executable paths for debugging
     let _ = log_sender.send(LogMessage {
@@ -600,12 +638,7 @@ pub async fn run_enhanced_ui(app: &mut EnhancedStatusApp) -> Result<()> {
     app.spawn_background_tasks();
 
     // Process log messages in background (keeping for internal use but not displaying)
-    let mut log_receiver = app.log_sender.subscribe();
-    tokio::spawn(async move {
-        while let Ok(_log_msg) = log_receiver.recv().await {
-            // Messages are received but not stored for UI display
-        }
-    });
+    // Note: log messages are now consumed by the Telegram bot if enabled
 
     // Main UI loop
     let mut ui_interval = interval(Duration::from_millis(100)); // 10 FPS
@@ -616,17 +649,40 @@ pub async fn run_enhanced_ui(app: &mut EnhancedStatusApp) -> Result<()> {
             break;
         }
 
-        // Handle keyboard events
-        if event::poll(Duration::from_millis(10))? {
-            if let Event::Key(key) = event::read()? {
-                handle_key_event(key, &app.ui_state, &app.should_quit).await?;
+        // Check for view changes from Telegram
+        if let Ok(new_view) = app.view_change_receiver.try_recv() {
+            let mut view_state = app.view_state.write().await;
+            *view_state = new_view;
+
+            // Auto-return to status view after 10 seconds if in dry-run view
+            if new_view == ViewState::DryRunSwitch {
+                let view_state_clone = Arc::clone(&app.view_state);
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                    let mut view = view_state_clone.write().await;
+                    *view = ViewState::Status;
+                });
             }
         }
 
-        // Draw UI
+        // Handle keyboard events
+        if event::poll(Duration::from_millis(10))? {
+            if let Event::Key(key) = event::read()? {
+                handle_key_event(key, &app.ui_state, &app.should_quit, &app.view_state).await?;
+            }
+        }
+
+        // Draw UI based on current view
         let ui_state_read = app.ui_state.read().await;
-        terminal.draw(|f| draw_ui(f, &ui_state_read, &app.app_state))?;
+        let view_state_read = app.view_state.read().await;
+
+        terminal.draw(|f| match *view_state_read {
+            ViewState::Status => draw_ui(f, &ui_state_read, &app.app_state),
+            ViewState::DryRunSwitch => draw_dry_run_switch_ui(f, &app.app_state),
+        })?;
+
         drop(ui_state_read);
+        drop(view_state_read);
 
         // Wait for next frame
         ui_interval.tick().await;
@@ -645,6 +701,7 @@ async fn handle_key_event(
     key: KeyEvent,
     ui_state: &Arc<RwLock<UiState>>,
     should_quit: &Arc<RwLock<bool>>,
+    view_state: &Arc<RwLock<ViewState>>,
 ) -> Result<()> {
     let _state = ui_state.write().await;
 
@@ -654,6 +711,14 @@ async fn handle_key_event(
         }
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             *should_quit.write().await = true;
+        }
+        KeyCode::Char('s') | KeyCode::Char('S') => {
+            // Toggle dry-run switch view
+            let mut view = view_state.write().await;
+            *view = match *view {
+                ViewState::Status => ViewState::DryRunSwitch,
+                ViewState::DryRunSwitch => ViewState::Status,
+            };
         }
         _ => {}
     }
@@ -678,6 +743,7 @@ fn draw_ui(f: &mut ratatui::Frame, ui_state: &UiState, app_state: &AppState) {
     draw_footer(f, chunks[1], ui_state);
 }
 
+#[allow(dead_code)]
 fn draw_header(f: &mut ratatui::Frame, area: Rect, _ui_state: &UiState) {
     // Just leave empty - header will be in the table border
     let header = Paragraph::new("");
@@ -1181,13 +1247,132 @@ fn draw_validator_table(
 // Removed draw_logs function as logs are no longer displayed
 
 fn draw_footer(f: &mut ratatui::Frame, area: Rect, _ui_state: &UiState) {
-    let help_text = "q/Esc: Quit | Ctrl+C: Exit | Auto-refresh: 5s";
+    let help_text = "q/Esc: Quit | Ctrl+C: Exit | s: Dry-run switch view | Auto-refresh: 5s";
 
     let footer = Paragraph::new(help_text)
         .style(Style::default().fg(Color::DarkGray))
         .alignment(Alignment::Center);
 
     f.render_widget(footer, area);
+}
+
+/// Draw the dry-run switch UI
+fn draw_dry_run_switch_ui(f: &mut ratatui::Frame, app_state: &AppState) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // Header
+            Constraint::Min(0),    // Content
+            Constraint::Length(1), // Footer
+        ])
+        .split(f.size());
+
+    // Header
+    let header = Paragraph::new("🔄 DRY RUN SWITCH VIEW (Triggered from Telegram)")
+        .style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::BOTTOM));
+    f.render_widget(header, chunks[0]);
+
+    // Content area
+    let content_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(2)
+        .constraints([
+            Constraint::Length(10), // Status info
+            Constraint::Length(10), // Actions
+            Constraint::Min(0),     // Messages
+        ])
+        .split(chunks[1]);
+
+    // Current status
+    if !app_state.validator_statuses.is_empty() {
+        let validator_status = &app_state.validator_statuses[0];
+
+        let active_node = validator_status
+            .nodes_with_status
+            .iter()
+            .find(|n| n.status == crate::types::NodeStatus::Active);
+        let standby_node = validator_status
+            .nodes_with_status
+            .iter()
+            .find(|n| n.status == crate::types::NodeStatus::Standby);
+
+        let mut status_text = vec![];
+        status_text.push(
+            Line::from("Current State:").style(Style::default().add_modifier(Modifier::BOLD)),
+        );
+
+        if let (Some(active), Some(standby)) = (active_node, standby_node) {
+            status_text.push(
+                Line::from(format!("  {} → ACTIVE", active.node.label))
+                    .style(Style::default().fg(Color::Green)),
+            );
+            status_text.push(
+                Line::from(format!("  {} → STANDBY", standby.node.label))
+                    .style(Style::default().fg(Color::Yellow)),
+            );
+            status_text.push(Line::from(""));
+            status_text.push(
+                Line::from("After Switch:").style(Style::default().add_modifier(Modifier::BOLD)),
+            );
+            status_text.push(
+                Line::from(format!("  {} → STANDBY (was active)", active.node.label))
+                    .style(Style::default().fg(Color::Yellow)),
+            );
+            status_text.push(
+                Line::from(format!("  {} → ACTIVE (was standby)", standby.node.label))
+                    .style(Style::default().fg(Color::Green)),
+            );
+        } else {
+            status_text.push(
+                Line::from("Unable to determine active/standby nodes")
+                    .style(Style::default().fg(Color::Red)),
+            );
+        }
+
+        let status_widget = Paragraph::new(status_text).block(
+            Block::default()
+                .title(" Status ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        );
+        f.render_widget(status_widget, content_chunks[0]);
+
+        // Actions that would be performed
+        let actions_text = vec![
+            Line::from("Actions to be performed:")
+                .style(Style::default().add_modifier(Modifier::BOLD)),
+            Line::from("  1. Switch active node to unfunded identity"),
+            Line::from("  2. Transfer tower file to standby node"),
+            Line::from("  3. Switch standby node to funded identity"),
+            Line::from(""),
+            Line::from("⚠️  This is a DRY RUN - No actual changes will be made").style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ];
+
+        let actions_widget = Paragraph::new(actions_text).block(
+            Block::default()
+                .title(" Dry Run Actions ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow)),
+        );
+        f.render_widget(actions_widget, content_chunks[1]);
+    }
+
+    // Footer
+    let footer =
+        Paragraph::new("Press 'q' to quit | Auto-returning to status view in 10 seconds...")
+            .style(Style::default().fg(Color::DarkGray))
+            .alignment(Alignment::Center);
+    f.render_widget(footer, chunks[2]);
 }
 
 /// Helper function to shorten paths intelligently

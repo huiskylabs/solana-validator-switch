@@ -75,6 +75,7 @@ struct StatusApp<'a> {
     app_state: &'a AppState,
     vote_data: Vec<Option<ValidatorVoteData>>,
     catchup_data: Vec<(Option<CatchupStatus>, Option<CatchupStatus>)>, // (node0, node1)
+    #[allow(dead_code)]
     should_quit: bool,
     is_refreshing: bool,
     last_refresh: std::time::Instant,
@@ -150,18 +151,14 @@ impl<'a> StatusApp<'a> {
         // Update increment times based on new data
         // Keep existing increment times that are still valid (within 2 seconds)
         let mut new_increment_times = Vec::new();
-        let mut index = 0;
 
-        for validator_status in self.app_state.validator_statuses.iter() {
+        for (index, validator_status) in self.app_state.validator_statuses.iter().enumerate() {
             let validator_pair = &validator_status.validator_pair;
 
             let vote_data =
-                match fetch_vote_account_data(&validator_pair.rpc, &validator_pair.vote_pubkey)
+                fetch_vote_account_data(&validator_pair.rpc, &validator_pair.vote_pubkey)
                     .await
-                {
-                    Ok(data) => Some(data),
-                    Err(_) => None,
-                };
+                    .ok();
 
             // Check if there's a new increment
             if let (Some(ref data), Some(old_slot)) =
@@ -196,7 +193,6 @@ impl<'a> StatusApp<'a> {
             }
 
             self.vote_data.push(vote_data);
-            index += 1;
         }
 
         // Replace the increment times with the new ones
@@ -224,6 +220,7 @@ impl<'a> StatusApp<'a> {
         }
     }
 
+    #[allow(dead_code)]
     async fn fetch_vote_data(&mut self) {
         self.vote_data.clear();
         self.catchup_data.clear();
@@ -232,12 +229,9 @@ impl<'a> StatusApp<'a> {
             let validator_pair = &validator_status.validator_pair;
 
             let vote_data =
-                match fetch_vote_account_data(&validator_pair.rpc, &validator_pair.vote_pubkey)
+                fetch_vote_account_data(&validator_pair.rpc, &validator_pair.vote_pubkey)
                     .await
-                {
-                    Ok(data) => Some(data),
-                    Err(_) => None,
-                };
+                    .ok();
 
             self.vote_data.push(vote_data);
 
@@ -523,6 +517,7 @@ fn ui(f: &mut ratatui::Frame, app: &StatusApp) {
     f.render_widget(footer, chunks[2]);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_validator(
     f: &mut ratatui::Frame,
     area: Rect,
@@ -624,6 +619,7 @@ fn render_validator(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_status_table(
     f: &mut ratatui::Frame,
     area: Rect,
@@ -668,7 +664,7 @@ fn render_status_table(
                 Line::from(vec![
                     Span::raw("🖥️  "),
                     Span::styled(
-                        format!("{}", node_0.node.label),
+                        node_0.node.label.to_string(),
                         Style::default()
                             .fg(if node_0.status == crate::types::NodeStatus::Active {
                                 Color::Green
@@ -681,7 +677,7 @@ fn render_status_table(
                 Line::from(vec![
                     Span::raw("   "),
                     Span::styled(
-                        format!("{}", node_0.node.host),
+                        node_0.node.host.to_string(),
                         Style::default().fg(Color::DarkGray),
                     ),
                 ]),
@@ -690,7 +686,7 @@ fn render_status_table(
                 Line::from(vec![
                     Span::raw("🖥️  "),
                     Span::styled(
-                        format!("{}", node_1.node.label),
+                        node_1.node.label.to_string(),
                         Style::default()
                             .fg(if node_1.status == crate::types::NodeStatus::Active {
                                 Color::Green
@@ -703,7 +699,7 @@ fn render_status_table(
                 Line::from(vec![
                     Span::raw("   "),
                     Span::styled(
-                        format!("{}", node_1.node.host),
+                        node_1.node.host.to_string(),
                         Style::default().fg(Color::DarkGray),
                     ),
                 ]),

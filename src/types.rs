@@ -106,6 +106,7 @@ pub struct ValidationResult {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct ConnectionStatus {
     pub connected: bool,
     pub latency_ms: Option<u64>,

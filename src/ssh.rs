@@ -604,6 +604,7 @@ pub struct PoolStats {
 }
 
 /// SSH command builder for complex commands
+#[allow(dead_code)]
 pub struct CommandBuilder {
     command: String,
     args: Vec<String>,
@@ -611,6 +612,7 @@ pub struct CommandBuilder {
     working_dir: Option<String>,
 }
 
+#[allow(dead_code)]
 impl CommandBuilder {
     pub fn new(command: &str) -> Self {
         Self {

@@ -32,6 +32,7 @@ pub async fn status_command(app_state: &AppState) -> Result<()> {
     }
 }
 
+#[allow(dead_code)]
 async fn show_comprehensive_status(app_state: &AppState) -> Result<()> {
     println!("\n{}", "📋 Validator Status".bright_cyan().bold());
     println!();
@@ -42,6 +43,7 @@ async fn show_comprehensive_status(app_state: &AppState) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 async fn show_auto_refresh_status(app_state: &AppState) -> Result<()> {
     // Set up Ctrl+C handler
     let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -100,6 +102,7 @@ async fn show_auto_refresh_status(app_state: &AppState) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 async fn display_status_with_rpc_data(app_state: &AppState, full_display: bool) -> Result<()> {
     for (index, validator_status) in app_state.validator_statuses.iter().enumerate() {
         let validator_pair = &validator_status.validator_pair;
@@ -169,6 +172,7 @@ async fn display_status_with_rpc_data(app_state: &AppState, full_display: bool) 
     Ok(())
 }
 
+#[allow(dead_code)]
 fn display_vote_data(vote_data: &ValidatorVoteData) {
     // Voting status
     let voting_status = if vote_data.is_voting {
@@ -200,6 +204,7 @@ fn display_vote_data(vote_data: &ValidatorVoteData) {
     );
 }
 
+#[allow(dead_code)]
 fn display_simple_status_table_with_rpc(
     node_0: &crate::types::NodeConfig,
     node_0_status: &crate::types::NodeStatus,
@@ -988,6 +993,7 @@ async fn get_solana_validator_version(
     Some(version_line.to_string())
 }
 
+#[allow(dead_code)]
 fn display_status_table_from_app_state(app_state: &AppState) {
     println!("\n{}", "📋 Validator Status".bright_cyan().bold());
     println!();
@@ -1044,6 +1050,7 @@ fn display_status_table_from_app_state(app_state: &AppState) {
     }
 }
 
+#[allow(dead_code)]
 fn display_simple_status_table(
     node_0: &crate::types::NodeConfig,
     node_0_status: &crate::types::NodeStatus,
@@ -2062,6 +2069,7 @@ fn truncate_path(path: &str, max_length: usize) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn count_table_lines(app_state: &AppState) -> usize {
     // Count the number of lines in the table
     // Each validator has: header + status rows
@@ -2075,17 +2083,16 @@ fn count_table_lines(app_state: &AppState) -> usize {
     lines
 }
 
+#[allow(dead_code)]
 async fn display_vote_status_row_only(app_state: &AppState) -> Result<()> {
     // Only update the vote status for each validator
     for validator_status in app_state.validator_statuses.iter() {
         let validator_pair = &validator_status.validator_pair;
 
         // Fetch vote account data from RPC
-        let vote_data =
-            match fetch_vote_account_data(&validator_pair.rpc, &validator_pair.vote_pubkey).await {
-                Ok(data) => Some(data),
-                Err(_) => None,
-            };
+        let vote_data = fetch_vote_account_data(&validator_pair.rpc, &validator_pair.vote_pubkey)
+            .await
+            .ok();
 
         if let Some(vote_data) = vote_data {
             let voting_status = if vote_data.is_voting {

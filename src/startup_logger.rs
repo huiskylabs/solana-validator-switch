@@ -121,6 +121,7 @@ impl StartupLogger {
     }
 
     /// Log node status details
+    #[allow(dead_code)]
     pub fn log_node_status(&self, node_label: &str, details: Vec<(&str, &str)>) -> Result<()> {
         self.log(&format!("Node Status: {}", node_label))?;
         for (key, value) in details {

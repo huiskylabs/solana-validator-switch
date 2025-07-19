@@ -349,10 +349,29 @@ impl EnhancedStatusApp {
         let log_sender = self.log_sender.clone();
 
         tokio::spawn(async move {
-            let mut interval = interval(Duration::from_secs(5));
+            let mut interval = interval(Duration::from_secs(30));
 
             loop {
                 interval.tick().await;
+
+                // First, set all catchup statuses to "Checking..." to show spinner
+                {
+                    let mut state = ui_state.write().await;
+                    for catchup in &mut state.catchup_data {
+                        if catchup.node_0.is_some() {
+                            catchup.node_0 = Some(CatchupStatus {
+                                status: "Checking...".to_string(),
+                                last_updated: Instant::now(),
+                            });
+                        }
+                        if catchup.node_1.is_some() {
+                            catchup.node_1 = Some(CatchupStatus {
+                                status: "Checking...".to_string(),
+                                last_updated: Instant::now(),
+                            });
+                        }
+                    }
+                }
 
                 // Fetch catchup status for all nodes
                 let mut new_catchup_data = Vec::new();
@@ -1047,13 +1066,25 @@ fn draw_validator_table(
             let node_0_status = catchup
                 .node_0
                 .as_ref()
-                .map(|c| c.status.clone())
-                .unwrap_or_else(|| "Checking...".to_string());
+                .map(|c| {
+                    if c.status == "Checking..." {
+                        "⟳ Checking...".to_string()
+                    } else {
+                        c.status.clone()
+                    }
+                })
+                .unwrap_or_else(|| "⟳ Checking...".to_string());
             let node_1_status = catchup
                 .node_1
                 .as_ref()
-                .map(|c| c.status.clone())
-                .unwrap_or_else(|| "Checking...".to_string());
+                .map(|c| {
+                    if c.status == "Checking..." {
+                        "⟳ Checking...".to_string()
+                    } else {
+                        c.status.clone()
+                    }
+                })
+                .unwrap_or_else(|| "⟳ Checking...".to_string());
 
             rows.push(Row::new(vec![
                 Cell::from("Catchup"),

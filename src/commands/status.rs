@@ -22,14 +22,8 @@ pub async fn status_command(app_state: &AppState) -> Result<()> {
         return Ok(());
     }
 
-    // Use enhanced UI by default, allow fallback to standard UI with env var
-    if std::env::var("USE_STANDARD_UI").unwrap_or_default() == "1" {
-        // Use the standard auto-refresh UI
-        crate::commands::status_ui::show_auto_refresh_status_ui(app_state).await
-    } else {
-        // Use the new enhanced UI with SSH streaming (default)
-        crate::commands::status_ui_v2::show_enhanced_status_ui(app_state).await
-    }
+    // Use the enhanced UI with SSH streaming
+    crate::commands::status_ui_v2::show_enhanced_status_ui(app_state).await
 }
 
 #[allow(dead_code)]

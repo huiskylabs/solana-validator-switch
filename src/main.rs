@@ -91,10 +91,10 @@ async fn main() -> Result<()> {
             }
         }
         Some(Commands::Switch { dry_run }) => {
-            if let Some(state) = app_state.as_ref() {
-                let show_status = switch_command(dry_run, state).await?;
+            if let Some(mut state) = app_state {
+                let show_status = switch_command(dry_run, &mut state).await?;
                 if show_status && !dry_run {
-                    status_command(state).await?;
+                    status_command(&state).await?;
                 }
             } else {
                 // Startup validation already showed detailed error messages
@@ -111,8 +111,8 @@ async fn main() -> Result<()> {
         }
         None => {
             // Interactive main menu only if app state is valid
-            if let Some(state) = app_state.as_ref() {
-                show_interactive_menu(Some(state)).await?;
+            if let Some(state) = app_state {
+                show_interactive_menu(state).await?;
             } else {
                 // Startup validation already showed detailed error messages
                 // Exit silently to avoid redundant generic error messages
@@ -126,7 +126,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn show_interactive_menu(app_state: Option<&AppState>) -> Result<()> {
+async fn show_interactive_menu(mut app_state: AppState) -> Result<()> {
     use colored::*;
     use inquire::Select;
 
@@ -159,21 +159,11 @@ async fn show_interactive_menu(app_state: Option<&AppState>) -> Result<()> {
 
         match index {
             0 => {
-                if let Some(state) = &app_state {
-                    status_command(state).await?;
-                } else {
-                    // This should never happen since we only show menu with valid state
-                    std::process::exit(1);
-                }
+                status_command(&app_state).await?;
             }
-            1 => show_switch_menu(app_state).await?,
+            1 => show_switch_menu(&mut app_state).await?,
             2 => {
-                if let Some(state) = &app_state {
-                    test_alert_command(state).await?;
-                } else {
-                    // This should never happen since we only show menu with valid state
-                    std::process::exit(1);
-                }
+                test_alert_command(&app_state).await?;
             }
             3 => {
                 // Exit
@@ -187,7 +177,7 @@ async fn show_interactive_menu(app_state: Option<&AppState>) -> Result<()> {
     Ok(())
 }
 
-async fn show_switch_menu(app_state: Option<&AppState>) -> Result<()> {
+async fn show_switch_menu(app_state: &mut AppState) -> Result<()> {
     use colored::*;
     use inquire::Select;
 
@@ -208,26 +198,16 @@ async fn show_switch_menu(app_state: Option<&AppState>) -> Result<()> {
 
         match index {
             0 => {
-                if let Some(state) = app_state {
-                    let show_status = switch_command(false, state).await?;
-                    if show_status {
-                        status_command(state).await?;
-                    }
-                    // After a live switch, return to main menu
-                    break;
-                } else {
-                    // This should never happen since we only show menu with valid state
-                    std::process::exit(1);
+                let show_status = switch_command(false, app_state).await?;
+                if show_status {
+                    status_command(app_state).await?;
                 }
+                // After a live switch, return to main menu
+                break;
             }
             1 => {
-                if let Some(state) = app_state {
-                    let _ = switch_command(true, state).await?;
-                    // Dry run doesn't show status
-                } else {
-                    // This should never happen since we only show menu with valid state
-                    std::process::exit(1);
-                }
+                let _ = switch_command(true, app_state).await?;
+                // Dry run doesn't show status
             }
             2 => break, // Back to main menu
             _ => unreachable!(),

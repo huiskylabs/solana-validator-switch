@@ -42,7 +42,7 @@ impl ConditionalSpinner {
     }
 }
 
-pub async fn switch_command(dry_run: bool, app_state: &crate::AppState) -> Result<bool> {
+pub async fn switch_command(dry_run: bool, app_state: &mut crate::AppState) -> Result<bool> {
     // Clear screen and ensure clean output after menu selection
     print!("\x1B[2J\x1B[1;1H");
     std::io::stdout().flush()?;
@@ -52,7 +52,7 @@ pub async fn switch_command(dry_run: bool, app_state: &crate::AppState) -> Resul
 
 pub async fn switch_command_with_confirmation(
     dry_run: bool,
-    app_state: &crate::AppState,
+    app_state: &mut crate::AppState,
     require_confirmation: bool,
 ) -> Result<bool> {
     // Validate we have at least one validator configured
@@ -233,6 +233,28 @@ pub async fn switch_command_with_confirmation(
                     .bold()
             );
         }
+        
+        // Update the node statuses in app_state to reflect the switch
+        if !dry_run && show_status && app_state.validator_statuses.len() > 0 {
+            // Find the indices of active and standby nodes
+            let mut active_idx = None;
+            let mut standby_idx = None;
+            
+            for (idx, node_with_status) in app_state.validator_statuses[0].nodes_with_status.iter().enumerate() {
+                match node_with_status.status {
+                    crate::types::NodeStatus::Active => active_idx = Some(idx),
+                    crate::types::NodeStatus::Standby => standby_idx = Some(idx),
+                    _ => {}
+                }
+            }
+            
+            // Swap the statuses
+            if let (Some(active), Some(standby)) = (active_idx, standby_idx) {
+                app_state.validator_statuses[0].nodes_with_status[active].status = crate::types::NodeStatus::Standby;
+                app_state.validator_statuses[0].nodes_with_status[standby].status = crate::types::NodeStatus::Active;
+            }
+        }
+        
         println_if_not_silent!();
         println_if_not_silent!("{}", "Press any key to view status...".dimmed());
         if !is_silent_mode() {

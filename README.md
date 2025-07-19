@@ -43,9 +43,19 @@ svs
 
 ## Usage
 
+### Interactive Mode (Recommended)
 ```bash
 svs           # Opens interactive menu
-svs --version # Show version
+```
+
+### Command Line Mode
+```bash
+svs status              # Check validator status
+svs switch              # Perform validator switch
+svs switch --dry-run    # Preview switch without executing
+svs test-alert          # Test Telegram alert configuration
+svs --version           # Show version
+svs --help              # Show help
 ```
 
 
@@ -58,6 +68,41 @@ nano ~/.solana-validator-switch/config.yaml
 ```
 
 See [config.example.yaml](config.example.yaml) for the full configuration template.
+
+### Telegram Alerts Setup (Optional)
+
+To enable Telegram notifications:
+
+1. **Create a Telegram Bot**:
+   - Message [@BotFather](https://t.me/botfather) on Telegram
+   - Send `/newbot` and follow the prompts
+   - Save the bot token (looks like `123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11`)
+
+2. **Get Your Chat ID**:
+   - Add the bot to a group or start a private chat with it
+   - Send a message to the bot
+   - Visit `https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates`
+   - Find your chat ID in the response (negative for groups, positive for private chats)
+
+3. **Configure in config.yaml**:
+   ```yaml
+   alert_config:
+     enabled: true
+     delinquency_threshold_seconds: 30  # Alert after 30 seconds without voting
+     telegram:
+       bot_token: "YOUR_BOT_TOKEN"
+       chat_id: "YOUR_CHAT_ID"
+   ```
+
+4. **Test Your Configuration**:
+   ```bash
+   svs test-alert
+   ```
+
+You'll receive notifications for:
+- **Validator Delinquency**: When your validator stops voting for more than the threshold
+- **Catchup Failures**: When standby node fails catchup 3 times in a row
+- **Switch Results**: Success/failure notifications with timing details
 
 ## Key Features
 

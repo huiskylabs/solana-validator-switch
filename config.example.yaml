@@ -63,6 +63,10 @@ validators:
 alert_config:
   enabled: true
   delinquency_threshold_seconds: 30 # Alert after 30 seconds without voting
+  ssh_failure_threshold_seconds: 60 # Alert after 60 seconds of SSH failures
+  rpc_failure_threshold_seconds: 30 # Alert after 30 seconds of RPC failures
+  ssh_failure_count_threshold: 5    # Alert after 5 consecutive SSH failures
+  rpc_failure_count_threshold: 10   # Alert after 10 consecutive RPC failures
 
   # Telegram configuration (optional)
   # To set up Telegram alerts:

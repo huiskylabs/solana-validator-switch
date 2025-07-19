@@ -14,6 +14,8 @@ use clap::{Parser, Subcommand};
 use std::sync::Arc;
 
 mod alert;
+#[cfg(test)]
+mod alert_tests;
 mod commands;
 mod config;
 mod solana_rpc;

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::time::Instant;
 
 // Default functions for serde
 fn default_enabled() -> bool {
@@ -7,6 +8,22 @@ fn default_enabled() -> bool {
 
 fn default_delinquency_threshold() -> u64 {
     30
+}
+
+fn default_ssh_failure_threshold() -> u64 {
+    60 // 60 seconds of SSH failures before alert
+}
+
+fn default_rpc_failure_threshold() -> u64 {
+    30 // 30 seconds of RPC failures before alert
+}
+
+fn default_ssh_failure_count_threshold() -> u32 {
+    5 // 5 consecutive failures before alert
+}
+
+fn default_rpc_failure_count_threshold() -> u32 {
+    10 // 10 consecutive failures before alert
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,6 +40,14 @@ pub struct AlertConfig {
     pub enabled: bool,
     #[serde(default = "default_delinquency_threshold")]
     pub delinquency_threshold_seconds: u64,
+    #[serde(default = "default_ssh_failure_threshold")]
+    pub ssh_failure_threshold_seconds: u64,
+    #[serde(default = "default_rpc_failure_threshold")]
+    pub rpc_failure_threshold_seconds: u64,
+    #[serde(default = "default_ssh_failure_count_threshold")]
+    pub ssh_failure_count_threshold: u32,
+    #[serde(default = "default_rpc_failure_count_threshold")]
+    pub rpc_failure_count_threshold: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub telegram: Option<TelegramConfig>,
 }
@@ -111,4 +136,63 @@ pub struct ConnectionStatus {
     pub connected: bool,
     pub latency_ms: Option<u64>,
     pub error: Option<String>,
+}
+
+// Failure tracking structures
+#[derive(Debug, Clone)]
+pub struct FailureTracker {
+    pub consecutive_failures: u32,
+    pub first_failure_time: Option<Instant>,
+    pub last_success_time: Option<Instant>,
+    pub last_failure_time: Option<Instant>,
+    pub last_error: Option<String>,
+}
+
+impl FailureTracker {
+    pub fn new() -> Self {
+        Self {
+            consecutive_failures: 0,
+            first_failure_time: None,
+            last_success_time: None,
+            last_failure_time: None,
+            last_error: None,
+        }
+    }
+
+    pub fn record_success(&mut self) {
+        self.consecutive_failures = 0;
+        self.first_failure_time = None;
+        self.last_success_time = Some(Instant::now());
+        self.last_error = None;
+    }
+
+    pub fn record_failure(&mut self, error: String) {
+        self.consecutive_failures += 1;
+        if self.first_failure_time.is_none() {
+            self.first_failure_time = Some(Instant::now());
+        }
+        self.last_failure_time = Some(Instant::now());
+        self.last_error = Some(error);
+    }
+
+    pub fn seconds_since_first_failure(&self) -> Option<u64> {
+        self.first_failure_time.map(|t| t.elapsed().as_secs())
+    }
+
+    #[allow(dead_code)]
+    pub fn seconds_since_last_success(&self) -> Option<u64> {
+        self.last_success_time.map(|t| t.elapsed().as_secs())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct NodeHealthStatus {
+    pub ssh_status: FailureTracker,
+    pub rpc_status: FailureTracker,
+    #[allow(dead_code)]
+    pub is_voting: bool,
+    #[allow(dead_code)]
+    pub last_vote_slot: Option<u64>,
+    #[allow(dead_code)]
+    pub last_vote_time: Option<Instant>,
 }

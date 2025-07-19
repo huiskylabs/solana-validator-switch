@@ -2,7 +2,7 @@ use anyhow::Result;
 use serde_json::json;
 use std::time::Instant;
 
-use crate::types::{AlertConfig, TelegramConfig};
+use crate::types::{AlertConfig, TelegramConfig, NodeHealthStatus};
 
 pub struct AlertManager {
     config: AlertConfig,
@@ -13,6 +13,7 @@ impl AlertManager {
         Self { config }
     }
 
+    #[allow(dead_code)]
     pub async fn send_delinquency_alert(
         &self,
         validator_identity: &str,
@@ -68,6 +69,7 @@ impl AlertManager {
         Ok(results.join("\n"))
     }
 
+    #[allow(dead_code)]
     async fn send_telegram_delinquency_alert(
         &self,
         telegram: &TelegramConfig,
@@ -159,25 +161,23 @@ impl AlertManager {
         self.send_telegram_message(telegram, &catchup_example).await?;
 
         // Send example switch success alert
-        let switch_success_example = format!(
+        let switch_success_example = 
             "✅ *EXAMPLE: VALIDATOR SWITCH SUCCESSFUL* in 850ms\n\n\
             *Previous Active:* Node A\n\
             *New Active:* Node B\n\n\
             Switch completed successfully!\n\n\
-            ⚠️ *This is just an example alert*"
-        );
+            ⚠️ *This is just an example alert*";
 
         self.send_telegram_message(telegram, &switch_success_example).await?;
 
         // Send example switch failure alert
-        let switch_failure_example = format!(
+        let switch_failure_example = 
             "❌ *EXAMPLE: VALIDATOR SWITCH FAILED*\n\n\
             *Active Node:* Node A\n\
             *Standby Node:* Node B\n\
             *Error:* Example error message\n\n\
             ⚠️ *Manual intervention may be required*\n\n\
-            ⚠️ *This is just an example alert*"
-        );
+            ⚠️ *This is just an example alert*";
 
         self.send_telegram_message(telegram, &switch_failure_example).await?;
 
@@ -246,6 +246,139 @@ impl AlertManager {
                     active_node, standby_node, error_msg
                 )
             };
+
+            self.send_telegram_message(telegram, &message).await?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn send_ssh_failure_alert(
+        &self,
+        validator_identity: &str,
+        node_label: &str,
+        consecutive_failures: u32,
+        seconds_since_first_failure: u64,
+        last_error: &str,
+    ) -> Result<()> {
+        if !self.config.enabled {
+            return Ok(());
+        }
+
+        if let Some(telegram) = &self.config.telegram {
+            let message = format!(
+                "🔌 *SSH CONNECTION FAILURE* 🔌\n\n\
+                *Validator:* `{}`\n\
+                *Node:* {}\n\
+                *Consecutive Failures:* {}\n\
+                *Time Since First Failure:* {} seconds\n\
+                *Last Error:* {}\n\n\
+                ⚠️ *Action Required:* Check server connectivity and SSH access",
+                validator_identity,
+                node_label,
+                consecutive_failures,
+                seconds_since_first_failure,
+                last_error
+            );
+
+            self.send_telegram_message(telegram, &message).await?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn send_rpc_failure_alert(
+        &self,
+        validator_identity: &str,
+        vote_pubkey: &str,
+        consecutive_failures: u32,
+        seconds_since_first_failure: u64,
+        last_error: &str,
+    ) -> Result<()> {
+        if !self.config.enabled {
+            return Ok(());
+        }
+
+        if let Some(telegram) = &self.config.telegram {
+            let message = format!(
+                "🌐 *RPC CONNECTION FAILURE* 🌐\n\n\
+                *Validator:* `{}`\n\
+                *Vote Account:* `{}`\n\
+                *Consecutive Failures:* {}\n\
+                *Time Since First Failure:* {} seconds\n\
+                *Last Error:* {}\n\n\
+                ⚠️ *Action Required:* Check RPC endpoint status and rate limits",
+                validator_identity,
+                vote_pubkey,
+                consecutive_failures,
+                seconds_since_first_failure,
+                last_error
+            );
+
+            self.send_telegram_message(telegram, &message).await?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn send_delinquency_alert_with_health(
+        &self,
+        validator_identity: &str,
+        node_label: &str,
+        is_active: bool,
+        last_vote_slot: u64,
+        seconds_since_vote: u64,
+        node_health: &NodeHealthStatus,
+    ) -> Result<()> {
+        if !self.config.enabled {
+            return Ok(());
+        }
+
+        if let Some(telegram) = &self.config.telegram {
+            let status = if is_active { "Active" } else { "Standby" };
+            
+            // Build SSH status string
+            let ssh_status = if node_health.ssh_status.consecutive_failures > 0 {
+                format!(
+                    "❌ Failed ({} failures, {} seconds ago)",
+                    node_health.ssh_status.consecutive_failures,
+                    node_health.ssh_status.seconds_since_first_failure().unwrap_or(0)
+                )
+            } else {
+                "✅ Connected".to_string()
+            };
+
+            // Build RPC status string
+            let rpc_status = if node_health.rpc_status.consecutive_failures > 0 {
+                format!(
+                    "❌ Failed ({} failures, {} seconds ago)",
+                    node_health.rpc_status.consecutive_failures,
+                    node_health.rpc_status.seconds_since_first_failure().unwrap_or(0)
+                )
+            } else {
+                "✅ Working".to_string()
+            };
+
+            let message = format!(
+                "🚨 *VALIDATOR DELINQUENCY ALERT* 🚨\n\n\
+                *Validator:* `{}`\n\
+                *Node:* {} ({})\n\
+                *Last Vote Slot:* {}\n\
+                *Time Since Last Vote:* {} seconds\n\
+                *Threshold:* {} seconds\n\n\
+                *Health Status:*\n\
+                • SSH: {}\n\
+                • RPC: {}\n\n\
+                ⚠️ *Action Required:* Check validator health",
+                validator_identity,
+                node_label,
+                status,
+                last_vote_slot,
+                seconds_since_vote,
+                self.config.delinquency_threshold_seconds,
+                ssh_status,
+                rpc_status
+            );
 
             self.send_telegram_message(telegram, &message).await?;
         }
@@ -322,6 +455,28 @@ impl AlertTracker {
     pub fn reset(&mut self, validator_idx: usize) {
         if validator_idx < self.last_alert_times.len() {
             self.last_alert_times[validator_idx] = None;
+        }
+    }
+}
+
+// Comprehensive alert tracker for different alert types
+pub struct ComprehensiveAlertTracker {
+    pub delinquency_tracker: AlertTracker,
+    pub ssh_failure_tracker: Vec<AlertTracker>, // Per node tracker
+    pub rpc_failure_tracker: AlertTracker,
+}
+
+impl ComprehensiveAlertTracker {
+    pub fn new(validator_count: usize, nodes_per_validator: usize) -> Self {
+        let mut ssh_trackers = Vec::new();
+        for _ in 0..nodes_per_validator {
+            ssh_trackers.push(AlertTracker::new(validator_count));
+        }
+        
+        Self {
+            delinquency_tracker: AlertTracker::new(validator_count),
+            ssh_failure_tracker: ssh_trackers,
+            rpc_failure_tracker: AlertTracker::new(validator_count),
         }
     }
 }

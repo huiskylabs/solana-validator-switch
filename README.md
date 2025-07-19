@@ -101,6 +101,11 @@ To enable Telegram notifications:
 
 You'll receive notifications for:
 - **Validator Delinquency**: When your validator stops voting for more than the threshold
+  - Includes SSH and RPC connection status in the alert
+- **SSH Connection Failures**: When SSH connections fail repeatedly
+  - Triggers after 5 consecutive failures or 60 seconds of failures
+- **RPC Connection Failures**: When RPC calls fail due to throttling or network issues
+  - Triggers after 10 consecutive failures or 30 seconds of failures
 - **Catchup Failures**: When standby node fails catchup 3 times in a row
 - **Switch Results**: Success/failure notifications with timing details
 

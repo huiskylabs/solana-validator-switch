@@ -18,8 +18,9 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tokio::time::interval;
 
-use crate::alert::{AlertManager, AlertTracker};
+use crate::alert::{AlertManager, ComprehensiveAlertTracker};
 use crate::solana_rpc::{fetch_vote_account_data, ValidatorVoteData};
+use crate::types::{FailureTracker, NodeHealthStatus};
 use crate::{ssh::AsyncSshPool, AppState};
 
 /// View states for the UI
@@ -58,9 +59,19 @@ pub struct UiState {
     // Track last alert time for catchup failures
     pub last_catchup_alert_times: Vec<(Option<Instant>, Option<Instant>)>, // (node_0_last_alert, node_1_last_alert)
 
+    // SSH health status for each node
+    pub ssh_health_data: Vec<NodePairSshStatus>,
+
+    // Comprehensive health tracking for each validator
+    pub validator_health: Vec<NodeHealthStatus>,
+    
+    // RPC failure tracking for each validator
+    pub rpc_failure_tracker: Vec<FailureTracker>,
+
     // Refresh state
     pub last_vote_refresh: Instant,
     pub last_catchup_refresh: Instant,
+    pub last_ssh_health_refresh: Instant,
     #[allow(dead_code)]
     pub is_refreshing: bool,
 }
@@ -78,6 +89,19 @@ pub struct CatchupStatus {
     pub status: String,
     #[allow(dead_code)]
     pub last_updated: Instant,
+}
+
+#[derive(Clone)]
+pub struct NodePairSshStatus {
+    pub node_0: SshHealthStatus,
+    pub node_1: SshHealthStatus,
+}
+
+#[derive(Clone)]
+pub struct SshHealthStatus {
+    pub is_healthy: bool,
+    pub last_success: Option<Instant>,
+    pub failure_start: Option<Instant>,
 }
 
 #[derive(Clone)]
@@ -106,6 +130,7 @@ impl EnhancedStatusApp {
         // Initialize UI state
         let mut initial_vote_data = Vec::new();
         let mut initial_catchup_data = Vec::new();
+        let mut initial_ssh_health_data = Vec::new();
 
         for _validator_status in &app_state.validator_statuses {
             initial_vote_data.push(None);
@@ -115,6 +140,34 @@ impl EnhancedStatusApp {
                 node_1: None,
             };
             initial_catchup_data.push(node_pair);
+
+            let ssh_pair = NodePairSshStatus {
+                node_0: SshHealthStatus {
+                    is_healthy: true,
+                    last_success: Some(Instant::now()),
+                    failure_start: None,
+                },
+                node_1: SshHealthStatus {
+                    is_healthy: true,
+                    last_success: Some(Instant::now()),
+                    failure_start: None,
+                },
+            };
+            initial_ssh_health_data.push(ssh_pair);
+        }
+
+        // Initialize health tracking
+        let mut initial_validator_health = Vec::new();
+        let mut initial_rpc_trackers = Vec::new();
+        for _ in 0..app_state.validator_statuses.len() {
+            initial_validator_health.push(NodeHealthStatus {
+                ssh_status: FailureTracker::new(),
+                rpc_status: FailureTracker::new(),
+                is_voting: true,
+                last_vote_slot: None,
+                last_vote_time: None,
+            });
+            initial_rpc_trackers.push(FailureTracker::new());
         }
 
         let ui_state = Arc::new(RwLock::new(UiState {
@@ -125,8 +178,12 @@ impl EnhancedStatusApp {
             catchup_data: initial_catchup_data,
             catchup_failure_counts: vec![(0, 0); app_state.validator_statuses.len()],
             last_catchup_alert_times: vec![(None, None); app_state.validator_statuses.len()],
+            ssh_health_data: initial_ssh_health_data,
+            validator_health: initial_validator_health,
+            rpc_failure_tracker: initial_rpc_trackers,
             last_vote_refresh: Instant::now(),
             last_catchup_refresh: Instant::now(),
+            last_ssh_health_refresh: Instant::now(),
             is_refreshing: false,
         }));
 
@@ -158,7 +215,11 @@ impl EnhancedStatusApp {
                 .filter(|config| config.enabled)
                 .map(|config| AlertManager::new(config.clone()));
 
-            let mut alert_tracker = AlertTracker::new(app_state.validator_statuses.len());
+            let nodes_per_validator = 2; // Assuming 2 nodes per validator
+            let mut alert_tracker = ComprehensiveAlertTracker::new(
+                app_state.validator_statuses.len(),
+                nodes_per_validator
+            );
 
             loop {
                 interval.tick().await;
@@ -173,6 +234,12 @@ impl EnhancedStatusApp {
                         .await
                     {
                         Ok(data) => {
+                            // Update RPC success
+                            {
+                                let mut state = ui_state.write().await;
+                                state.rpc_failure_tracker[idx].record_success();
+                            }
+
                             let _ = log_sender.send(LogMessage {
                                 host: format!("validator-{}", idx),
                                 message: format!(
@@ -186,6 +253,38 @@ impl EnhancedStatusApp {
                             new_vote_data.push(Some(data));
                         }
                         Err(e) => {
+                            // Update RPC failure
+                            let (should_alert_rpc, consecutive_failures, seconds_since_first) = {
+                                let mut state = ui_state.write().await;
+                                state.rpc_failure_tracker[idx].record_failure(e.to_string());
+                                
+                                let tracker = &state.rpc_failure_tracker[idx];
+                                let consecutive = tracker.consecutive_failures;
+                                let seconds = tracker.seconds_since_first_failure().unwrap_or(0);
+                                
+                                let config = app_state.config.alert_config.as_ref();
+                                let count_threshold = config.map(|c| c.rpc_failure_count_threshold).unwrap_or(10);
+                                let time_threshold = config.map(|c| c.rpc_failure_threshold_seconds).unwrap_or(30);
+                                
+                                let should_alert = (consecutive >= count_threshold || seconds >= time_threshold)
+                                    && alert_tracker.rpc_failure_tracker.should_send_alert(idx);
+                                
+                                (should_alert, consecutive, seconds)
+                            };
+
+                            // Send RPC failure alert if needed
+                            if should_alert_rpc {
+                                if let Some(alert_mgr) = alert_manager.as_ref() {
+                                    let _ = alert_mgr.send_rpc_failure_alert(
+                                        &validator_pair.identity_pubkey,
+                                        &validator_pair.vote_pubkey,
+                                        consecutive_failures,
+                                        seconds_since_first,
+                                        &e.to_string()
+                                    ).await;
+                                }
+                            }
+
                             let _ = log_sender.send(LogMessage {
                                 host: format!("validator-{}", idx),
                                 message: format!("Failed to fetch vote data: {}", e),
@@ -223,7 +322,7 @@ impl EnhancedStatusApp {
                             if should_update_slot_time {
                                 new_slot_times.push(Some((new_slot, Instant::now())));
                                 // Reset alert tracker since slot is advancing
-                                alert_tracker.reset(idx);
+                                alert_tracker.delinquency_tracker.reset(idx);
                             } else {
                                 // Slot hasn't changed, keep existing time
                                 new_slot_times
@@ -243,7 +342,7 @@ impl EnhancedStatusApp {
                                         .unwrap_or(30);
 
                                     if seconds_since_vote >= threshold
-                                        && alert_tracker.should_send_alert(idx)
+                                        && alert_tracker.delinquency_tracker.should_send_alert(idx)
                                     {
                                         // Find which node is active
                                         let active_node = if let Some(node_with_status) = app_state
@@ -263,9 +362,12 @@ impl EnhancedStatusApp {
                                             .iter()
                                             .any(|n| n.status == crate::types::NodeStatus::Active);
 
-                                        // Send alert
+                                        // Get current health status
+                                        let node_health = state.validator_health[idx].clone();
+                                        
+                                        // Send alert with health status
                                         if let Err(e) = alert_mgr
-                                            .send_delinquency_alert(
+                                            .send_delinquency_alert_with_health(
                                                 &app_state.validator_statuses[idx]
                                                     .validator_pair
                                                     .identity_pubkey,
@@ -273,6 +375,7 @@ impl EnhancedStatusApp {
                                                 is_active,
                                                 new_slot,
                                                 seconds_since_vote,
+                                                &node_health,
                                             )
                                             .await
                                         {
@@ -328,8 +431,11 @@ impl EnhancedStatusApp {
                             new_slot_times.push(None);
                         }
                     } else {
+                        // RPC failed - preserve existing slot time instead of setting to None
                         new_increments.push(None);
-                        new_slot_times.push(None);
+                        new_slot_times.push(
+                            state.last_vote_slot_times.get(idx).and_then(|&v| v)
+                        );
                     }
                 }
 
@@ -563,6 +669,195 @@ impl EnhancedStatusApp {
                 
                 state.catchup_data = new_catchup_data;
                 state.last_catchup_refresh = Instant::now();
+            }
+        });
+
+        // SSH health monitoring task
+        let ui_state = Arc::clone(&self.ui_state);
+        let app_state = Arc::clone(&self.app_state);
+        let ssh_pool = Arc::clone(&self.ssh_pool);
+        let log_sender = self.log_sender.clone();
+
+        tokio::spawn(async move {
+            let mut interval = interval(Duration::from_secs(30));
+
+            // Initialize alert manager and tracker if alerts are configured
+            let alert_manager = app_state
+                .config
+                .alert_config
+                .as_ref()
+                .filter(|config| config.enabled)
+                .map(|config| AlertManager::new(config.clone()));
+
+            let nodes_per_validator = 2;
+            let mut alert_tracker = ComprehensiveAlertTracker::new(
+                app_state.validator_statuses.len(),
+                nodes_per_validator
+            );
+
+            loop {
+                interval.tick().await;
+
+                // Check SSH health for all nodes
+                let mut new_ssh_health_data = Vec::new();
+
+                for (idx, validator_status) in app_state.validator_statuses.iter().enumerate() {
+                    let mut node_pair = NodePairSshStatus {
+                        node_0: SshHealthStatus {
+                            is_healthy: false,
+                            last_success: None,
+                            failure_start: None,
+                        },
+                        node_1: SshHealthStatus {
+                            is_healthy: false,
+                            last_success: None,
+                            failure_start: None,
+                        },
+                    };
+
+                    // Get current state to preserve timing info
+                    let current_state = {
+                        let state = ui_state.read().await;
+                        state.ssh_health_data.get(idx).cloned()
+                    };
+
+                    // Check node 0
+                    if validator_status.nodes_with_status.len() > 0 {
+                        let node_0 = &validator_status.nodes_with_status[0];
+                        if let Some(ssh_key) = app_state.detected_ssh_keys.get(&node_0.node.host) {
+                            match ssh_pool
+                                .execute_command(&node_0.node, ssh_key, "true")
+                                .await
+                            {
+                                Ok(_) => {
+                                    node_pair.node_0.is_healthy = true;
+                                    node_pair.node_0.last_success = Some(Instant::now());
+                                    node_pair.node_0.failure_start = None;
+                                    
+                                    // Update health tracking
+                                    {
+                                        let mut state = ui_state.write().await;
+                                        state.validator_health[idx].ssh_status.record_success();
+                                    }
+                                    
+                                    let _ = log_sender.send(LogMessage {
+                                        host: node_0.node.label.clone(),
+                                        message: "SSH health check: OK".to_string(),
+                                        timestamp: Instant::now(),
+                                        level: LogLevel::Info,
+                                    });
+                                }
+                                Err(e) => {
+                                    node_pair.node_0.is_healthy = false;
+                                    // Preserve last_success from previous state
+                                    if let Some(ref current) = current_state {
+                                        node_pair.node_0.last_success = current.node_0.last_success;
+                                        // Set failure_start if this is first failure
+                                        if current.node_0.is_healthy {
+                                            node_pair.node_0.failure_start = Some(Instant::now());
+                                        } else {
+                                            node_pair.node_0.failure_start = current.node_0.failure_start;
+                                        }
+                                    } else {
+                                        node_pair.node_0.failure_start = Some(Instant::now());
+                                    }
+                                    
+                                    // Update health tracking and check if alert needed
+                                    let (should_alert_ssh, consecutive_failures, seconds_since_first) = {
+                                        let mut state = ui_state.write().await;
+                                        state.validator_health[idx].ssh_status.record_failure(e.to_string());
+                                        
+                                        let tracker = &state.validator_health[idx].ssh_status;
+                                        let consecutive = tracker.consecutive_failures;
+                                        let seconds = tracker.seconds_since_first_failure().unwrap_or(0);
+                                        
+                                        let config = app_state.config.alert_config.as_ref();
+                                        let count_threshold = config.map(|c| c.ssh_failure_count_threshold).unwrap_or(5);
+                                        let time_threshold = config.map(|c| c.ssh_failure_threshold_seconds).unwrap_or(60);
+                                        
+                                        let should_alert = (consecutive >= count_threshold || seconds >= time_threshold)
+                                            && alert_tracker.ssh_failure_tracker[0].should_send_alert(idx);
+                                        
+                                        (should_alert, consecutive, seconds)
+                                    };
+                                    
+                                    // Send SSH failure alert if needed
+                                    if should_alert_ssh {
+                                        if let Some(alert_mgr) = alert_manager.as_ref() {
+                                            let _ = alert_mgr.send_ssh_failure_alert(
+                                                &validator_status.validator_pair.identity_pubkey,
+                                                &node_0.node.label,
+                                                consecutive_failures,
+                                                seconds_since_first,
+                                                &e.to_string()
+                                            ).await;
+                                        }
+                                    }
+                                    
+                                    let _ = log_sender.send(LogMessage {
+                                        host: node_0.node.label.clone(),
+                                        message: format!("SSH health check failed: {}", e),
+                                        timestamp: Instant::now(),
+                                        level: LogLevel::Error,
+                                    });
+                                }
+                            }
+                        }
+                    }
+
+                    // Check node 1
+                    if validator_status.nodes_with_status.len() > 1 {
+                        let node_1 = &validator_status.nodes_with_status[1];
+                        if let Some(ssh_key) = app_state.detected_ssh_keys.get(&node_1.node.host) {
+                            match ssh_pool
+                                .execute_command(&node_1.node, ssh_key, "true")
+                                .await
+                            {
+                                Ok(_) => {
+                                    node_pair.node_1.is_healthy = true;
+                                    node_pair.node_1.last_success = Some(Instant::now());
+                                    node_pair.node_1.failure_start = None;
+                                    
+                                    let _ = log_sender.send(LogMessage {
+                                        host: node_1.node.label.clone(),
+                                        message: "SSH health check: OK".to_string(),
+                                        timestamp: Instant::now(),
+                                        level: LogLevel::Info,
+                                    });
+                                }
+                                Err(e) => {
+                                    node_pair.node_1.is_healthy = false;
+                                    // Preserve last_success from previous state
+                                    if let Some(ref current) = current_state {
+                                        node_pair.node_1.last_success = current.node_1.last_success;
+                                        // Set failure_start if this is first failure
+                                        if current.node_1.is_healthy {
+                                            node_pair.node_1.failure_start = Some(Instant::now());
+                                        } else {
+                                            node_pair.node_1.failure_start = current.node_1.failure_start;
+                                        }
+                                    } else {
+                                        node_pair.node_1.failure_start = Some(Instant::now());
+                                    }
+                                    
+                                    let _ = log_sender.send(LogMessage {
+                                        host: node_1.node.label.clone(),
+                                        message: format!("SSH health check failed: {}", e),
+                                        timestamp: Instant::now(),
+                                        level: LogLevel::Error,
+                                    });
+                                }
+                            }
+                        }
+                    }
+
+                    new_ssh_health_data.push(node_pair);
+                }
+
+                // Update UI state
+                let mut state = ui_state.write().await;
+                state.ssh_health_data = new_ssh_health_data;
+                state.last_ssh_health_refresh = Instant::now();
             }
         });
 
@@ -922,8 +1217,9 @@ fn draw_validator_summaries(
         let catchup_data = ui_state.catchup_data.get(idx);
         let prev_slot = ui_state.previous_last_slots.get(idx).and_then(|&v| v);
         let inc_time = ui_state.increment_times.get(idx).and_then(|&v| v);
+        let ssh_health_data = ui_state.ssh_health_data.get(idx);
 
-        draw_validator_table(
+        draw_side_by_side_tables(
             f,
             *chunk,
             validator_status,
@@ -933,10 +1229,442 @@ fn draw_validator_summaries(
             inc_time,
             app_state,
             ui_state.last_catchup_refresh,
+            ssh_health_data,
+            ui_state.last_ssh_health_refresh,
         );
     }
 }
 
+fn draw_side_by_side_tables(
+    f: &mut ratatui::Frame,
+    area: Rect,
+    validator_status: &crate::ValidatorStatus,
+    vote_data: Option<&ValidatorVoteData>,
+    catchup_data: Option<&NodePairStatus>,
+    previous_last_slot: Option<u64>,
+    increment_time: Option<Instant>,
+    app_state: &AppState,
+    last_catchup_refresh: Instant,
+    ssh_health_data: Option<&NodePairSshStatus>,
+    last_ssh_health_refresh: Instant,
+) {
+    // Find active and standby nodes
+    let active_node_index = validator_status
+        .nodes_with_status
+        .iter()
+        .position(|n| n.status == crate::types::NodeStatus::Active);
+    
+    let standby_node_index = validator_status
+        .nodes_with_status
+        .iter()
+        .position(|n| n.status == crate::types::NodeStatus::Standby);
+
+    // Split area horizontally
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(50),
+            Constraint::Percentage(50),
+        ])
+        .split(area);
+
+    // Prepare node indices for display (active on left, standby on right)
+    let (left_node_idx, right_node_idx) = match (active_node_index, standby_node_index) {
+        (Some(active), Some(standby)) => (active, standby),
+        (Some(active), None) => (active, 1 - active), // If no standby, show the other node
+        (None, Some(standby)) => (1 - standby, standby), // If no active, show the other node first
+        (None, None) => (0, 1), // Default to first two nodes
+    };
+
+    // Draw left table (active node)
+    if let Some(node) = validator_status.nodes_with_status.get(left_node_idx) {
+        let catchup_status = catchup_data.and_then(|c| {
+            if left_node_idx == 0 { c.node_0.as_ref() } else { c.node_1.as_ref() }
+        });
+        let ssh_health = ssh_health_data.and_then(|s| {
+            if left_node_idx == 0 { Some(&s.node_0) } else { Some(&s.node_1) }
+        });
+        
+        draw_single_node_table(
+            f,
+            chunks[0],
+            validator_status,
+            node,
+            vote_data,
+            catchup_status,
+            previous_last_slot,
+            increment_time,
+            app_state,
+            last_catchup_refresh,
+            ssh_health,
+            last_ssh_health_refresh,
+            true, // is_left_table
+        );
+    }
+
+    // Draw right table (standby node)
+    if let Some(node) = validator_status.nodes_with_status.get(right_node_idx) {
+        let catchup_status = catchup_data.and_then(|c| {
+            if right_node_idx == 0 { c.node_0.as_ref() } else { c.node_1.as_ref() }
+        });
+        let ssh_health = ssh_health_data.and_then(|s| {
+            if right_node_idx == 0 { Some(&s.node_0) } else { Some(&s.node_1) }
+        });
+        
+        draw_single_node_table(
+            f,
+            chunks[1],
+            validator_status,
+            node,
+            vote_data,
+            catchup_status,
+            previous_last_slot,
+            increment_time,
+            app_state,
+            last_catchup_refresh,
+            ssh_health,
+            last_ssh_health_refresh,
+            false, // is_left_table
+        );
+    }
+}
+
+fn draw_single_node_table(
+    f: &mut ratatui::Frame,
+    area: Rect,
+    validator_status: &crate::ValidatorStatus,
+    node: &crate::types::NodeWithStatus,
+    vote_data: Option<&ValidatorVoteData>,
+    catchup_status: Option<&CatchupStatus>,
+    previous_last_slot: Option<u64>,
+    increment_time: Option<Instant>,
+    app_state: &AppState,
+    last_catchup_refresh: Instant,
+    ssh_health: Option<&SshHealthStatus>,
+    last_ssh_health_refresh: Instant,
+    is_left_table: bool,
+) {
+    // Add padding around the table
+    let padded_area = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+    
+    let mut rows = vec![];
+
+    // Node Status (first row)
+    rows.push(Row::new(vec![
+        Cell::from("Status"),
+        Cell::from(format!(
+            "{} ({})",
+            match node.status {
+                crate::types::NodeStatus::Active => "🟢 ACTIVE",
+                crate::types::NodeStatus::Standby => "🟡 STANDBY",
+                crate::types::NodeStatus::Unknown => "🔴 UNKNOWN",
+            },
+            node.node.label
+        ))
+        .style(Style::default().fg(match node.status {
+            crate::types::NodeStatus::Active => Color::Green,
+            crate::types::NodeStatus::Standby => Color::Yellow,
+            crate::types::NodeStatus::Unknown => Color::Red,
+        })),
+    ]));
+
+    // Vote account info
+    let vote_key = &validator_status.validator_pair.vote_pubkey;
+    rows.push(Row::new(vec![
+        Cell::from("Vote"),
+        Cell::from(vote_key.clone()),
+    ]));
+
+    // Identity
+    let id = node.current_identity.as_deref().unwrap_or("Unknown");
+    rows.push(Row::new(vec![
+        Cell::from("Identity"),
+        Cell::from(id.to_string()),
+    ]));
+
+    // Host info
+    rows.push(Row::new(vec![
+        Cell::from("Host"),
+        Cell::from(node.node.host.as_str()),
+    ]));
+
+    // Validator type and version
+    rows.push(Row::new(vec![
+        Cell::from("Client"),
+        Cell::from({
+            let version = node.version.as_deref().unwrap_or("");
+            let cleaned_version = version
+                .replace("Firedancer ", "")
+                .replace("Agave ", "")
+                .replace("Jito ", "");
+            format!(
+                "{} {}",
+                match node.validator_type {
+                    crate::types::ValidatorType::Firedancer => "Firedancer",
+                    crate::types::ValidatorType::Agave => "Agave",
+                    crate::types::ValidatorType::Jito => "Jito",
+                    crate::types::ValidatorType::Unknown => "Unknown",
+                },
+                cleaned_version
+            )
+        }),
+    ]));
+
+    // Swap readiness
+    rows.push(Row::new(vec![
+        Cell::from("Swap Ready"),
+        Cell::from(if node.swap_ready.unwrap_or(false) {
+            "✅ Ready"
+        } else {
+            "❌ Not Ready"
+        })
+        .style(Style::default().fg(if node.swap_ready.unwrap_or(false) {
+            Color::Green
+        } else {
+            Color::Red
+        })),
+    ]));
+
+    // Sync status if available
+    if let Some(sync_status) = &node.sync_status {
+        rows.push(Row::new(vec![
+            Cell::from("Sync Status"),
+            Cell::from(sync_status.as_str()),
+        ]));
+    }
+
+    // Section separator before Executable Paths
+    rows.push(create_section_header());
+
+    // Ledger path
+    if let Some(ledger_path) = &node.ledger_path {
+        rows.push(Row::new(vec![
+            Cell::from("Ledger Path"),
+            Cell::from(
+                ledger_path
+                    .split('/')
+                    .last()
+                    .unwrap_or("N/A"),
+            ),
+        ]));
+    }
+
+    // Executable paths
+    if let Some(solana_cli) = &node.solana_cli_executable {
+        rows.push(Row::new(vec![
+            Cell::from("Solana CLI"),
+            Cell::from(shorten_path(solana_cli, 30)),
+        ]));
+    }
+
+    if let Some(fdctl) = &node.fdctl_executable {
+        rows.push(Row::new(vec![
+            Cell::from("Fdctl Path"),
+            Cell::from(shorten_path(fdctl, 30)),
+        ]));
+    }
+
+    if let Some(agave) = &node.agave_validator_executable {
+        rows.push(Row::new(vec![
+            Cell::from("Agave Path"),
+            Cell::from(shorten_path(agave, 30)),
+        ]));
+    }
+
+    // Section separator before Vote
+    rows.push(create_section_header());
+
+    // Catchup status
+    if let Some(catchup) = catchup_status {
+        let elapsed = last_catchup_refresh.elapsed().as_secs();
+        let next_check_in = if elapsed >= 30 { 0 } else { 30 - elapsed };
+        let next_check_suffix = if next_check_in > 0 {
+            format!(" (next in {}s)", next_check_in)
+        } else {
+            String::new()
+        };
+
+        let status = if catchup.status == "Checking..." {
+            "🔄 Checking...".to_string()
+        } else {
+            catchup.status.clone()
+        };
+        
+        let status_display = if !status.contains("Checking") && next_check_in > 0 {
+            format!("{}{}", status, next_check_suffix)
+        } else {
+            status
+        };
+
+        rows.push(Row::new(vec![
+            Cell::from("Catchup"),
+            Cell::from(status_display.clone()).style(if status_display.contains("Caught up") {
+                Style::default().fg(Color::Green)
+            } else if status_display.contains("Error") {
+                Style::default().fg(Color::Red)
+            } else if status_display.contains("Checking") {
+                Style::default().fg(Color::DarkGray)
+            } else {
+                Style::default().fg(Color::Yellow)
+            }),
+        ]));
+    }
+
+    // Vote status - always show
+    let is_active = node.status == crate::types::NodeStatus::Active;
+    
+    let (vote_display, vote_style) = if !is_active {
+        // Non-active nodes always show "-"
+        ("-".to_string(), Style::default())
+    } else if let Some(vote_data) = vote_data {
+        // Active node with vote data
+        let last_slot_info = vote_data.recent_votes.last().map(|lv| lv.slot);
+        
+        let mut display = if vote_data.is_voting {
+            "✅ Voting".to_string()
+        } else {
+            "⚠️ Not Voting".to_string()
+        };
+        
+        if let Some(last_slot) = last_slot_info {
+            display.push_str(&format!(" - {}", last_slot));
+            
+            if let Some(prev) = previous_last_slot {
+                if last_slot > prev {
+                    let inc = format!(" (+{})", last_slot - prev);
+                    display.push_str(&inc);
+                }
+            }
+        }
+        
+        let has_recent_increment = if let Some(prev) = previous_last_slot {
+            last_slot_info.map(|slot| slot > prev).unwrap_or(false)
+                && increment_time.map(|t| t.elapsed().as_secs() < 3).unwrap_or(false)
+        } else {
+            false
+        };
+        
+        let style = if has_recent_increment {
+            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+        } else if vote_data.is_voting {
+            Style::default().fg(Color::Green)
+        } else {
+            Style::default().fg(Color::Yellow)
+        };
+        
+        (display, style)
+    } else {
+        // Active node but no vote data yet
+        ("-".to_string(), Style::default())
+    };
+
+    rows.push(Row::new(vec![
+        Cell::from("Vote Status"),
+        Cell::from(vote_display).style(vote_style),
+    ]));
+
+    // Section separator before SSH
+    rows.push(create_section_header());
+
+    // Node health status
+    let health_display = if let Some(health) = ssh_health {
+        let elapsed = last_ssh_health_refresh.elapsed().as_secs();
+        let next_check_in = if elapsed >= 30 { 0 } else { 30 - elapsed };
+        
+        if health.is_healthy {
+            if next_check_in > 0 {
+                format!("✅ Healthy (next check in {}s)", next_check_in)
+            } else {
+                "✅ Healthy (checking...)".to_string()
+            }
+        } else {
+            let failure_duration = health.failure_start
+                .map(|start| start.elapsed())
+                .unwrap_or_else(|| Duration::from_secs(0));
+            
+            let duration_str = if failure_duration.as_secs() < 60 {
+                format!("{}s", failure_duration.as_secs())
+            } else if failure_duration.as_secs() < 3600 {
+                format!("{}m", failure_duration.as_secs() / 60)
+            } else {
+                format!("{}h", failure_duration.as_secs() / 3600)
+            };
+            
+            format!("❌ Failed (for {})", duration_str)
+        }
+    } else {
+        "⏳ Checking...".to_string()
+    };
+    
+    rows.push(Row::new(vec![
+        Cell::from("Node Health"),
+        Cell::from(health_display.clone()).style(
+            if health_display.contains("Healthy") {
+                Style::default().fg(Color::Green)
+            } else if health_display.contains("Failed") {
+                Style::default().fg(Color::Red)
+            } else {
+                Style::default().fg(Color::Yellow)
+            }
+        ),
+    ]));
+
+    // Alert Status
+    let alert_status = match &app_state.config.alert_config {
+        Some(alert_config) if alert_config.enabled => {
+            if alert_config.telegram.is_some() {
+                "✅ Telegram"
+            } else {
+                "⚠️ Enabled (no method)"
+            }
+        }
+        _ => "Disabled",
+    };
+
+    rows.push(Row::new(vec![
+        Cell::from("Alert Status"),
+        Cell::from(alert_status),
+    ]));
+
+    let border_style = if is_left_table {
+        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let table = Table::new(
+        rows,
+        vec![
+            Constraint::Length(20),
+            Constraint::Percentage(80),
+        ],
+    )
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(border_style)
+            .padding(ratatui::widgets::Padding::new(1, 1, 0, 0)),
+    );
+
+    f.render_widget(table, padded_area);
+}
+
+fn create_section_header() -> Row<'static> {
+    // Create separator that spans both columns
+    Row::new(vec![
+        Cell::from("─────────────────────"),
+        Cell::from("─────────────────────────────────────────────────────────────────────"),
+    ])
+    .style(Style::default().fg(Color::DarkGray))
+    .height(1)
+}
+
+#[allow(dead_code)]
 fn draw_validator_table(
     f: &mut ratatui::Frame,
     area: Rect,
@@ -1407,7 +2135,10 @@ fn draw_validator_table(
 // Removed draw_logs function as logs are no longer displayed
 
 fn draw_footer(f: &mut ratatui::Frame, area: Rect, _ui_state: &UiState) {
-    let help_text = "q/Esc: Quit | v: Validator view | d: Dry-run switch | Auto-refresh: 5s";
+    let help_text = format!(
+        "q/Esc: Quit | v: Validator view | d: Dry-run switch | Auto-refresh: 5s | Time: {}",
+        chrono::Local::now().format("%H:%M:%S")
+    );
 
     let footer = Paragraph::new(help_text)
         .style(Style::default().fg(Color::DarkGray))

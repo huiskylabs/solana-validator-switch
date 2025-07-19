@@ -111,20 +111,77 @@ impl AlertManager {
             ));
         }
 
+        // Send main test message
         let message = format!(
             "✅ *SVS Alert Test* ✅\n\n\
             This is a test message from Solana Validator Switch.\n\
             Your Telegram alerts are configured correctly!\n\n\
             *Monitoring Validators:*\n{}\
             *Delinquency Threshold:* {} seconds\n\n\
-            Alerts will be sent when any validator stops voting for more than {} seconds.",
+            The following alert types are configured:\n\
+            • Validator Delinquency Alerts\n\
+            • Catchup Failure Alerts\n\
+            • Switch Result Alerts",
             validators_text,
-            self.config.delinquency_threshold_seconds,
             self.config.delinquency_threshold_seconds
         );
 
         self.send_telegram_message(telegram, &message).await?;
-        Ok("Test message sent successfully".to_string())
+
+        // Send example delinquency alert
+        let delinquency_example = format!(
+            "🚨 *EXAMPLE: VALIDATOR DELINQUENCY ALERT* 🚨\n\n\
+            *Validator:* `{}`\n\
+            *Node:* Example Node (Active)\n\
+            *Last Vote Slot:* 123456789\n\
+            *Time Since Last Vote:* {} seconds\n\
+            *Threshold:* {} seconds\n\n\
+            ⚠️ *This is just an example alert*",
+            validators_info.first().map(|(id, _)| *id).unwrap_or("ExampleValidator"),
+            self.config.delinquency_threshold_seconds,
+            self.config.delinquency_threshold_seconds
+        );
+
+        self.send_telegram_message(telegram, &delinquency_example).await?;
+
+        // Send example catchup failure alert
+        let catchup_example = format!(
+            "⚠️ *EXAMPLE: STANDBY NODE CATCHUP FAILURE* ⚠️\n\n\
+            *Validator:* `{}`\n\
+            *Standby Node:* Example Standby Node\n\
+            *Consecutive Failures:* 3\n\n\
+            The standby node has failed catchup check 3 times in a row.\n\
+            This may indicate issues with the standby node's sync status.\n\n\
+            ⚠️ *This is just an example alert*",
+            validators_info.first().map(|(id, _)| *id).unwrap_or("ExampleValidator")
+        );
+
+        self.send_telegram_message(telegram, &catchup_example).await?;
+
+        // Send example switch success alert
+        let switch_success_example = format!(
+            "✅ *EXAMPLE: VALIDATOR SWITCH SUCCESSFUL* in 850ms\n\n\
+            *Previous Active:* Node A\n\
+            *New Active:* Node B\n\n\
+            Switch completed successfully!\n\n\
+            ⚠️ *This is just an example alert*"
+        );
+
+        self.send_telegram_message(telegram, &switch_success_example).await?;
+
+        // Send example switch failure alert
+        let switch_failure_example = format!(
+            "❌ *EXAMPLE: VALIDATOR SWITCH FAILED*\n\n\
+            *Active Node:* Node A\n\
+            *Standby Node:* Node B\n\
+            *Error:* Example error message\n\n\
+            ⚠️ *Manual intervention may be required*\n\n\
+            ⚠️ *This is just an example alert*"
+        );
+
+        self.send_telegram_message(telegram, &switch_failure_example).await?;
+
+        Ok("Test messages sent successfully (including examples of all alert types)".to_string())
     }
 
     async fn send_telegram_message(&self, telegram: &TelegramConfig, message: &str) -> Result<()> {

@@ -792,6 +792,14 @@ fn draw_validator_table(
     app_state: &AppState,
     last_catchup_refresh: Instant,
 ) {
+    // Add padding around the table
+    let padded_area = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+    
     let vote_key = &validator_status.validator_pair.vote_pubkey;
     let vote_formatted = format!(
         "{}…{}",
@@ -1065,40 +1073,52 @@ fn draw_validator_table(
 
         // Catchup status
         if let Some(catchup) = catchup_data {
+            // Calculate seconds until next catchup check first
+            let elapsed = last_catchup_refresh.elapsed().as_secs();
+            let next_check_in = if elapsed >= 30 { 0 } else { 30 - elapsed };
+            let next_check_suffix = if next_check_in > 0 {
+                format!(" (next in {}s)", next_check_in)
+            } else {
+                String::new()
+            };
+
             let node_0_status = catchup
                 .node_0
                 .as_ref()
                 .map(|c| {
-                    if c.status == "Checking..." {
-                        "⟳ Checking...".to_string()
+                    let status = if c.status == "Checking..." {
+                        "🔄 Checking...".to_string()
                     } else {
                         c.status.clone()
+                    };
+                    // Add countdown suffix for non-checking states
+                    if !status.contains("Checking") && next_check_in > 0 {
+                        format!("{}{}", status, next_check_suffix)
+                    } else {
+                        status
                     }
                 })
-                .unwrap_or_else(|| "⟳ Checking...".to_string());
+                .unwrap_or_else(|| "🔄 Checking...".to_string());
             let node_1_status = catchup
                 .node_1
                 .as_ref()
                 .map(|c| {
-                    if c.status == "Checking..." {
-                        "⟳ Checking...".to_string()
+                    let status = if c.status == "Checking..." {
+                        "🔄 Checking...".to_string()
                     } else {
                         c.status.clone()
+                    };
+                    // Add countdown suffix for non-checking states
+                    if !status.contains("Checking") && next_check_in > 0 {
+                        format!("{}{}", status, next_check_suffix)
+                    } else {
+                        status
                     }
                 })
-                .unwrap_or_else(|| "⟳ Checking...".to_string());
-
-            // Calculate seconds until next catchup check
-            let elapsed = last_catchup_refresh.elapsed().as_secs();
-            let next_check_in = if elapsed >= 30 { 0 } else { 30 - elapsed };
-            let catchup_label = if next_check_in > 0 {
-                format!("Catchup (next in {}s)", next_check_in)
-            } else {
-                "Catchup".to_string()
-            };
+                .unwrap_or_else(|| "🔄 Checking...".to_string());
 
             rows.push(Row::new(vec![
-                Cell::from(catchup_label),
+                Cell::from("Catchup"),
                 Cell::from(node_0_status.clone()).style(if node_0_status.contains("Caught up") {
                     Style::default().fg(Color::Green)
                 } else if node_0_status.contains("Error") {
@@ -1206,9 +1226,9 @@ fn draw_validator_table(
     let table = Table::new(
         rows,
         vec![
-            Constraint::Length(15), // Wider label column
-            Constraint::Percentage(42),
-            Constraint::Percentage(43),
+            Constraint::Length(20), // Wider label column for better spacing
+            Constraint::Percentage(40),
+            Constraint::Percentage(40),
         ],
     )
     .block(
@@ -1221,10 +1241,11 @@ fn draw_validator_table(
             ))
             .title_alignment(Alignment::Center)
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray)),
+            .border_style(Style::default().fg(Color::DarkGray))
+            .padding(ratatui::widgets::Padding::new(1, 1, 0, 0)),
     );
 
-    f.render_widget(table, area);
+    f.render_widget(table, padded_area);
 }
 
 // Removed draw_logs function as logs are no longer displayed

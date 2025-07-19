@@ -776,6 +776,7 @@ fn draw_validator_summaries(
             prev_slot,
             inc_time,
             app_state,
+            ui_state.last_catchup_refresh,
         );
     }
 }
@@ -789,6 +790,7 @@ fn draw_validator_table(
     previous_last_slot: Option<u64>,
     increment_time: Option<Instant>,
     app_state: &AppState,
+    last_catchup_refresh: Instant,
 ) {
     let vote_key = &validator_status.validator_pair.vote_pubkey;
     let vote_formatted = format!(
@@ -1086,8 +1088,17 @@ fn draw_validator_table(
                 })
                 .unwrap_or_else(|| "⟳ Checking...".to_string());
 
+            // Calculate seconds until next catchup check
+            let elapsed = last_catchup_refresh.elapsed().as_secs();
+            let next_check_in = if elapsed >= 30 { 0 } else { 30 - elapsed };
+            let catchup_label = if next_check_in > 0 {
+                format!("Catchup (next in {}s)", next_check_in)
+            } else {
+                "Catchup".to_string()
+            };
+
             rows.push(Row::new(vec![
-                Cell::from("Catchup"),
+                Cell::from(catchup_label),
                 Cell::from(node_0_status.clone()).style(if node_0_status.contains("Caught up") {
                     Style::default().fg(Color::Green)
                 } else if node_0_status.contains("Error") {
@@ -1109,116 +1120,65 @@ fn draw_validator_table(
             ]));
         }
 
-        // Vote status row and Last voted slot row - moved to bottom
+        // Vote status row with slot info - moved to bottom
         if let Some(vote_data) = vote_data {
-            let vote_status = if vote_data.is_voting {
-                "✅ Voting"
-            } else {
-                "⚠️ Not Voting"
-            };
-
-            rows.push(Row::new(vec![
-                Cell::from("Vote Status"),
-                Cell::from(if node_0.status == crate::types::NodeStatus::Active {
-                    vote_status
-                } else {
-                    "-"
-                })
-                .style(Style::default().fg(
-                    if node_0.status == crate::types::NodeStatus::Active && vote_data.is_voting {
-                        Color::Green
-                    } else {
-                        Color::Yellow
-                    },
-                )),
-                Cell::from(if node_1.status == crate::types::NodeStatus::Active {
-                    vote_status
-                } else {
-                    "-"
-                })
-                .style(Style::default().fg(
-                    if node_1.status == crate::types::NodeStatus::Active && vote_data.is_voting {
-                        Color::Green
-                    } else {
-                        Color::Yellow
-                    },
-                )),
-            ]));
-
-            // Last voted slot row
             let last_slot_info = vote_data.recent_votes.last().map(|lv| lv.slot);
-
-            if let Some(last_slot) = last_slot_info {
-                let mut slot_display = format!("{}", last_slot);
-
-                // Add increment if applicable
-                if let Some(prev) = previous_last_slot {
-                    if last_slot > prev {
-                        let inc = format!(" (+{})", last_slot - prev);
-                        if increment_time
-                            .map(|t| t.elapsed().as_secs() < 3)
-                            .unwrap_or(false)
-                        {
-                            slot_display.push_str(&inc);
+            
+            // Build vote status with slot info
+            let build_vote_display = |is_active: bool| -> (String, Style) {
+                if !is_active {
+                    return ("-".to_string(), Style::default());
+                }
+                
+                let mut display = if vote_data.is_voting {
+                    "✅ Voting".to_string()
+                } else {
+                    "⚠️ Not Voting".to_string()
+                };
+                
+                // Add slot info if available
+                if let Some(last_slot) = last_slot_info {
+                    display.push_str(&format!(" - {}", last_slot));
+                    
+                    // Add increment if applicable
+                    if let Some(prev) = previous_last_slot {
+                        if last_slot > prev {
+                            let inc = format!(" (+{})", last_slot - prev);
+                            display.push_str(&inc);
                         }
                     }
                 }
+                
+                // Determine style
+                let has_recent_increment = if let Some(prev) = previous_last_slot {
+                    last_slot_info.map(|slot| slot > prev).unwrap_or(false)
+                        && increment_time.map(|t| t.elapsed().as_secs() < 3).unwrap_or(false)
+                } else {
+                    false
+                };
+                
+                let style = if has_recent_increment {
+                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                } else if vote_data.is_voting {
+                    Style::default().fg(Color::Green)
+                } else {
+                    Style::default().fg(Color::Yellow)
+                };
+                
+                (display, style)
+            };
+            
+            let (node_0_display, node_0_style) = build_vote_display(node_0.status == crate::types::NodeStatus::Active);
+            let (node_1_display, node_1_style) = build_vote_display(node_1.status == crate::types::NodeStatus::Active);
 
-                rows.push(Row::new(vec![
-                    Cell::from("Last Vote"),
-                    Cell::from(if node_0.status == crate::types::NodeStatus::Active {
-                        slot_display.clone()
-                    } else {
-                        "-".to_string()
-                    })
-                    .style(
-                        if node_0.status == crate::types::NodeStatus::Active
-                            && increment_time
-                                .map(|t| t.elapsed().as_secs() < 3)
-                                .unwrap_or(false)
-                        {
-                            Style::default()
-                                .fg(Color::Green)
-                                .add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::default()
-                        },
-                    ),
-                    Cell::from(if node_1.status == crate::types::NodeStatus::Active {
-                        slot_display
-                    } else {
-                        "-".to_string()
-                    })
-                    .style(
-                        if node_1.status == crate::types::NodeStatus::Active
-                            && increment_time
-                                .map(|t| t.elapsed().as_secs() < 3)
-                                .unwrap_or(false)
-                        {
-                            Style::default()
-                                .fg(Color::Green)
-                                .add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::default()
-                        },
-                    ),
-                ]));
-            } else {
-                // Show loading or no data message
-                rows.push(Row::new(vec![
-                    Cell::from("Last Vote"),
-                    Cell::from("No votes"),
-                    Cell::from("No votes"),
-                ]));
-            }
+            rows.push(Row::new(vec![
+                Cell::from("Vote Status"),
+                Cell::from(node_0_display).style(node_0_style),
+                Cell::from(node_1_display).style(node_1_style),
+            ]));
         } else {
             rows.push(Row::new(vec![
                 Cell::from("Vote Status"),
-                Cell::from("Loading..."),
-                Cell::from("Loading..."),
-            ]));
-            rows.push(Row::new(vec![
-                Cell::from("Last Vote"),
                 Cell::from("Loading..."),
                 Cell::from("Loading..."),
             ]));

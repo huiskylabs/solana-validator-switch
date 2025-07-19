@@ -195,6 +195,36 @@ impl AlertManager {
 
         Ok(())
     }
+
+    pub async fn send_catchup_failure_alert(
+        &self,
+        validator_identity: &str,
+        node_label: &str,
+        consecutive_failures: u32,
+    ) -> Result<()> {
+        if !self.config.enabled {
+            return Ok(());
+        }
+
+        if let Some(telegram) = &self.config.telegram {
+            let message = format!(
+                "⚠️ *STANDBY NODE CATCHUP FAILURE* ⚠️\n\n\
+                *Validator:* `{}`\n\
+                *Standby Node:* {}\n\
+                *Consecutive Failures:* {}\n\n\
+                The standby node has failed catchup check {} times in a row.\n\
+                This may indicate issues with the standby node's sync status.",
+                validator_identity,
+                node_label,
+                consecutive_failures,
+                consecutive_failures
+            );
+
+            self.send_telegram_message(telegram, &message).await?;
+        }
+
+        Ok(())
+    }
 }
 
 // Helper to track alert cooldowns per validator

@@ -52,6 +52,12 @@ pub struct UiState {
     // Catchup status for each node
     pub catchup_data: Vec<NodePairStatus>,
 
+    // Track consecutive catchup failures for standby nodes
+    pub catchup_failure_counts: Vec<(u32, u32)>, // (node_0_failures, node_1_failures)
+    
+    // Track last alert time for catchup failures
+    pub last_catchup_alert_times: Vec<(Option<Instant>, Option<Instant>)>, // (node_0_last_alert, node_1_last_alert)
+
     // Refresh state
     pub last_vote_refresh: Instant,
     pub last_catchup_refresh: Instant,
@@ -117,6 +123,8 @@ impl EnhancedStatusApp {
             increment_times: Vec::new(),
             last_vote_slot_times: vec![None; app_state.validator_statuses.len()],
             catchup_data: initial_catchup_data,
+            catchup_failure_counts: vec![(0, 0); app_state.validator_statuses.len()],
+            last_catchup_alert_times: vec![(None, None); app_state.validator_statuses.len()],
             last_vote_refresh: Instant::now(),
             last_catchup_refresh: Instant::now(),
             is_refreshing: false,
@@ -351,6 +359,14 @@ impl EnhancedStatusApp {
         tokio::spawn(async move {
             let mut interval = interval(Duration::from_secs(30));
 
+            // Initialize alert manager for catchup failure alerts
+            let alert_manager = app_state
+                .config
+                .alert_config
+                .as_ref()
+                .filter(|config| config.enabled)
+                .map(|config| AlertManager::new(config.clone()));
+
             loop {
                 interval.tick().await;
 
@@ -403,8 +419,148 @@ impl EnhancedStatusApp {
                     new_catchup_data.push(node_pair);
                 }
 
+                // Process failure tracking and alerts
+                let mut alerts_to_send = Vec::new();
+                let mut failure_updates = Vec::new();
+                
+                for (idx, new_pair) in new_catchup_data.iter().enumerate() {
+                    if idx < app_state.validator_statuses.len() {
+                        let validator_status = &app_state.validator_statuses[idx];
+                        
+                        // Check node 0
+                        if let Some(node_0) = validator_status.nodes_with_status.get(0) {
+                            if node_0.status == crate::types::NodeStatus::Standby {
+                                let is_caught_up = new_pair.node_0.as_ref()
+                                    .map(|c| c.status.contains("Caught up"))
+                                    .unwrap_or(false);
+                                
+                                let has_response = new_pair.node_0.as_ref()
+                                    .map(|c| !c.status.contains("Checking"))
+                                    .unwrap_or(false);
+                                
+                                if is_caught_up {
+                                    failure_updates.push((idx, 0, 0)); // Reset counter
+                                } else if has_response {
+                                    // Read current failure count
+                                    let current_failures = {
+                                        let state = ui_state.read().await;
+                                        state.catchup_failure_counts[idx].0
+                                    };
+                                    
+                                    let new_failures = current_failures + 1;
+                                    failure_updates.push((idx, 0, new_failures));
+                                    
+                                    if new_failures >= 3 {
+                                        // Check cooldown
+                                        let should_alert = {
+                                            let state = ui_state.read().await;
+                                            match state.last_catchup_alert_times[idx].0 {
+                                                Some(last_alert) => last_alert.elapsed().as_secs() >= 300,
+                                                None => true,
+                                            }
+                                        };
+                                        
+                                        if should_alert {
+                                            alerts_to_send.push((
+                                                validator_status.validator_pair.identity_pubkey.clone(),
+                                                node_0.node.label.clone(),
+                                                new_failures,
+                                                idx,
+                                                0,
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // Check node 1
+                        if let Some(node_1) = validator_status.nodes_with_status.get(1) {
+                            if node_1.status == crate::types::NodeStatus::Standby {
+                                let is_caught_up = new_pair.node_1.as_ref()
+                                    .map(|c| c.status.contains("Caught up"))
+                                    .unwrap_or(false);
+                                
+                                let has_response = new_pair.node_1.as_ref()
+                                    .map(|c| !c.status.contains("Checking"))
+                                    .unwrap_or(false);
+                                
+                                if is_caught_up {
+                                    failure_updates.push((idx, 1, 0)); // Reset counter
+                                } else if has_response {
+                                    // Read current failure count
+                                    let current_failures = {
+                                        let state = ui_state.read().await;
+                                        state.catchup_failure_counts[idx].1
+                                    };
+                                    
+                                    let new_failures = current_failures + 1;
+                                    failure_updates.push((idx, 1, new_failures));
+                                    
+                                    if new_failures >= 3 {
+                                        // Check cooldown
+                                        let should_alert = {
+                                            let state = ui_state.read().await;
+                                            match state.last_catchup_alert_times[idx].1 {
+                                                Some(last_alert) => last_alert.elapsed().as_secs() >= 300,
+                                                None => true,
+                                            }
+                                        };
+                                        
+                                        if should_alert {
+                                            alerts_to_send.push((
+                                                validator_status.validator_pair.identity_pubkey.clone(),
+                                                node_1.node.label.clone(),
+                                                new_failures,
+                                                idx,
+                                                1,
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Send alerts
+                for (validator_identity, node_label, consecutive_failures, idx, node_idx) in alerts_to_send {
+                    if let Some(alert_mgr) = alert_manager.as_ref() {
+                        if let Err(e) = alert_mgr.send_catchup_failure_alert(
+                            &validator_identity,
+                            &node_label,
+                            consecutive_failures,
+                        ).await {
+                            let _ = log_sender.send(LogMessage {
+                                host: node_label.clone(),
+                                message: format!("Failed to send catchup alert: {}", e),
+                                timestamp: Instant::now(),
+                                level: LogLevel::Error,
+                            });
+                        } else {
+                            // Update last alert time
+                            let mut state = ui_state.write().await;
+                            if node_idx == 0 {
+                                state.last_catchup_alert_times[idx].0 = Some(Instant::now());
+                            } else {
+                                state.last_catchup_alert_times[idx].1 = Some(Instant::now());
+                            }
+                        }
+                    }
+                }
+                
                 // Update UI state
                 let mut state = ui_state.write().await;
+                
+                // Apply failure updates
+                for (idx, node_idx, failures) in failure_updates {
+                    if node_idx == 0 {
+                        state.catchup_failure_counts[idx].0 = failures;
+                    } else {
+                        state.catchup_failure_counts[idx].1 = failures;
+                    }
+                }
+                
                 state.catchup_data = new_catchup_data;
                 state.last_catchup_refresh = Instant::now();
             }

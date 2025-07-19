@@ -162,6 +162,7 @@ async fn display_status_with_rpc_data(app_state: &AppState, full_display: bool) 
                     &node_1.status,
                     validator_status,
                     vote_data.as_ref(),
+                    app_state,
                 );
             }
 
@@ -212,6 +213,7 @@ fn display_simple_status_table_with_rpc(
     node_1_status: &crate::types::NodeStatus,
     validator_status: &crate::ValidatorStatus,
     vote_data: Option<&ValidatorVoteData>,
+    app_state: &AppState,
 ) {
     let mut table = Table::new();
 
@@ -479,6 +481,26 @@ fn display_simple_status_table_with_rpc(
             Cell::new(&vote_info),
         ]);
     }
+
+    // Add alert status row
+    let alert_status = match &app_state.config.alert_config {
+        Some(alert_config) if alert_config.enabled => {
+            if alert_config.telegram.is_some() {
+                "✅ Telegram"
+            } else {
+                "⚠️ Enabled (no method)"
+            }
+        }
+        _ => "Disabled",
+    };
+
+    table.add_row(vec![
+        Cell::new("Alert Status")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
+        Cell::new(alert_status),
+        Cell::new(alert_status),
+    ]);
 
     println!("{}", table);
 }
@@ -1043,6 +1065,7 @@ fn display_status_table_from_app_state(app_state: &AppState) {
                 &node_1.node,
                 &node_1.status,
                 validator_status,
+                app_state,
             );
         }
 
@@ -1057,6 +1080,7 @@ fn display_simple_status_table(
     node_1: &crate::types::NodeConfig,
     node_1_status: &crate::types::NodeStatus,
     validator_status: &crate::ValidatorStatus,
+    app_state: &AppState,
 ) {
     let mut table = Table::new();
 
@@ -1294,6 +1318,26 @@ fn display_simple_status_table(
             .fg(Color::Cyan),
         Cell::new(node_0_swap),
         Cell::new(node_1_swap),
+    ]);
+
+    // Add alert status row
+    let alert_status = match &app_state.config.alert_config {
+        Some(alert_config) if alert_config.enabled => {
+            if alert_config.telegram.is_some() {
+                "✅ Telegram"
+            } else {
+                "⚠️ Enabled (no method)"
+            }
+        }
+        _ => "Disabled",
+    };
+
+    table.add_row(vec![
+        Cell::new("Alert Status")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
+        Cell::new(alert_status),
+        Cell::new(alert_status),
     ]);
 
     println!("{}", table);

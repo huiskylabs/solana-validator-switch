@@ -483,6 +483,7 @@ fn ui(f: &mut ratatui::Frame, app: &StatusApp) {
                 index,
                 *prev_slot,
                 *inc_time,
+                app.app_state,
             );
         }
     }
@@ -527,6 +528,7 @@ fn render_validator(
     index: usize,
     previous_last_slot: Option<u64>,
     increment_time: Option<std::time::Instant>,
+    app_state: &AppState,
 ) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -615,6 +617,7 @@ fn render_validator(
             catchup_data,
             previous_last_slot,
             increment_time,
+            app_state,
         );
     }
 }
@@ -630,6 +633,7 @@ fn render_status_table(
     catchup_data: &(Option<CatchupStatus>, Option<CatchupStatus>),
     previous_last_slot: Option<u64>,
     increment_time: Option<std::time::Instant>,
+    app_state: &AppState,
 ) {
     let node_0_label = match node_0.status {
         crate::types::NodeStatus::Active => "ACTIVE",
@@ -1018,6 +1022,25 @@ fn render_status_table(
             Cell::from(" Unable to fetch vote data").style(Style::default().fg(Color::DarkGray)),
         ]));
     }
+
+    // Add alert status row
+    let alert_status = match &app_state.config.alert_config {
+        Some(alert_config) if alert_config.enabled => {
+            if alert_config.telegram.is_some() {
+                "✅ Telegram"
+            } else {
+                "⚠️ Enabled (no method)"
+            }
+        }
+        _ => "Disabled",
+    };
+
+    rows.push(Row::new(vec![Cell::from(""), Cell::from(""), Cell::from("")]).height(1));
+    rows.push(Row::new(vec![
+        Cell::from(" → Alert Status").style(Style::default().fg(Color::Gray)),
+        Cell::from(format!(" 🔔 {}", alert_status)).style(Style::default().fg(Color::Cyan)),
+        Cell::from("").style(Style::default()),
+    ]));
 
     let widths = vec![
         Constraint::Length(18),

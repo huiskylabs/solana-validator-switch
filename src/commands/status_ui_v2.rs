@@ -756,6 +756,7 @@ fn draw_validator_summaries(
             catchup_data,
             prev_slot,
             inc_time,
+            app_state,
         );
     }
 }
@@ -768,6 +769,7 @@ fn draw_validator_table(
     catchup_data: Option<&NodePairStatus>,
     previous_last_slot: Option<u64>,
     increment_time: Option<Instant>,
+    app_state: &AppState,
 ) {
     let vote_key = &validator_status.validator_pair.vote_pubkey;
     let vote_formatted = format!(
@@ -1191,6 +1193,24 @@ fn draw_validator_table(
             ]));
         }
     }
+
+    // Add Alert Status row
+    let alert_status = match &app_state.config.alert_config {
+        Some(alert_config) if alert_config.enabled => {
+            if alert_config.telegram.is_some() {
+                "✅ Telegram"
+            } else {
+                "⚠️ Enabled (no method)"
+            }
+        }
+        _ => "Disabled",
+    };
+
+    rows.push(Row::new(vec![
+        Cell::from("Alert Status"),
+        Cell::from(alert_status),
+        Cell::from(alert_status),
+    ]));
 
     let table = Table::new(
         rows,

@@ -67,7 +67,11 @@ See [config.example.yaml](config.example.yaml) for the full configuration templa
 - **Optimized Tower Transfer**: Streaming base64 decode + dd for minimal latency
 - **Universal Support**: Works with Firedancer, Agave, Solana, and Jito validators
 - **Interactive Dashboard**: Real-time monitoring with Ratatui-based terminal UI
-- **Pre-commit Hooks**: Automated CI checks before commits to ensure code quality
+- **Telegram Alerts**: Real-time notifications for validator health and switch events
+  - Delinquency alerts when validator stops voting
+  - Standby node catchup failure monitoring
+  - Switch success/failure notifications
+- **Enhanced Status Display**: Improved UI with countdown timers and alert status
 
 ## Security
 
@@ -103,12 +107,13 @@ If SVS saves you time and SOL, consider:
 - [x] **Optimized tower transfer** - Streaming base64 decode + dd for minimal latency
 - [x] **Interactive dashboard** - Real-time monitoring with Ratatui-based terminal UI
 - [x] **Modern async architecture** - Tokio-based async runtime with Arc<Session> efficiency
+- [x] **Telegram notifications** - Real-time alerts for validator health and switch events
+- [x] **Continuous monitoring** - Real-time validator health monitoring with delinquency alerts
 
 ### 🚧 In Progress
-- [ ] **Continuous monitoring** - Real-time validator health monitoring with configurable alerts
 - [ ] **Auto-switch on failure** - Automatic failover when primary validator goes down
 - [ ] **Multi-validator support** - Manage multiple validator pairs from one interface
-- [ ] **Slack/Discord notifications** - Get alerts when primary node is stopped voting and when switches occur
+- [ ] **Slack/Discord notifications** - Additional notification channels beyond Telegram
 
 Have ideas? [Open an issue](https://github.com/huiskylabs/solana-validator-switch/issues) or contribute!
 

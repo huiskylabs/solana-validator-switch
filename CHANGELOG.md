@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2025-01-19
+
+### Added
+- **Telegram Alerts**: Complete Telegram notification system for validator monitoring
+  - Validator delinquency alerts when voting stops
+  - Catchup failure alerts for standby nodes (3 consecutive failures)
+  - Switch success/failure notifications with timing details
+  - Comprehensive test alert command showing all alert types
+- **Enhanced Status UI**: Improved validator status display
+  - Alert configuration status shown in validator tables
+  - Catchup status with 30-second refresh and countdown timer
+  - Merged "Last Vote" info into "Vote Status" row for cleaner display
+  - Better visual padding for improved readability
+  - Spinner indicator (🔄) during catchup checks
+
+### Fixed
+- Validator status now correctly updates after successful switch
+- UI no longer shows stale Active/Standby assignments post-switch
+- Catchup countdown timer moved to status text for better visibility
+- Removed UI corruption issues from Telegram bot integration
+
+### Changed
+- Removed redundant standard UI, keeping only the enhanced UI
+- Simplified Telegram integration (removed bot polling)
+- Catchup checks now run every 30 seconds instead of 5 seconds
+- Pre-commit hook now only checks build (removed test timeout issues)
+
+### Removed
+- Telegram bot view for remote CLI control (caused UI issues)
+- Windows support from CI/CD pipeline
+
 ## [1.1.0] - 2024-12-18
 
 ### Added
@@ -50,5 +81,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - No hardcoded credentials
 - Safe tower file transfer
 
-[Unreleased]: https://github.com/huiskylabs/solana-validator-switch/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/huiskylabs/solana-validator-switch/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/huiskylabs/solana-validator-switch/compare/v1.1.0...v1.2.0
+[1.1.0]: https://github.com/huiskylabs/solana-validator-switch/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/huiskylabs/solana-validator-switch/releases/tag/v1.0.0

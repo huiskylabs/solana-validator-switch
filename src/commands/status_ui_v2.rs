@@ -1437,7 +1437,7 @@ fn draw_single_node_table(
     }
 
     // Section separator before Executable Paths
-    rows.push(create_section_header());
+    rows.push(create_section_header_with_label("PATHS"));
 
     // Ledger path
     if let Some(ledger_path) = &node.ledger_path {
@@ -1475,7 +1475,7 @@ fn draw_single_node_table(
     }
 
     // Section separator before Vote
-    rows.push(create_section_header());
+    rows.push(create_section_header_with_label("VOTE STATUS"));
 
     // Catchup status
     if let Some(catchup) = catchup_status {
@@ -1567,7 +1567,7 @@ fn draw_single_node_table(
     ]));
 
     // Section separator before SSH
-    rows.push(create_section_header());
+    rows.push(create_section_header_with_label("HEALTH"));
 
     // Node health status
     let health_display = if let Some(health) = ssh_health {
@@ -1612,22 +1612,53 @@ fn draw_single_node_table(
         ),
     ]));
 
-    // Alert Status
-    let alert_status = match &app_state.config.alert_config {
+    // Section separator before Alert Configuration
+    rows.push(create_section_header_with_label("ALERTS"));
+
+    // Alert Configuration
+    match &app_state.config.alert_config {
         Some(alert_config) if alert_config.enabled => {
-            if alert_config.telegram.is_some() {
+            // Alert Status
+            let alert_method = if alert_config.telegram.is_some() {
                 "✅ Telegram"
             } else {
                 "⚠️ Enabled (no method)"
-            }
-        }
-        _ => "Disabled",
-    };
+            };
+            rows.push(Row::new(vec![
+                Cell::from("Alert Status"),
+                Cell::from(alert_method).style(Style::default().fg(
+                    if alert_config.telegram.is_some() { Color::Green } else { Color::Yellow }
+                )),
+            ]));
 
-    rows.push(Row::new(vec![
-        Cell::from("Alert Status"),
-        Cell::from(alert_status),
-    ]));
+            // Delinquency threshold
+            rows.push(Row::new(vec![
+                Cell::from("Delinquency"),
+                Cell::from(format!("{}s threshold", alert_config.delinquency_threshold_seconds))
+                    .style(Style::default().fg(Color::Red)),
+            ]));
+
+            // SSH failure threshold
+            rows.push(Row::new(vec![
+                Cell::from("SSH Failure"),
+                Cell::from(format!("{}m threshold", alert_config.ssh_failure_threshold_seconds / 60))
+                    .style(Style::default().fg(Color::Yellow)),
+            ]));
+
+            // RPC failure threshold
+            rows.push(Row::new(vec![
+                Cell::from("RPC Failure"),
+                Cell::from(format!("{}m threshold", alert_config.rpc_failure_threshold_seconds / 60))
+                    .style(Style::default().fg(Color::Yellow)),
+            ]));
+        }
+        _ => {
+            rows.push(Row::new(vec![
+                Cell::from("Alert Status"),
+                Cell::from("❌ Disabled").style(Style::default().fg(Color::DarkGray)),
+            ]));
+        }
+    }
 
     let border_style = if is_left_table {
         Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
@@ -1652,14 +1683,23 @@ fn draw_single_node_table(
     f.render_widget(table, padded_area);
 }
 
-fn create_section_header() -> Row<'static> {
-    // Create separator that spans both columns
-    Row::new(vec![
-        Cell::from("─────────────────────"),
-        Cell::from("─────────────────────────────────────────────────────────────────────"),
-    ])
-    .style(Style::default().fg(Color::DarkGray))
-    .height(1)
+fn create_section_header_with_label(label: &'static str) -> Row<'static> {
+    if label.is_empty() {
+        // Empty row for spacing
+        Row::new(vec![
+            Cell::from(""),
+            Cell::from(""),
+        ])
+        .height(1)
+    } else {
+        // Section label
+        Row::new(vec![
+            Cell::from(label),
+            Cell::from(""),
+        ])
+        .style(Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM))
+        .height(1)
+    }
 }
 
 #[allow(dead_code)]

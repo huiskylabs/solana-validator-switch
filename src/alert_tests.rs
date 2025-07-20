@@ -9,10 +9,8 @@ mod tests {
         AlertConfig {
             enabled: true,
             delinquency_threshold_seconds: 30,
-            ssh_failure_threshold_seconds: 60,
-            rpc_failure_threshold_seconds: 30,
-            ssh_failure_count_threshold: 5,
-            rpc_failure_count_threshold: 10,
+            ssh_failure_threshold_seconds: 1800,
+            rpc_failure_threshold_seconds: 1800,
             telegram: Some(TelegramConfig {
                 bot_token: "test_token".to_string(),
                 chat_id: "test_chat".to_string(),
@@ -144,17 +142,17 @@ mod tests {
         let config = create_test_alert_config();
         let mut tracker = FailureTracker::new();
         
-        // Record failures up to threshold
-        for i in 0..4 {
+        // Record initial failure to start the timer
+        tracker.record_failure("SSH Error 1".to_string());
+        
+        // Even after many failures, if time hasn't passed, no alert
+        for i in 2..100 {
             tracker.record_failure(format!("SSH Error {}", i));
         }
         
-        // Should not trigger alert yet (threshold is 5)
-        assert!(tracker.consecutive_failures < config.ssh_failure_count_threshold);
-        
-        // One more failure should trigger
-        tracker.record_failure("SSH Error 5".to_string());
-        assert!(tracker.consecutive_failures >= config.ssh_failure_count_threshold);
+        // Should not trigger alert yet (need 30 minutes)
+        let seconds = tracker.seconds_since_first_failure().unwrap_or(0);
+        assert!(seconds < config.ssh_failure_threshold_seconds);
     }
 
     #[test]
@@ -162,17 +160,17 @@ mod tests {
         let config = create_test_alert_config();
         let mut tracker = FailureTracker::new();
         
-        // Record failures up to threshold
-        for i in 0..9 {
+        // Record initial failure to start the timer
+        tracker.record_failure("RPC Error 1".to_string());
+        
+        // Even after many failures, if time hasn't passed, no alert
+        for i in 2..100 {
             tracker.record_failure(format!("RPC Error {}", i));
         }
         
-        // Should not trigger alert yet (threshold is 10)
-        assert!(tracker.consecutive_failures < config.rpc_failure_count_threshold);
-        
-        // One more failure should trigger
-        tracker.record_failure("RPC Error 10".to_string());
-        assert!(tracker.consecutive_failures >= config.rpc_failure_count_threshold);
+        // Should not trigger alert yet (need 30 minutes)
+        let seconds = tracker.seconds_since_first_failure().unwrap_or(0);
+        assert!(seconds < config.rpc_failure_threshold_seconds);
     }
 
     #[tokio::test]
@@ -191,7 +189,7 @@ mod tests {
         rpc_tracker.record_success();
         
         // Check states
-        assert!(ssh_tracker.consecutive_failures >= config.ssh_failure_count_threshold);
+        assert_eq!(ssh_tracker.consecutive_failures, 5);
         assert_eq!(rpc_tracker.consecutive_failures, 0);
     }
 
@@ -228,11 +226,8 @@ mod tests {
         // In real scenario, we'd wait, but here we just check the logic
         let seconds = tracker.seconds_since_first_failure().unwrap_or(0);
         
-        // Alert should trigger if either condition is met:
-        // 1. Consecutive failures >= threshold
-        // 2. Time since first failure >= threshold
-        let should_alert = tracker.consecutive_failures >= config.ssh_failure_count_threshold
-            || seconds >= config.ssh_failure_threshold_seconds;
+        // Alert should trigger only if time threshold is met
+        let should_alert = seconds >= config.ssh_failure_threshold_seconds;
         
         // With only 1 failure and no time passed, should not alert
         assert!(!should_alert);

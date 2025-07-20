@@ -263,10 +263,9 @@ impl EnhancedStatusApp {
                                 let seconds = tracker.seconds_since_first_failure().unwrap_or(0);
                                 
                                 let config = app_state.config.alert_config.as_ref();
-                                let count_threshold = config.map(|c| c.rpc_failure_count_threshold).unwrap_or(10);
-                                let time_threshold = config.map(|c| c.rpc_failure_threshold_seconds).unwrap_or(30);
+                                let time_threshold = config.map(|c| c.rpc_failure_threshold_seconds).unwrap_or(1800);
                                 
-                                let should_alert = (consecutive >= count_threshold || seconds >= time_threshold)
+                                let should_alert = seconds >= time_threshold
                                     && alert_tracker.rpc_failure_tracker.should_send_alert(idx);
                                 
                                 (should_alert, consecutive, seconds)
@@ -772,10 +771,9 @@ impl EnhancedStatusApp {
                                         let seconds = tracker.seconds_since_first_failure().unwrap_or(0);
                                         
                                         let config = app_state.config.alert_config.as_ref();
-                                        let count_threshold = config.map(|c| c.ssh_failure_count_threshold).unwrap_or(5);
-                                        let time_threshold = config.map(|c| c.ssh_failure_threshold_seconds).unwrap_or(60);
+                                        let time_threshold = config.map(|c| c.ssh_failure_threshold_seconds).unwrap_or(1800);
                                         
-                                        let should_alert = (consecutive >= count_threshold || seconds >= time_threshold)
+                                        let should_alert = seconds >= time_threshold
                                             && alert_tracker.ssh_failure_tracker[0].should_send_alert(idx);
                                         
                                         (should_alert, consecutive, seconds)

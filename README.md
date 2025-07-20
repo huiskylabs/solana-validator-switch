@@ -100,12 +100,15 @@ To enable Telegram notifications:
    ```
 
 You'll receive notifications for:
-- **Validator Delinquency**: When your validator stops voting for more than the threshold
+- **Validator Delinquency** (CRITICAL): When your validator stops voting for more than 30 seconds
+  - Only triggers when SSH and RPC are both working (no false alarms)
   - Includes SSH and RPC connection status in the alert
-- **SSH Connection Failures**: When SSH connections fail repeatedly
-  - Triggers after 5 consecutive failures or 60 seconds of failures
-- **RPC Connection Failures**: When RPC calls fail due to throttling or network issues
-  - Triggers after 10 consecutive failures or 30 seconds of failures
+- **SSH Connection Failures** (LOW PRIORITY): When SSH connections fail repeatedly
+  - Triggers after 100 consecutive failures or 30 minutes of failures
+  - Very loose thresholds to avoid noise
+- **RPC Connection Failures** (LOW PRIORITY): When RPC calls fail due to throttling or network issues
+  - Triggers after 100 consecutive failures or 30 minutes of failures
+  - Very loose thresholds to avoid noise
 - **Catchup Failures**: When standby node fails catchup 3 times in a row
 - **Switch Results**: Success/failure notifications with timing details
 

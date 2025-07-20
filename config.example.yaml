@@ -62,11 +62,14 @@ validators:
 # Sends alerts when validators stop voting for a specified time
 alert_config:
   enabled: true
-  delinquency_threshold_seconds: 30 # Alert after 30 seconds without voting
-  ssh_failure_threshold_seconds: 60 # Alert after 60 seconds of SSH failures
-  rpc_failure_threshold_seconds: 30 # Alert after 30 seconds of RPC failures
-  ssh_failure_count_threshold: 5    # Alert after 5 consecutive SSH failures
-  rpc_failure_count_threshold: 10   # Alert after 10 consecutive RPC failures
+  delinquency_threshold_seconds: 30   # CRITICAL: Alert after 30 seconds without voting
+  ssh_failure_threshold_seconds: 1800 # LOW PRIORITY: Alert after 30 minutes of SSH failures
+  rpc_failure_threshold_seconds: 1800 # LOW PRIORITY: Alert after 30 minutes of RPC failures
+  
+  # Note: Alert cooldown periods to prevent spam:
+  # - Delinquency alerts: 15-minute cooldown (high severity)
+  # - SSH/RPC failure alerts: 30-minute cooldown (low severity)
+  # - Timer resets on successful connection (no accumulation of old failures)
 
   # Telegram configuration (optional)
   # To set up Telegram alerts:

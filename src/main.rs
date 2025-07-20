@@ -16,6 +16,12 @@ use std::sync::Arc;
 mod alert;
 #[cfg(test)]
 mod alert_tests;
+#[cfg(test)]
+mod alert_logic_tests;
+#[cfg(test)]
+mod alert_integration_tests;
+#[cfg(test)]
+mod status_ui_alert_tests;
 mod commands;
 mod config;
 mod solana_rpc;

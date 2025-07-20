@@ -425,9 +425,13 @@ pub struct AlertTracker {
 
 impl AlertTracker {
     pub fn new(validator_count: usize) -> Self {
+        Self::with_cooldown(validator_count, 1800) // Default 30 minutes
+    }
+    
+    pub fn with_cooldown(validator_count: usize, cooldown_seconds: u64) -> Self {
         Self {
             last_alert_times: vec![None; validator_count],
-            cooldown_seconds: 300, // 5 minutes
+            cooldown_seconds,
         }
     }
 
@@ -470,13 +474,16 @@ impl ComprehensiveAlertTracker {
     pub fn new(validator_count: usize, nodes_per_validator: usize) -> Self {
         let mut ssh_trackers = Vec::new();
         for _ in 0..nodes_per_validator {
-            ssh_trackers.push(AlertTracker::new(validator_count));
+            // Low severity: 30-minute cooldown for SSH failures
+            ssh_trackers.push(AlertTracker::with_cooldown(validator_count, 1800));
         }
         
         Self {
-            delinquency_tracker: AlertTracker::new(validator_count),
+            // High severity: 15-minute cooldown for delinquency
+            delinquency_tracker: AlertTracker::with_cooldown(validator_count, 900),
             ssh_failure_tracker: ssh_trackers,
-            rpc_failure_tracker: AlertTracker::new(validator_count),
+            // Low severity: 30-minute cooldown for RPC failures
+            rpc_failure_tracker: AlertTracker::with_cooldown(validator_count, 1800),
         }
     }
 }

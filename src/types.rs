@@ -11,19 +11,11 @@ fn default_delinquency_threshold() -> u64 {
 }
 
 fn default_ssh_failure_threshold() -> u64 {
-    60 // 60 seconds of SSH failures before alert
+    1800 // 30 minutes of SSH failures before alert
 }
 
 fn default_rpc_failure_threshold() -> u64 {
-    30 // 30 seconds of RPC failures before alert
-}
-
-fn default_ssh_failure_count_threshold() -> u32 {
-    5 // 5 consecutive failures before alert
-}
-
-fn default_rpc_failure_count_threshold() -> u32 {
-    10 // 10 consecutive failures before alert
+    1800 // 30 minutes of RPC failures before alert
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,10 +36,6 @@ pub struct AlertConfig {
     pub ssh_failure_threshold_seconds: u64,
     #[serde(default = "default_rpc_failure_threshold")]
     pub rpc_failure_threshold_seconds: u64,
-    #[serde(default = "default_ssh_failure_count_threshold")]
-    pub ssh_failure_count_threshold: u32,
-    #[serde(default = "default_rpc_failure_count_threshold")]
-    pub rpc_failure_count_threshold: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub telegram: Option<TelegramConfig>,
 }

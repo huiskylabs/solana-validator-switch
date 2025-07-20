@@ -72,8 +72,42 @@ pub struct UiState {
     pub last_vote_refresh: Instant,
     pub last_catchup_refresh: Instant,
     pub last_ssh_health_refresh: Instant,
+    
+    // Field refresh states - tracks which fields are being refreshed for each validator/node
+    pub field_refresh_states: Vec<NodeFieldRefreshState>,
+    
+    // Refreshed validator statuses - stores the latest refreshed data
+    pub validator_statuses: Vec<crate::ValidatorStatus>,
+    
     #[allow(dead_code)]
     pub is_refreshing: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct NodeFieldRefreshState {
+    pub node_0: FieldRefreshStates,
+    pub node_1: FieldRefreshStates,
+}
+
+#[derive(Debug, Clone)]
+pub struct FieldRefreshStates {
+    pub status_refreshing: bool,
+    pub identity_refreshing: bool,
+    pub version_refreshing: bool,
+    pub catchup_refreshing: bool,
+    pub health_refreshing: bool,
+}
+
+impl Default for FieldRefreshStates {
+    fn default() -> Self {
+        Self {
+            status_refreshing: false,
+            identity_refreshing: false,
+            version_refreshing: false,
+            catchup_refreshing: false,
+            health_refreshing: false,
+        }
+    }
 }
 
 // Removed FocusedPane enum as logs are no longer displayed
@@ -170,6 +204,14 @@ impl EnhancedStatusApp {
             initial_rpc_trackers.push(FailureTracker::new());
         }
 
+        // Initialize field refresh states
+        let initial_field_refresh_states = (0..app_state.validator_statuses.len())
+            .map(|_| NodeFieldRefreshState {
+                node_0: FieldRefreshStates::default(),
+                node_1: FieldRefreshStates::default(),
+            })
+            .collect();
+
         let ui_state = Arc::new(RwLock::new(UiState {
             vote_data: initial_vote_data,
             previous_last_slots: Vec::new(),
@@ -184,6 +226,8 @@ impl EnhancedStatusApp {
             last_vote_refresh: Instant::now(),
             last_catchup_refresh: Instant::now(),
             last_ssh_health_refresh: Instant::now(),
+            field_refresh_states: initial_field_refresh_states,
+            validator_statuses: app_state.validator_statuses.clone(),
             is_refreshing: false,
         }));
 
@@ -1184,8 +1228,8 @@ async fn handle_key_event(
     view_state: &Arc<RwLock<ViewState>>,
     _app_state: &Arc<AppState>,
 ) -> Result<()> {
-    let _state = ui_state.write().await;
-
+    // Don't hold a write lock for the entire function!
+    
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => {
             *should_quit.write().await = true;
@@ -1202,6 +1246,37 @@ async fn handle_key_event(
             // Show dry-run switch view (SD = Switch Dry-run, but just 'd' in CLI)
             let mut view = view_state.write().await;
             *view = ViewState::DryRunSwitch;
+        }
+        KeyCode::Char('r') | KeyCode::Char('R') => {
+            // Refresh fields in the validator status view
+            let is_status_view = matches!(*view_state.read().await, ViewState::Status);
+            
+            if is_status_view {
+                // Set refresh states immediately before spawning
+                {
+                    let mut ui_state_write = ui_state.write().await;
+                    ui_state_write.is_refreshing = true;
+                    
+                    // Set all field refresh states to true immediately
+                    for refresh_state in ui_state_write.field_refresh_states.iter_mut() {
+                        refresh_state.node_0.status_refreshing = true;
+                        refresh_state.node_0.identity_refreshing = true;
+                        refresh_state.node_0.version_refreshing = true;
+                        refresh_state.node_1.status_refreshing = true;
+                        refresh_state.node_1.identity_refreshing = true;
+                        refresh_state.node_1.version_refreshing = true;
+                    }
+                }
+                
+                // Clone what we need after setting flags
+                let app_state_clone = _app_state.clone();
+                let ui_state_clone = ui_state.clone();
+                
+                // Spawn the refresh operation
+                tokio::spawn(async move {
+                    refresh_all_fields(app_state_clone, ui_state_clone).await;
+                });
+            }
         }
         // Removed 's' key handling - real switch should only be done via CLI command or Telegram
         _ => {}
@@ -1238,9 +1313,11 @@ fn draw_validator_summaries(
     f: &mut ratatui::Frame,
     area: Rect,
     ui_state: &UiState,
-    app_state: &AppState,
+    _app_state: &AppState,
 ) {
-    let validator_count = app_state.validator_statuses.len();
+    // Use validator statuses from UI state
+    let validator_statuses = &ui_state.validator_statuses;
+    let validator_count = validator_statuses.len();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(vec![
@@ -1249,8 +1326,7 @@ fn draw_validator_summaries(
         ])
         .split(area);
 
-    for (idx, (validator_status, chunk)) in app_state
-        .validator_statuses
+    for (idx, (validator_status, chunk)) in validator_statuses
         .iter()
         .zip(chunks.iter())
         .enumerate()
@@ -1261,6 +1337,7 @@ fn draw_validator_summaries(
         let inc_time = ui_state.increment_times.get(idx).and_then(|&v| v);
         let ssh_health_data = ui_state.ssh_health_data.get(idx);
 
+        let field_refresh_state = ui_state.field_refresh_states.get(idx);
         draw_side_by_side_tables(
             f,
             *chunk,
@@ -1269,10 +1346,11 @@ fn draw_validator_summaries(
             catchup_data,
             prev_slot,
             inc_time,
-            app_state,
+            _app_state,
             ui_state.last_catchup_refresh,
             ssh_health_data,
             ui_state.last_ssh_health_refresh,
+            field_refresh_state,
         );
     }
 }
@@ -1289,6 +1367,7 @@ fn draw_side_by_side_tables(
     last_catchup_refresh: Instant,
     ssh_health_data: Option<&NodePairSshStatus>,
     last_ssh_health_refresh: Instant,
+    field_refresh_state: Option<&NodeFieldRefreshState>,
 ) {
     // Find active and standby nodes
     let active_node_index = validator_status
@@ -1327,6 +1406,10 @@ fn draw_side_by_side_tables(
             if left_node_idx == 0 { Some(&s.node_0) } else { Some(&s.node_1) }
         });
         
+        let node_refresh_state = field_refresh_state.map(|s| {
+            if left_node_idx == 0 { &s.node_0 } else { &s.node_1 }
+        });
+        
         draw_single_node_table(
             f,
             chunks[0],
@@ -1340,6 +1423,7 @@ fn draw_side_by_side_tables(
             last_catchup_refresh,
             ssh_health,
             last_ssh_health_refresh,
+            node_refresh_state,
             true, // is_left_table
         );
     }
@@ -1351,6 +1435,10 @@ fn draw_side_by_side_tables(
         });
         let ssh_health = ssh_health_data.and_then(|s| {
             if right_node_idx == 0 { Some(&s.node_0) } else { Some(&s.node_1) }
+        });
+        
+        let node_refresh_state = field_refresh_state.map(|s| {
+            if right_node_idx == 0 { &s.node_0 } else { &s.node_1 }
         });
         
         draw_single_node_table(
@@ -1366,6 +1454,7 @@ fn draw_side_by_side_tables(
             last_catchup_refresh,
             ssh_health,
             last_ssh_health_refresh,
+            node_refresh_state,
             false, // is_left_table
         );
     }
@@ -1384,6 +1473,7 @@ fn draw_single_node_table(
     last_catchup_refresh: Instant,
     ssh_health: Option<&SshHealthStatus>,
     last_ssh_health_refresh: Instant,
+    field_refresh_state: Option<&FieldRefreshStates>,
     is_left_table: bool,
 ) {
     // Add padding around the table
@@ -1397,9 +1487,10 @@ fn draw_single_node_table(
     let mut rows = vec![];
 
     // Node Status (first row)
-    rows.push(Row::new(vec![
-        Cell::from("Status"),
-        Cell::from(format!(
+    let status_display = if field_refresh_state.map_or(false, |s| s.status_refreshing) {
+        format!("🔄 Checking... ({})", node.node.label)
+    } else {
+        format!(
             "{} ({})",
             match node.status {
                 crate::types::NodeStatus::Active => "🟢 ACTIVE",
@@ -1407,12 +1498,23 @@ fn draw_single_node_table(
                 crate::types::NodeStatus::Unknown => "🔴 UNKNOWN",
             },
             node.node.label
-        ))
-        .style(Style::default().fg(match node.status {
-            crate::types::NodeStatus::Active => Color::Green,
-            crate::types::NodeStatus::Standby => Color::Yellow,
-            crate::types::NodeStatus::Unknown => Color::Red,
-        })),
+        )
+    };
+    
+    rows.push(Row::new(vec![
+        Cell::from("Status"),
+        Cell::from(status_display.clone())
+        .style(Style::default().fg(
+            if field_refresh_state.map_or(false, |s| s.status_refreshing) {
+                Color::DarkGray
+            } else {
+                match node.status {
+                    crate::types::NodeStatus::Active => Color::Green,
+                    crate::types::NodeStatus::Standby => Color::Yellow,
+                    crate::types::NodeStatus::Unknown => Color::Red,
+                }
+            }
+        )),
     ]));
 
     // Vote account info
@@ -1423,10 +1525,14 @@ fn draw_single_node_table(
     ]));
 
     // Identity
-    let id = node.current_identity.as_deref().unwrap_or("Unknown");
+    let identity_display = if field_refresh_state.map_or(false, |s| s.identity_refreshing) {
+        "🔄 Refreshing...".to_string()
+    } else {
+        node.current_identity.as_deref().unwrap_or("Unknown").to_string()
+    };
     rows.push(Row::new(vec![
         Cell::from("Identity"),
-        Cell::from(id.to_string()),
+        Cell::from(identity_display),
     ]));
 
     // Host info
@@ -1436,25 +1542,29 @@ fn draw_single_node_table(
     ]));
 
     // Validator type and version
+    let client_display = if field_refresh_state.map_or(false, |s| s.version_refreshing) {
+        "🔄 Detecting...".to_string()
+    } else {
+        let version = node.version.as_deref().unwrap_or("");
+        let cleaned_version = version
+            .replace("Firedancer ", "")
+            .replace("Agave ", "")
+            .replace("Jito ", "");
+        format!(
+            "{} {}",
+            match node.validator_type {
+                crate::types::ValidatorType::Firedancer => "Firedancer",
+                crate::types::ValidatorType::Agave => "Agave",
+                crate::types::ValidatorType::Jito => "Jito",
+                crate::types::ValidatorType::Unknown => "Unknown",
+            },
+            cleaned_version
+        )
+    };
+    
     rows.push(Row::new(vec![
         Cell::from("Client"),
-        Cell::from({
-            let version = node.version.as_deref().unwrap_or("");
-            let cleaned_version = version
-                .replace("Firedancer ", "")
-                .replace("Agave ", "")
-                .replace("Jito ", "");
-            format!(
-                "{} {}",
-                match node.validator_type {
-                    crate::types::ValidatorType::Firedancer => "Firedancer",
-                    crate::types::ValidatorType::Agave => "Agave",
-                    crate::types::ValidatorType::Jito => "Jito",
-                    crate::types::ValidatorType::Unknown => "Unknown",
-                },
-                cleaned_version
-            )
-        }),
+        Cell::from(client_display),
     ]));
 
     // Swap readiness
@@ -2229,10 +2339,23 @@ fn draw_validator_table(
 
 // Removed draw_logs function as logs are no longer displayed
 
-fn draw_footer(f: &mut ratatui::Frame, area: Rect, _ui_state: &UiState) {
+fn draw_footer(f: &mut ratatui::Frame, area: Rect, ui_state: &UiState) {
+    // Check if any fields are refreshing
+    let is_refreshing = ui_state.field_refresh_states.iter().any(|state| {
+        state.node_0.status_refreshing || state.node_0.identity_refreshing || state.node_0.version_refreshing ||
+        state.node_1.status_refreshing || state.node_1.identity_refreshing || state.node_1.version_refreshing
+    });
+    
+    let refresh_indicator = if is_refreshing {
+        " | 🔄 Refreshing..."
+    } else {
+        ""
+    };
+    
     let help_text = format!(
-        "q/Esc: Quit | v: Validator view | d: Dry-run switch | Auto-refresh: 5s | Time: {}",
-        chrono::Local::now().format("%H:%M:%S")
+        "q/Esc: Quit | v: Validator view | r: Refresh | d: Dry-run switch | Auto-refresh: 5s | Time: {}{}",
+        chrono::Local::now().format("%H:%M:%S"),
+        refresh_indicator
     );
 
     let footer = Paragraph::new(help_text)
@@ -2461,6 +2584,326 @@ fn shorten_path(path: &str, max_len: usize) -> String {
         result
     } else {
         path.to_string()
+    }
+}
+
+/// Refresh all fields for all validators
+async fn refresh_all_fields(app_state: Arc<AppState>, ui_state: Arc<RwLock<UiState>>) {
+    // Get validator count from UI state
+    let validator_count = {
+        let ui_state_read = ui_state.read().await;
+        ui_state_read.validator_statuses.len()
+    };
+    
+    // Spawn refresh tasks for each validator
+    let mut refresh_handles = Vec::new();
+    for validator_idx in 0..validator_count {
+        let app_state_clone = app_state.clone();
+        let ui_state_clone = ui_state.clone();
+        
+        let handle = tokio::spawn(async move {
+            refresh_validator_fields(validator_idx, app_state_clone, ui_state_clone).await;
+        });
+        refresh_handles.push(handle);
+    }
+    
+    // Wait for all refreshes to complete
+    for handle in refresh_handles {
+        let _ = handle.await;
+    }
+    
+    // Clear the global refreshing flag
+    {
+        let mut ui_state_write = ui_state.write().await;
+        ui_state_write.is_refreshing = false;
+    }
+}
+
+/// Refresh fields for a specific validator
+async fn refresh_validator_fields(
+    validator_idx: usize,
+    app_state: Arc<AppState>,
+    ui_state: Arc<RwLock<UiState>>,
+) {
+    // Get validator data from UI state
+    let (validator_pair, nodes) = {
+        let ui_state_read = ui_state.read().await;
+        match ui_state_read.validator_statuses.get(validator_idx) {
+            Some(v) => (v.validator_pair.clone(), v.nodes_with_status.clone()),
+            None => return,
+        }
+    };
+    
+    // Refresh each node
+    for (node_idx, node_with_status) in nodes.iter().enumerate() {
+        let node = node_with_status.clone();
+        let validator_pair_clone = validator_pair.clone();
+        let ssh_pool = app_state.ssh_pool.clone();
+        let ssh_key = app_state.detected_ssh_keys
+            .get(&node.node.host)
+            .cloned()
+            .unwrap_or_default();
+        
+        // Refresh flags are already set in the key handler
+        
+        // Spawn refresh tasks for this node
+        let ui_state_clone = ui_state.clone();
+        let node_clone = node.clone();
+        let ssh_pool_clone = ssh_pool.clone();
+        let ssh_key_clone = ssh_key.clone();
+        
+        // Refresh status and identity
+        tokio::spawn(async move {
+            // Small delay to ensure UI shows loading state
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            
+            refresh_node_status_and_identity(
+                validator_idx,
+                node_idx,
+                node_clone,
+                validator_pair_clone.clone(),
+                ssh_pool_clone,
+                ssh_key_clone,
+                ui_state_clone,
+            ).await;
+        });
+        
+        // Version refresh flag is already set in the key handler
+        
+        // Refresh version
+        let ui_state_clone = ui_state.clone();
+        let node_clone = node.clone();
+        let ssh_pool_clone = ssh_pool.clone();
+        let ssh_key_clone = ssh_key.clone();
+        
+        tokio::spawn(async move {
+            // Small delay to ensure UI shows loading state
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            
+            refresh_node_version(
+                validator_idx,
+                node_idx,
+                node_clone,
+                ssh_pool_clone,
+                ssh_key_clone,
+                ui_state_clone,
+            ).await;
+        });
+    }
+}
+
+/// Refresh node status and identity
+async fn refresh_node_status_and_identity(
+    validator_idx: usize,
+    node_idx: usize,
+    node: crate::types::NodeWithStatus,
+    validator_pair: crate::types::ValidatorPair,
+    ssh_pool: Arc<crate::ssh::AsyncSshPool>,
+    ssh_key: String,
+    ui_state: Arc<RwLock<UiState>>,
+) {
+    // Use the same logic as startup.rs to extract identity and status
+    // First, get the solana CLI path
+    let solana_cli = if let Some(ref cli) = node.solana_cli_executable {
+        cli.clone()
+    } else if let Some(ref agave_exec) = node.agave_validator_executable {
+        agave_exec.replace("agave-validator", "solana")
+    } else {
+        // Fallback to default solana command
+        "solana".to_string()
+    };
+    
+    // Use catchup command to get the active identity and status
+    let catchup_cmd = format!("timeout 5 {} catchup --our-localhost 2>&1", solana_cli);
+    let catchup_result = ssh_pool
+        .execute_command(&node.node, &ssh_key, &catchup_cmd)
+        .await;
+    
+    let (current_identity, _status, sync_status) = match catchup_result {
+        Ok(output) => {
+            let mut extracted_identity = None;
+            let mut extracted_status = crate::types::NodeStatus::Unknown;
+            let mut extracted_sync_status = None;
+            
+            // Parse catchup output to extract identity and sync status
+            for line in output.lines() {
+                if line.contains(" has caught up") || line.contains("0 slot(s) behind") {
+                    if let Some(caught_up_pos) = line.find(" has caught up") {
+                        let identity = line[..caught_up_pos].trim();
+                        if !identity.is_empty() {
+                            extracted_identity = Some(identity.to_string());
+                            
+                            // Determine status based on identity match
+                            if identity == validator_pair.identity_pubkey {
+                                extracted_status = crate::types::NodeStatus::Active;
+                            } else {
+                                extracted_status = crate::types::NodeStatus::Standby;
+                            }
+                        }
+                        
+                        // Extract slot information
+                        if let Some(us_start) = line.find("us:") {
+                            let us_end = line[us_start + 3..]
+                                .find(' ')
+                                .unwrap_or(line.len() - us_start - 3)
+                                + us_start
+                                + 3;
+                            let us_slot = &line[us_start + 3..us_end];
+                            extracted_sync_status = Some(format!("Caught up (slot: {})", us_slot));
+                        } else {
+                            extracted_sync_status = Some("Caught up".to_string());
+                        }
+                        break;
+                    } else if line.contains("0 slot(s) behind") {
+                        // Extract slot information from Firedancer format
+                        if let Some(us_start) = line.find("us:") {
+                            let us_end = line[us_start + 3..]
+                                .find(' ')
+                                .unwrap_or(line.len() - us_start - 3)
+                                + us_start
+                                + 3;
+                            let us_slot = &line[us_start + 3..us_end];
+                            extracted_sync_status = Some(format!("Caught up (slot: {})", us_slot));
+                        } else {
+                            extracted_sync_status = Some("Caught up".to_string());
+                        }
+                    }
+                }
+            }
+            
+            // If no sync status found, set to Unknown
+            if extracted_sync_status.is_none() {
+                extracted_sync_status = Some("Unknown".to_string());
+            }
+            
+            (extracted_identity, extracted_status, extracted_sync_status)
+        }
+        Err(_) => (None, crate::types::NodeStatus::Unknown, Some("Unknown".to_string())),
+    };
+    
+    // Update UI state with the new status and identity
+    {
+        let mut ui_state_write = ui_state.write().await;
+        
+        // Update the validator status in UI state
+        if let Some(validator_status) = ui_state_write.validator_statuses.get_mut(validator_idx) {
+            if let Some(node_with_status) = validator_status.nodes_with_status.get_mut(node_idx) {
+                // Update status
+                node_with_status.status = _status;
+                
+                // Update identity
+                node_with_status.current_identity = current_identity;
+                
+                // Update sync status
+                node_with_status.sync_status = sync_status;
+            }
+        }
+        
+        // Clear refreshing flags
+        if let Some(refresh_state) = ui_state_write.field_refresh_states.get_mut(validator_idx) {
+            let field_state = if node_idx == 0 { &mut refresh_state.node_0 } else { &mut refresh_state.node_1 };
+            field_state.status_refreshing = false;
+            field_state.identity_refreshing = false;
+        }
+    }
+}
+
+/// Refresh node version
+async fn refresh_node_version(
+    validator_idx: usize,
+    node_idx: usize,
+    node: crate::types::NodeWithStatus,
+    ssh_pool: Arc<crate::ssh::AsyncSshPool>,
+    ssh_key: String,
+    ui_state: Arc<RwLock<UiState>>,
+) {
+    // Extract version based on validator type and using proper executable paths
+    let (_validator_type, _version) = match node.validator_type {
+        crate::types::ValidatorType::Firedancer => {
+            if let Some(ref fdctl_exec) = node.fdctl_executable {
+                let version_cmd = format!("timeout 5 {} version 2>/dev/null", fdctl_exec);
+                let version_output = ssh_pool
+                    .execute_command(&node.node, &ssh_key, &version_cmd)
+                    .await
+                    .unwrap_or_else(|_| "Unknown".to_string());
+                
+                // Parse fdctl version output - first part is version
+                let version = if let Some(line) = version_output.lines().next() {
+                    if let Some(version_match) = line.split_whitespace().next() {
+                        Some(format!("Firedancer {}", version_match))
+                    } else {
+                        Some("Firedancer Unknown".to_string())
+                    }
+                } else {
+                    Some("Firedancer Unknown".to_string())
+                };
+                
+                (crate::types::ValidatorType::Firedancer, version)
+            } else {
+                (crate::types::ValidatorType::Firedancer, Some("Firedancer Unknown".to_string()))
+            }
+        }
+        crate::types::ValidatorType::Agave | crate::types::ValidatorType::Jito => {
+            if let Some(ref agave_exec) = node.agave_validator_executable {
+                let version_cmd = format!("timeout 5 {} --version 2>/dev/null", agave_exec);
+                let version_output = ssh_pool
+                    .execute_command(&node.node, &ssh_key, &version_cmd)
+                    .await
+                    .unwrap_or_else(|_| "Unknown".to_string());
+                
+                // Parse version output
+                let version = if let Some(line) = version_output.lines().next() {
+                    if line.starts_with("agave-validator ") || line.starts_with("solana-cli ") {
+                        // Extract version after the executable name
+                        line.split_whitespace()
+                            .nth(1)
+                            .map(|v| v.to_string())
+                    } else if line.contains("jito-") {
+                        // Jito validator format
+                        Some(line.trim().to_string())
+                    } else {
+                        Some(line.trim().to_string())
+                    }
+                } else {
+                    None
+                };
+                
+                // Determine if it's Jito based on version output
+                let validator_type = if version.as_ref().map_or(false, |v| v.contains("jito")) {
+                    crate::types::ValidatorType::Jito
+                } else {
+                    crate::types::ValidatorType::Agave
+                };
+                
+                (validator_type, version)
+            } else {
+                (node.validator_type.clone(), None)
+            }
+        }
+        crate::types::ValidatorType::Unknown => {
+            // Try to detect validator type
+            (crate::types::ValidatorType::Unknown, None)
+        }
+    };
+    
+    // Update UI state with the new version info
+    {
+        let mut ui_state_write = ui_state.write().await;
+        
+        // Update the validator status in UI state
+        if let Some(validator_status) = ui_state_write.validator_statuses.get_mut(validator_idx) {
+            if let Some(node_with_status) = validator_status.nodes_with_status.get_mut(node_idx) {
+                // Update validator type and version
+                node_with_status.validator_type = _validator_type;
+                node_with_status.version = _version;
+            }
+        }
+        
+        // Clear refreshing flag
+        if let Some(refresh_state) = ui_state_write.field_refresh_states.get_mut(validator_idx) {
+            let field_state = if node_idx == 0 { &mut refresh_state.node_0 } else { &mut refresh_state.node_1 };
+            field_state.version_refreshing = false;
+        }
     }
 }
 

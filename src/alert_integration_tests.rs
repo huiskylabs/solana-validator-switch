@@ -12,6 +12,8 @@ mod alert_integration_tests {
             ssh_failure_threshold_seconds: 1800, // 30 minutes
             rpc_failure_threshold_seconds: 1800, // 30 minutes
             telegram: None,
+            auto_failover_enabled: false,
+            
         };
 
         // Simulate the actual check from status_ui_v2.rs
@@ -78,6 +80,8 @@ mod alert_integration_tests {
             ssh_failure_threshold_seconds: 1800, // 30 minutes
             rpc_failure_threshold_seconds: 1800, // 30 minutes
             telegram: None,
+            auto_failover_enabled: false,
+            
         };
 
         let mut ssh_tracker = FailureTracker::new();
@@ -111,6 +115,8 @@ mod alert_integration_tests {
             ssh_failure_threshold_seconds: 1800, // 30 minutes
             rpc_failure_threshold_seconds: 1800, // 30 minutes
             telegram: None,
+            auto_failover_enabled: false,
+            
         };
 
         // Validator state

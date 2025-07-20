@@ -14,15 +14,16 @@ mod alert_logic_tests {
                 bot_token: "test_token".to_string(),
                 chat_id: "test_chat".to_string(),
             }),
+            auto_failover_enabled: false,
         }
     }
 
-    // Critical test: Delinquency alert should ONLY fire when SSH and RPC are working
+    // Critical test: Auto-failover should trigger when RPC is working (SSH can be down)
     #[test]
-    fn test_delinquency_only_when_ssh_rpc_working() {
-        let _config = create_realistic_alert_config();
+    fn test_auto_failover_only_needs_rpc_working() {
+        let config = create_realistic_alert_config();
         
-        // Scenario 1: SSH ✅, RPC ✅, Not voting ❌ = SHOULD ALERT
+        // Scenario 1: SSH ✅, RPC ✅, Not voting ❌ = SHOULD FAILOVER
         let health1 = NodeHealthStatus {
             ssh_status: FailureTracker::new(), // No failures = working
             rpc_status: FailureTracker::new(), // No failures = working
@@ -31,12 +32,12 @@ mod alert_logic_tests {
             last_vote_time: Some(Instant::now() - Duration::from_secs(40)), // 40s ago
         };
         
-        // This should trigger delinquency alert
-        assert!(!health1.ssh_status.consecutive_failures > 0);
-        assert!(!health1.rpc_status.consecutive_failures > 0);
+        // This should trigger auto-failover
+        assert_eq!(health1.ssh_status.consecutive_failures, 0);
+        assert_eq!(health1.rpc_status.consecutive_failures, 0);
         assert!(!health1.is_voting);
         
-        // Scenario 2: SSH ❌, RPC ✅, Not voting ❌ = NO DELINQUENCY ALERT
+        // Scenario 2: SSH ❌, RPC ✅, Not voting ❌ = SHOULD FAILOVER
         let mut health2 = NodeHealthStatus {
             ssh_status: FailureTracker::new(),
             rpc_status: FailureTracker::new(),
@@ -46,11 +47,13 @@ mod alert_logic_tests {
         };
         health2.ssh_status.record_failure("Connection refused".to_string());
         
-        // Should NOT trigger delinquency alert (only SSH failure alert)
+        // Should STILL trigger auto-failover (SSH down doesn't prevent it)
         assert!(health2.ssh_status.consecutive_failures > 0);
-        assert!(!health2.rpc_status.consecutive_failures > 0);
+        assert_eq!(health2.rpc_status.consecutive_failures, 0);
+        let can_failover = health2.rpc_status.consecutive_failures == 0 && 40 >= config.delinquency_threshold_seconds;
+        assert!(can_failover, "Should trigger failover even with SSH down");
         
-        // Scenario 3: SSH ✅, RPC ❌, Not voting ❌ = NO DELINQUENCY ALERT
+        // Scenario 3: SSH ✅, RPC ❌, Not voting ❌ = NO FAILOVER
         let mut health3 = NodeHealthStatus {
             ssh_status: FailureTracker::new(),
             rpc_status: FailureTracker::new(),
@@ -60,9 +63,11 @@ mod alert_logic_tests {
         };
         health3.rpc_status.record_failure("429 Too Many Requests".to_string());
         
-        // Should NOT trigger delinquency alert (only RPC failure alert)
-        assert!(!health3.ssh_status.consecutive_failures > 0);
+        // Should NOT trigger auto-failover (can't verify voting status)
+        assert_eq!(health3.ssh_status.consecutive_failures, 0);
         assert!(health3.rpc_status.consecutive_failures > 0);
+        let can_failover = health3.rpc_status.consecutive_failures == 0 && 40 >= config.delinquency_threshold_seconds;
+        assert!(!can_failover, "Should NOT trigger failover when RPC is down");
     }
 
     // Test that SSH/RPC failures don't trigger immediate alerts (loose time thresholds)
@@ -116,7 +121,7 @@ mod alert_logic_tests {
                 rpc_working: true,
                 voting: false,
                 seconds_since_vote: 40, // > 30s threshold
-                expected_alerts: vec!["delinquency"],
+                expected_alerts: vec!["delinquency", "auto_failover"],
             },
             TestCase {
                 name: "SSH down, not voting",
@@ -124,7 +129,7 @@ mod alert_logic_tests {
                 rpc_working: true,
                 voting: false,
                 seconds_since_vote: 40,
-                expected_alerts: vec!["ssh"], // Only SSH alert, NO delinquency
+                expected_alerts: vec!["ssh", "auto_failover"], // SSH alert AND auto-failover
             },
             TestCase {
                 name: "RPC down, not voting",
@@ -163,9 +168,15 @@ mod alert_logic_tests {
             }
             
             // Verify alert logic
+            // Note: Delinquency alerts and auto-failover have different requirements
             let should_alert_delinquency = test.ssh_working 
                 && test.rpc_working 
                 && !test.voting 
+                && test.seconds_since_vote >= config.delinquency_threshold_seconds;
+                
+            // Auto-failover only needs RPC working (SSH can be down)
+            let should_trigger_auto_failover = test.rpc_working
+                && !test.voting
                 && test.seconds_since_vote >= config.delinquency_threshold_seconds;
                 
             let should_alert_ssh = !test.ssh_working 
@@ -179,6 +190,13 @@ mod alert_logic_tests {
                 should_alert_delinquency,
                 test.expected_alerts.contains(&"delinquency"),
                 "Test case '{}' failed for delinquency alert",
+                test.name
+            );
+            
+            assert_eq!(
+                should_trigger_auto_failover,
+                test.expected_alerts.contains(&"auto_failover"),
+                "Test case '{}' failed for auto-failover",
                 test.name
             );
             

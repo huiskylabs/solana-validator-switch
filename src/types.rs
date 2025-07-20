@@ -38,6 +38,8 @@ pub struct AlertConfig {
     pub rpc_failure_threshold_seconds: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub telegram: Option<TelegramConfig>,
+    #[serde(default)]
+    pub auto_failover_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

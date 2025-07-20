@@ -22,12 +22,16 @@ mod alert_logic_tests;
 mod alert_integration_tests;
 #[cfg(test)]
 mod status_ui_alert_tests;
+#[cfg(test)]
+mod auto_failover_tests;
 mod commands;
 mod config;
+mod emergency_failover;
 mod solana_rpc;
 mod ssh;
 mod ssh_key_detector;
 mod startup;
+mod startup_checks;
 mod startup_logger;
 mod types;
 mod validator_metadata;

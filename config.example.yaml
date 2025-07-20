@@ -62,14 +62,30 @@ validators:
 # Sends alerts when validators stop voting for a specified time
 alert_config:
   enabled: true
-  delinquency_threshold_seconds: 30   # CRITICAL: Alert after 30 seconds without voting
+  delinquency_threshold_seconds: 30 # CRITICAL: Alert after 30 seconds without voting
   ssh_failure_threshold_seconds: 1800 # LOW PRIORITY: Alert after 30 minutes of SSH failures
   rpc_failure_threshold_seconds: 1800 # LOW PRIORITY: Alert after 30 minutes of RPC failures
-  
+
   # Note: Alert cooldown periods to prevent spam:
   # - Delinquency alerts: 15-minute cooldown (high severity)
   # - SSH/RPC failure alerts: 30-minute cooldown (low severity)
   # - Timer resets on successful connection (no accumulation of old failures)
+
+  # ============================================================================
+  # AUTOMATIC FAILOVER CONFIGURATION (USE WITH EXTREME CAUTION!)
+  # ============================================================================
+  # ⚠️  WARNING: This feature performs AUTOMATIC validator switching!
+  # ⚠️  CRITICAL: Read all safety requirements before enabling!
+  # ============================================================================
+
+  # Enable automatic failover when validator stops voting (default: false)
+  # CRITICAL SAFETY REQUIREMENT:
+  # When auto-failover is enabled, ALL validators MUST be configured to start
+  # with UNFUNDED identity to prevent double-signing after unexpected restarts!
+  #
+  # For Agave/Jito: Use --identity /path/to/unfunded-validator-keypair.json
+  # For Firedancer: Set identity_path in config to unfunded keypair
+  auto_failover_enabled: false
 
   # Telegram configuration (optional)
   # To set up Telegram alerts:

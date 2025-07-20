@@ -233,20 +233,28 @@ pub async fn run_startup_checklist() -> Result<Option<crate::AppState>> {
         if let (Some(config), Some((ssh_pool, detected_ssh_keys)), Some(validator_statuses)) =
             (config, ssh_pool_and_keys, validator_statuses)
         {
-            // Show "press any key to continue" prompt
-            show_ready_prompt().await;
-
             // Create metadata cache
             let metadata_cache =
                 Arc::new(Mutex::new(crate::validator_metadata::MetadataCache::new()));
 
-            Ok(Some(crate::AppState {
+            let app_state = crate::AppState {
                 ssh_pool: Arc::new(ssh_pool),
                 config,
                 validator_statuses,
                 metadata_cache,
                 detected_ssh_keys,
-            }))
+            };
+            
+            // Perform auto-failover safety checks if enabled
+            if let Err(e) = crate::startup_checks::check_auto_failover_safety(&app_state, &logger).await {
+                println!("\n{}", e);
+                return Ok(None);
+            }
+
+            // Show "press any key to continue" prompt after all checks pass
+            show_ready_prompt().await;
+            
+            Ok(Some(app_state))
         } else {
             println!("\n{}", "❌ Validator status detection failed.".red().bold());
             Ok(None)
@@ -1294,6 +1302,77 @@ async fn detect_node_statuses_with_progress(
         });
     }
 
+    // Check for any critical failures that should prevent startup
+    let mut critical_failures = Vec::new();
+    
+    for (validator_idx, validator_status) in validator_statuses.iter().enumerate() {
+        for (node_idx, node_with_status) in validator_status.nodes_with_status.iter().enumerate() {
+            let node_label = format!(
+                "Validator {} Node {} ({})",
+                validator_idx + 1,
+                node_idx + 1,
+                node_with_status.node.label
+            );
+            
+            // Check for SSH connectivity failure
+            if node_with_status.status == crate::types::NodeStatus::Unknown {
+                critical_failures.push(format!(
+                    "{}: SSH connection failed", 
+                    node_label
+                ));
+            }
+            
+            // Check for swap readiness failure
+            if let Some(false) = node_with_status.swap_ready {
+                if !node_with_status.swap_issues.is_empty() {
+                    critical_failures.push(format!(
+                        "{}: Not swap ready - {}", 
+                        node_label,
+                        node_with_status.swap_issues.join(", ")
+                    ));
+                }
+            }
+            
+            // Check for active identity detection failure
+            if node_with_status.current_identity.is_none() 
+                && node_with_status.status != crate::types::NodeStatus::Unknown {
+                critical_failures.push(format!(
+                    "{}: Failed to detect active identity", 
+                    node_label
+                ));
+            }
+            
+            // Check for startup identity configuration issues
+            for issue in &node_with_status.swap_issues {
+                if issue.contains("Startup identity issue:") {
+                    critical_failures.push(format!(
+                        "{}: {}", 
+                        node_label,
+                        issue
+                    ));
+                }
+            }
+        }
+    }
+    
+    // If any critical failures were found, fail the startup
+    if !critical_failures.is_empty() {
+        progress_bar.finish_and_clear();
+        println!("\n{}", "❌ CRITICAL STARTUP FAILURES DETECTED".red().bold());
+        println!("\nThe following critical issues must be resolved before proceeding:\n");
+        
+        for failure in &critical_failures {
+            println!("  • {}", failure.red());
+        }
+        
+        println!("\n{}", "Please fix these issues and try again.".yellow());
+        
+        return Err(anyhow::anyhow!(
+            "Startup failed due to {} critical issue(s)",
+            critical_failures.len()
+        ));
+    }
+
     Ok(validator_statuses)
 }
 
@@ -2180,7 +2259,7 @@ async fn detect_node_status_and_executable_with_progress(
     });
     logger.log("Checking swap readiness...")?;
 
-    let (swap_ready, swap_issues) =
+    let (swap_ready, mut swap_issues) =
         check_node_swap_readiness(ssh_pool, node, DEFAULT_SSH_KEY, ledger_path.as_ref()).await;
 
     if swap_ready {
@@ -2210,7 +2289,32 @@ async fn detect_node_status_and_executable_with_progress(
         }
     });
 
-    // Step 6: Identity Detection using catchup command
+    // Step 6: Check startup identity configuration
+    progress_bar.suspend(|| {
+        println!("      🔍 Checking startup identity configuration...");
+    });
+    logger.log("Checking startup identity configuration...")?;
+    
+    if validator_type != crate::types::ValidatorType::Unknown {
+        if let Err(e) = crate::startup_checks::check_node_startup_identity_inline(
+            node,
+            validator_type.clone(),
+            ssh_pool,
+            &ssh_key,
+        ).await {
+            progress_bar.suspend(|| {
+                println!("      ❌ {}", e.to_string().red());
+            });
+            logger.log_error("Startup identity check", &e.to_string())?;
+            swap_issues.push(format!("Startup identity issue: {}", e));
+        } else {
+            progress_bar.suspend(|| {
+                println!("      ✅ Startup identity differs from authorized voter");
+            });
+        }
+    }
+
+    // Step 7: Identity Detection using catchup command
     progress_bar.suspend(|| {
         println!("      🔍 Detecting active identity...");
     });

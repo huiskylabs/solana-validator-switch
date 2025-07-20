@@ -438,7 +438,7 @@ impl SwitchManager {
         Ok(!dry_run)
     }
 
-    async fn switch_primary_to_unfunded(&mut self, dry_run: bool) -> Result<()> {
+    pub(crate) async fn switch_primary_to_unfunded(&mut self, dry_run: bool) -> Result<()> {
         // Detect validator type to use appropriate command
         let process_info = {
             let ssh_key = self.get_ssh_key_for_node(&self.active_node_with_status.node.host)?;
@@ -608,7 +608,7 @@ impl SwitchManager {
         Ok(())
     }
 
-    async fn transfer_tower_file(&mut self, dry_run: bool) -> Result<()> {
+    pub(crate) async fn transfer_tower_file(&mut self, dry_run: bool) -> Result<()> {
         // Use the derived tower path from active node
         let tower_path = self
             .active_node_with_status
@@ -750,7 +750,7 @@ impl SwitchManager {
         Ok(())
     }
 
-    async fn switch_backup_to_funded(&mut self, dry_run: bool) -> Result<()> {
+    pub(crate) async fn switch_backup_to_funded(&mut self, dry_run: bool) -> Result<()> {
         // Detect validator type to use appropriate command
         let process_info = {
             let ssh_key = self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;

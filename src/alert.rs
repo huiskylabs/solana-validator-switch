@@ -1,9 +1,10 @@
 use anyhow::Result;
 use serde_json::json;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::types::{AlertConfig, TelegramConfig, NodeHealthStatus};
 
+#[derive(Clone)]
 pub struct AlertManager {
     config: AlertConfig,
 }
@@ -379,6 +380,80 @@ impl AlertManager {
                 ssh_status,
                 rpc_status
             );
+
+            self.send_telegram_message(telegram, &message).await?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn send_emergency_takeover_alert(
+        &self,
+        validator_identity: &str,
+        active_node: &str,
+        standby_node: &str,
+        primary_switch_success: bool,
+        tower_copy_success: bool,
+        standby_switch_success: bool,
+        total_time: Duration,
+        error: Option<&str>,
+    ) -> Result<()> {
+        if !self.config.enabled {
+            return Ok(());
+        }
+
+        if let Some(telegram) = &self.config.telegram {
+            let primary_status = if primary_switch_success { "✅" } else { "❌" };
+            let tower_status = if tower_copy_success { "✅" } else { "❌" };
+            
+            let message = if let Some(error_msg) = error {
+                format!(
+                    "❌ *EMERGENCY TAKEOVER FAILED*\n\n\
+                    *Validator:* `{}`\n\
+                    *Reason:* Not voting with confirmed connectivity\n\n\
+                    *Previous Active:* {} ❌\n\
+                    *Attempted New Active:* {} ❌\n\n\
+                    *Optional Steps:*\n\
+                    • Primary → Unfunded: {}\n\
+                    • Tower Copy: {}\n\
+                    • Standby → Funded: ❌\n\n\
+                    *Error:* {}\n\
+                    *Duration:* {}ms\n\n\
+                    ⚠️ *MANUAL INTERVENTION REQUIRED*",
+                    validator_identity,
+                    active_node,
+                    standby_node,
+                    primary_status,
+                    tower_status,
+                    error_msg,
+                    total_time.as_millis()
+                )
+            } else {
+                format!(
+                    "{} *EMERGENCY TAKEOVER {}*\n\n\
+                    *Validator:* `{}`\n\
+                    *Reason:* Not voting for 30+ seconds with confirmed connectivity\n\n\
+                    *Previous Active:* {} ❌\n\
+                    *New Active:* {} ✅\n\n\
+                    *Optional Steps:*\n\
+                    • Primary → Unfunded: {} {}\n\
+                    • Tower Copy: {} {}\n\n\
+                    *Required Step:*\n\
+                    • Standby → Funded: ✅ Success\n\n\
+                    *Takeover completed in:* {}ms\n\n\
+                    ⚠️ *VERIFY VALIDATOR STATUS IMMEDIATELY*",
+                    if standby_switch_success { "🚨" } else { "❌" },
+                    if standby_switch_success { "INITIATED" } else { "FAILED" },
+                    validator_identity,
+                    active_node,
+                    standby_node,
+                    primary_status,
+                    if primary_switch_success { "Success" } else { "Failed (continued)" },
+                    tower_status,
+                    if tower_copy_success { "Success" } else { "Failed (continued)" },
+                    total_time.as_millis()
+                )
+            };
 
             self.send_telegram_message(telegram, &message).await?;
         }

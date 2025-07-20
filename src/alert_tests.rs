@@ -15,6 +15,7 @@ mod tests {
                 bot_token: "test_token".to_string(),
                 chat_id: "test_chat".to_string(),
             }),
+            auto_failover_enabled: false,
         }
     }
 

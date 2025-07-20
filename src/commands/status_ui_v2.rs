@@ -395,6 +395,50 @@ impl EnhancedStatusApp {
                                                 level: LogLevel::Warning,
                                             });
                                         }
+                                        
+                                        // Check if auto-failover is enabled
+                                        if let Some(alert_config) = &app_state.config.alert_config {
+                                            if alert_config.enabled && alert_config.auto_failover_enabled {
+                                                // CRITICAL: Only trigger auto-failover if RPC is working
+                                                // We need RPC to verify on-chain that the validator is not voting
+                                                // SSH may be down if the node is completely offline
+                                                if node_health.rpc_status.consecutive_failures == 0 {
+                                                    
+                                                    let _ = log_sender.send(LogMessage {
+                                                        host: format!("validator-{}", idx),
+                                                        message: "🚨 AUTO-FAILOVER: Initiating emergency takeover".to_string(),
+                                                        timestamp: Instant::now(),
+                                                        level: LogLevel::Error,
+                                                    });
+                                                    
+                                                    // Spawn emergency failover task
+                                                    let validator_status = app_state.validator_statuses[idx].clone();
+                                                    let alert_manager = alert_mgr.clone();
+                                                    let ssh_pool = app_state.ssh_pool.clone();
+                                                    let ssh_keys = app_state.detected_ssh_keys.clone();
+                                                    
+                                                    tokio::spawn(async move {
+                                                        execute_emergency_failover(
+                                                            validator_status,
+                                                            alert_manager,
+                                                            ssh_pool,
+                                                            ssh_keys,
+                                                        ).await;
+                                                    });
+                                                } else {
+                                                    let _ = log_sender.send(LogMessage {
+                                                        host: format!("validator-{}", idx),
+                                                        message: format!(
+                                                            "Auto-failover suppressed: SSH failures={}, RPC failures={}",
+                                                            node_health.ssh_status.consecutive_failures,
+                                                            node_health.rpc_status.consecutive_failures
+                                                        ),
+                                                        timestamp: Instant::now(),
+                                                        level: LogLevel::Warning,
+                                                    });
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -1651,6 +1695,19 @@ fn draw_single_node_table(
                 Cell::from(format!("{}m threshold", alert_config.rpc_failure_threshold_seconds / 60))
                     .style(Style::default().fg(Color::Yellow)),
             ]));
+            
+            // Auto-failover status
+            rows.push(Row::new(vec![
+                Cell::from("Auto-Failover"),
+                Cell::from(if alert_config.auto_failover_enabled { 
+                    "✅ Enabled" 
+                } else { 
+                    "❌ Disabled" 
+                })
+                .style(Style::default().fg(
+                    if alert_config.auto_failover_enabled { Color::Green } else { Color::Red }
+                )),
+            ]));
         }
         _ => {
             rows.push(Row::new(vec![
@@ -2183,6 +2240,41 @@ fn draw_footer(f: &mut ratatui::Frame, area: Rect, _ui_state: &UiState) {
         .alignment(Alignment::Center);
 
     f.render_widget(footer, area);
+}
+
+/// Execute emergency failover for a validator
+async fn execute_emergency_failover(
+    validator_status: crate::ValidatorStatus,
+    alert_manager: AlertManager,
+    ssh_pool: Arc<crate::ssh::AsyncSshPool>,
+    detected_ssh_keys: std::collections::HashMap<String, String>,
+) {
+    // Find active and standby nodes
+    let (active_node, standby_node) = match (
+        validator_status.nodes_with_status.iter()
+            .find(|n| n.status == crate::types::NodeStatus::Active),
+        validator_status.nodes_with_status.iter()
+            .find(|n| n.status == crate::types::NodeStatus::Standby),
+    ) {
+        (Some(active), Some(standby)) => (active.clone(), standby.clone()),
+        _ => {
+            eprintln!("❌ Emergency failover failed: could not identify active/standby nodes");
+            return;
+        }
+    };
+
+    let mut emergency_failover = crate::emergency_failover::EmergencyFailover::new(
+        active_node,
+        standby_node,
+        validator_status.validator_pair,
+        ssh_pool,
+        detected_ssh_keys,
+        alert_manager,
+    );
+
+    if let Err(e) = emergency_failover.execute_emergency_takeover().await {
+        eprintln!("❌ Emergency failover error: {}", e);
+    }
 }
 
 /// Draw the dry-run switch UI

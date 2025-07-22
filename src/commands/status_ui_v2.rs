@@ -2741,15 +2741,6 @@ async fn refresh_node_status_and_identity(
     let command = rpc_command.to_string();
     let use_rpc = true;
     
-    // Create a simple debug log entry
-    let debug_msg = format!(
-        "Refresh attempt for {} - Command: {}, Type: {:?}, Method: {}", 
-        node.node.label, 
-        command,
-        node.validator_type,
-        if use_rpc { "RPC" } else { "Catchup" }
-    );
-    eprintln!("DEBUG: {}", debug_msg);
     
     let command_result = ssh_pool
         .execute_command(&node.node, &ssh_key, &command)
@@ -2757,10 +2748,6 @@ async fn refresh_node_status_and_identity(
     
     let (current_identity, _status, sync_status) = match command_result {
         Ok(output) => {
-            eprintln!("DEBUG: Command output for {} (len: {}): '{}'", node.node.label, output.len(), output);
-            if output.trim().is_empty() {
-                eprintln!("DEBUG: Empty output received for {}! Trying alternative approach...", node.node.label);
-            }
             
             let mut extracted_identity = None;
             let mut extracted_status = crate::types::NodeStatus::Unknown;
@@ -2782,12 +2769,10 @@ async fn refresh_node_status_and_identity(
                             
                             // For RPC, we need to run catchup separately to get sync status
                             // We'll do this after getting identity
-                        } else {
-                            eprintln!("DEBUG: No identity found in RPC response for {}", node.node.label);
                         }
                     }
-                    Err(e) => {
-                        eprintln!("DEBUG: Failed to parse RPC JSON for {}: {}", node.node.label, e);
+                    Err(_e) => {
+                        // Failed to parse RPC response
                     }
                 }
             } else {
@@ -2843,14 +2828,9 @@ async fn refresh_node_status_and_identity(
                 extracted_sync_status = Some("Unknown".to_string());
             }
             
-            if extracted_identity.is_none() {
-                eprintln!("DEBUG: No identity found in catchup output for {}", node.node.label);
-            }
-            
             (extracted_identity, extracted_status, extracted_sync_status)
         }
-        Err(e) => {
-            eprintln!("DEBUG: Command failed for {}: {}", node.node.label, e);
+        Err(_e) => {
             (None, crate::types::NodeStatus::Unknown, Some("Unknown".to_string()))
         },
     };
@@ -2858,11 +2838,9 @@ async fn refresh_node_status_and_identity(
     // If we got identity via RPC, now run catchup to get sync status
     let sync_status = if use_rpc && current_identity.is_some() {
         let catchup_command = format!("timeout 10 {} catchup --our-localhost 2>&1", solana_cli);
-        eprintln!("DEBUG: Running catchup for sync status on {}: {}", node.node.label, catchup_command);
         
         match ssh_pool.execute_command(&node.node, &ssh_key, &catchup_command).await {
             Ok(output) => {
-                eprintln!("DEBUG: Catchup output for {}: {}", node.node.label, output);
                 let mut sync_status = None;
                 
                 for line in output.lines() {
@@ -2885,8 +2863,7 @@ async fn refresh_node_status_and_identity(
                 
                 sync_status.or(Some("Unknown".to_string()))
             }
-            Err(e) => {
-                eprintln!("DEBUG: Catchup failed for sync status on {}: {}", node.node.label, e);
+            Err(_e) => {
                 Some("Unknown".to_string())
             }
         }

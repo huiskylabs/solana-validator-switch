@@ -2706,28 +2706,94 @@ async fn refresh_node_status_and_identity(
     // First, get the solana CLI path
     let solana_cli = if let Some(ref cli) = node.solana_cli_executable {
         cli.clone()
+    } else if node.validator_type == crate::types::ValidatorType::Firedancer {
+        // For Firedancer, solana CLI is in the same directory as fdctl
+        if let Some(ref fdctl_exec) = node.fdctl_executable {
+            if let Some(fdctl_dir) = std::path::Path::new(fdctl_exec).parent() {
+                fdctl_dir.join("solana").to_string_lossy().to_string()
+            } else {
+                "solana".to_string()
+            }
+        } else {
+            "solana".to_string()
+        }
     } else if let Some(ref agave_exec) = node.agave_validator_executable {
         agave_exec.replace("agave-validator", "solana")
     } else {
-        // Fallback to default solana command
-        "solana".to_string()
+        // Try to find solana in common locations
+        let check_cmd = "which solana || ls /home/solana/.local/share/solana/install/active_release/bin/solana 2>/dev/null || echo 'solana'";
+        match ssh_pool.execute_command(&node.node, &ssh_key, check_cmd).await {
+            Ok(output) => {
+                let path = output.trim();
+                if !path.is_empty() && path != "solana" {
+                    path.to_string()
+                } else {
+                    // Fallback to default solana command
+                    "solana".to_string()
+                }
+            }
+            Err(_) => "solana".to_string()
+        }
     };
     
-    // Use catchup command to get the active identity and status
-    let catchup_cmd = format!("timeout 5 {} catchup --our-localhost 2>&1", solana_cli);
-    let catchup_result = ssh_pool
-        .execute_command(&node.node, &ssh_key, &catchup_cmd)
+    // All validator types use RPC to get identity
+    let rpc_command = r#"curl -s http://localhost:8899 -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","id":1,"method":"getIdentity"}' 2>&1"#;
+    let command = rpc_command.to_string();
+    let use_rpc = true;
+    
+    // Create a simple debug log entry
+    let debug_msg = format!(
+        "Refresh attempt for {} - Command: {}, Type: {:?}, Method: {}", 
+        node.node.label, 
+        command,
+        node.validator_type,
+        if use_rpc { "RPC" } else { "Catchup" }
+    );
+    eprintln!("DEBUG: {}", debug_msg);
+    
+    let command_result = ssh_pool
+        .execute_command(&node.node, &ssh_key, &command)
         .await;
     
-    let (current_identity, _status, sync_status) = match catchup_result {
+    let (current_identity, _status, sync_status) = match command_result {
         Ok(output) => {
+            eprintln!("DEBUG: Command output for {} (len: {}): '{}'", node.node.label, output.len(), output);
+            if output.trim().is_empty() {
+                eprintln!("DEBUG: Empty output received for {}! Trying alternative approach...", node.node.label);
+            }
+            
             let mut extracted_identity = None;
             let mut extracted_status = crate::types::NodeStatus::Unknown;
             let mut extracted_sync_status = None;
             
-            // Parse catchup output to extract identity and sync status
-            for line in output.lines() {
-                if line.contains(" has caught up") || line.contains("0 slot(s) behind") {
+            if use_rpc {
+                // Parse RPC response for Agave/Jito
+                match serde_json::from_str::<serde_json::Value>(&output) {
+                    Ok(json) => {
+                        if let Some(identity) = json["result"]["identity"].as_str() {
+                            extracted_identity = Some(identity.to_string());
+                            
+                            // Determine status based on identity match
+                            if identity == validator_pair.identity_pubkey {
+                                extracted_status = crate::types::NodeStatus::Active;
+                            } else {
+                                extracted_status = crate::types::NodeStatus::Standby;
+                            }
+                            
+                            // For RPC, we need to run catchup separately to get sync status
+                            // We'll do this after getting identity
+                        } else {
+                            eprintln!("DEBUG: No identity found in RPC response for {}", node.node.label);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("DEBUG: Failed to parse RPC JSON for {}: {}", node.node.label, e);
+                    }
+                }
+            } else {
+                // Parse catchup output to extract identity and sync status
+                for line in output.lines() {
+                    if line.contains(" has caught up") || line.contains("0 slot(s) behind") {
                     if let Some(caught_up_pos) = line.find(" has caught up") {
                         let identity = line[..caught_up_pos].trim();
                         if !identity.is_empty() {
@@ -2769,6 +2835,7 @@ async fn refresh_node_status_and_identity(
                         }
                     }
                 }
+                }
             }
             
             // If no sync status found, set to Unknown
@@ -2776,9 +2843,55 @@ async fn refresh_node_status_and_identity(
                 extracted_sync_status = Some("Unknown".to_string());
             }
             
+            if extracted_identity.is_none() {
+                eprintln!("DEBUG: No identity found in catchup output for {}", node.node.label);
+            }
+            
             (extracted_identity, extracted_status, extracted_sync_status)
         }
-        Err(_) => (None, crate::types::NodeStatus::Unknown, Some("Unknown".to_string())),
+        Err(e) => {
+            eprintln!("DEBUG: Command failed for {}: {}", node.node.label, e);
+            (None, crate::types::NodeStatus::Unknown, Some("Unknown".to_string()))
+        },
+    };
+    
+    // If we got identity via RPC, now run catchup to get sync status
+    let sync_status = if use_rpc && current_identity.is_some() {
+        let catchup_command = format!("timeout 10 {} catchup --our-localhost 2>&1", solana_cli);
+        eprintln!("DEBUG: Running catchup for sync status on {}: {}", node.node.label, catchup_command);
+        
+        match ssh_pool.execute_command(&node.node, &ssh_key, &catchup_command).await {
+            Ok(output) => {
+                eprintln!("DEBUG: Catchup output for {}: {}", node.node.label, output);
+                let mut sync_status = None;
+                
+                for line in output.lines() {
+                    if line.contains(" has caught up") || line.contains("0 slot(s) behind") {
+                        // Extract slot information
+                        if let Some(us_start) = line.find("us:") {
+                            let us_end = line[us_start + 3..]
+                                .find(' ')
+                                .unwrap_or(line.len() - us_start - 3)
+                                + us_start
+                                + 3;
+                            let us_slot = &line[us_start + 3..us_end];
+                            sync_status = Some(format!("Caught up (slot: {})", us_slot));
+                        } else {
+                            sync_status = Some("Caught up".to_string());
+                        }
+                        break;
+                    }
+                }
+                
+                sync_status.or(Some("Unknown".to_string()))
+            }
+            Err(e) => {
+                eprintln!("DEBUG: Catchup failed for sync status on {}: {}", node.node.label, e);
+                Some("Unknown".to_string())
+            }
+        }
+    } else {
+        sync_status
     };
     
     // Update UI state with the new status and identity
@@ -2821,7 +2934,7 @@ async fn refresh_node_version(
     let (_validator_type, _version) = match node.validator_type {
         crate::types::ValidatorType::Firedancer => {
             if let Some(ref fdctl_exec) = node.fdctl_executable {
-                let version_cmd = format!("timeout 5 {} version 2>/dev/null", fdctl_exec);
+                let version_cmd = format!("timeout 10 {} version 2>/dev/null", fdctl_exec);
                 let version_output = ssh_pool
                     .execute_command(&node.node, &ssh_key, &version_cmd)
                     .await
@@ -2845,7 +2958,7 @@ async fn refresh_node_version(
         }
         crate::types::ValidatorType::Agave | crate::types::ValidatorType::Jito => {
             if let Some(ref agave_exec) = node.agave_validator_executable {
-                let version_cmd = format!("timeout 5 {} --version 2>/dev/null", agave_exec);
+                let version_cmd = format!("timeout 10 {} --version 2>/dev/null", agave_exec);
                 let version_output = ssh_pool
                     .execute_command(&node.node, &ssh_key, &version_cmd)
                     .await

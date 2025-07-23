@@ -1421,27 +1421,6 @@ pub async fn run_enhanced_ui(app: &mut EnhancedStatusApp) -> Result<bool> {
 
     // Process log messages in background (keeping for internal use but not displaying)
     // Note: log messages are now consumed by the Telegram bot if enabled
-    
-    // Trigger an initial refresh when starting the UI
-    {
-        // Set refresh flags immediately so UI shows refreshing state
-        let mut ui_state_write = app.ui_state.write().await;
-        for refresh_state in ui_state_write.field_refresh_states.iter_mut() {
-            refresh_state.node_0.status_refreshing = true;
-            refresh_state.node_0.identity_refreshing = true;
-            refresh_state.node_0.version_refreshing = true;
-            refresh_state.node_1.status_refreshing = true;
-            refresh_state.node_1.identity_refreshing = true;
-            refresh_state.node_1.version_refreshing = true;
-        }
-        drop(ui_state_write);
-        
-        let app_state_clone = app.app_state.clone();
-        let ui_state_clone = app.ui_state.clone();
-        tokio::spawn(async move {
-            refresh_all_fields(app_state_clone, ui_state_clone).await;
-        });
-    }
 
     // Main UI loop
     let mut ui_interval = interval(Duration::from_millis(100)); // 10 FPS
@@ -1540,13 +1519,7 @@ async fn handle_key_event(
                 // In switch view, go back to status view
                 let mut view = view_state.write().await;
                 *view = ViewState::Status;
-                
-                // Trigger a refresh when returning to status view
-                let app_state_clone = _app_state.clone();
-                let ui_state_clone = ui_state.clone();
-                tokio::spawn(async move {
-                    refresh_all_fields(app_state_clone, ui_state_clone).await;
-                });
+                // No refresh needed when just canceling switch
             } else {
                 // In status view, quit the application
                 *should_quit.write().await = true;
@@ -3420,6 +3393,26 @@ pub async fn show_enhanced_status_ui(app_state: &AppState) -> Result<()> {
         
         if result {
             println!("\n✅ Switch completed successfully!");
+            println!("📊 Returning to validator status view...\n");
+            
+            // Wait a moment for the switch to take effect
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            
+            // Restart the UI and trigger refresh in background
+            let app_state_arc = Arc::new(app_state.clone());
+            let mut app = EnhancedStatusApp::new(app_state_arc.clone()).await?;
+            
+            // Spawn a background refresh after the UI starts
+            let app_state_for_refresh = app_state_arc.clone();
+            let ui_state_for_refresh = app.ui_state.clone();
+            tokio::spawn(async move {
+                // Wait for UI to start
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                // Trigger refresh of all fields
+                refresh_all_fields(app_state_for_refresh, ui_state_for_refresh).await;
+            });
+            
+            run_enhanced_ui(&mut app).await?;
         } else {
             println!("\n❌ Switch was not completed");
         }

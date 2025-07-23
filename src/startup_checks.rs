@@ -170,6 +170,13 @@ async fn check_firedancer_identity_config(
     ssh_pool: &AsyncSshPool,
     ssh_key: &str,
 ) -> Result<()> {
+    // TODO: This function should use a proper TOML parser instead of grep/string parsing.
+    // Current implementation is fragile and error-prone. Should:
+    // 1. Add `toml` crate dependency
+    // 2. Read the entire config file via SSH
+    // 3. Parse with toml::from_str
+    // 4. Access fields properly: config["consensus"]["identity_path"] and config["consensus"]["authorized_voter_paths"][0]
+    
     // Get the Firedancer config file path
     let ps_cmd = "ps aux | grep -E 'fdctl.*--config' | grep -v grep";
     let process_info = ssh_pool
@@ -331,6 +338,9 @@ async fn check_firedancer_identity_config_inline(
     ssh_pool: &AsyncSshPool,
     ssh_key: &str,
 ) -> Result<()> {
+    // TODO: This function should use a proper TOML parser instead of grep/string parsing.
+    // See TODO comment in check_firedancer_identity_config() above.
+    
     // Get the Firedancer config file path
     let ps_cmd = "ps aux | grep -E 'fdctl.*--config' | grep -v grep";
     let process_info = ssh_pool

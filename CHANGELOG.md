@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.4] - 2025-01-23
+
+### Changed
+- Optimized swap readiness checks to eliminate redundancy - reduced SSH calls from 3 to 1-2 per node
+- Tower file check is now only performed once for active nodes instead of re-running all checks
+
+### Performance
+- Faster startup time due to reduced SSH operations
+- More efficient node status detection process
+
 ## [1.2.3] - 2025-01-23
 
 ### Fixed

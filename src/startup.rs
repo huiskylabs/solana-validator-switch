@@ -1514,7 +1514,7 @@ async fn detect_node_status_and_executable(
             if let Ok(version_output) = ssh_pool
                 .execute_command(
                     node,
-                    DEFAULT_SSH_KEY,
+                    &ssh_key,
                     &format!("timeout 5 {} --version 2>/dev/null", fdctl_exec),
                 )
                 .await
@@ -1532,7 +1532,7 @@ async fn detect_node_status_and_executable(
         if let Ok(version_output) = ssh_pool
             .execute_command(
                 node,
-                DEFAULT_SSH_KEY,
+                &ssh_key,
                 &format!("timeout 5 {} --version 2>/dev/null", agave_exec),
             )
             .await
@@ -1639,7 +1639,7 @@ async fn detect_node_status_and_executable(
 
     // Initial swap readiness check - skip tower files since we don't know if it's active yet
     let (swap_ready, swap_issues) =
-        check_node_swap_readiness(ssh_pool, node, DEFAULT_SSH_KEY, ledger_path.as_ref(), Some(true)).await;
+        check_node_swap_readiness(ssh_pool, node, &ssh_key, ledger_path.as_ref(), Some(true)).await;
 
     // Use catchup command to get the active identity
     // Derive solana CLI from agave-validator path
@@ -1679,7 +1679,7 @@ async fn detect_node_status_and_executable(
                                 // logger.log_success(&format!("Node {} is ACTIVE (identity matches)", node.label)).ok();
                                 // Recheck swap readiness for active node (with tower requirement)
                                 let (active_swap_ready, active_swap_issues) =
-                                    check_node_swap_readiness(ssh_pool, node, DEFAULT_SSH_KEY, ledger_path.as_ref(), Some(false)).await;
+                                    check_node_swap_readiness(ssh_pool, node, &ssh_key, ledger_path.as_ref(), Some(false)).await;
                                 return Ok((
                                     crate::types::NodeStatus::Active,
                                     validator_type,
@@ -1697,7 +1697,7 @@ async fn detect_node_status_and_executable(
                                 // logger.log(&format!("Node {} is STANDBY (identity {} does not match {})", node.label, identity, validator_pair.identity_pubkey)).ok();
                                 // Recheck swap readiness for standby node (without tower requirement)
                                 let (standby_swap_ready, standby_swap_issues) =
-                                    check_node_swap_readiness(ssh_pool, node, DEFAULT_SSH_KEY, ledger_path.as_ref(), Some(true)).await;
+                                    check_node_swap_readiness(ssh_pool, node, &ssh_key, ledger_path.as_ref(), Some(true)).await;
                                 return Ok((
                                     crate::types::NodeStatus::Standby,
                                     validator_type,
@@ -2140,7 +2140,7 @@ async fn detect_node_status_and_executable_with_progress(
             if let Ok(version_output) = ssh_pool
                 .execute_command(
                     node,
-                    DEFAULT_SSH_KEY,
+                    &ssh_key,
                     &format!("timeout 5 {} --version 2>/dev/null", fdctl_exec),
                 )
                 .await
@@ -2158,7 +2158,7 @@ async fn detect_node_status_and_executable_with_progress(
         if let Ok(version_output) = ssh_pool
             .execute_command(
                 node,
-                DEFAULT_SSH_KEY,
+                &ssh_key,
                 &format!("timeout 5 {} --version 2>/dev/null", agave_exec),
             )
             .await
@@ -2286,7 +2286,7 @@ async fn detect_node_status_and_executable_with_progress(
 
     // Initial check - assume standby for now (skip tower requirement)
     let (swap_ready, mut swap_issues) =
-        check_node_swap_readiness(ssh_pool, node, DEFAULT_SSH_KEY, ledger_path.as_ref(), Some(true)).await;
+        check_node_swap_readiness(ssh_pool, node, &ssh_key, ledger_path.as_ref(), Some(true)).await;
 
     if swap_ready {
         logger.log_success("Node is ready for swap")?;
@@ -2381,7 +2381,7 @@ async fn detect_node_status_and_executable_with_progress(
                                 // logger.log_success(&format!("Node {} is ACTIVE (identity matches)", node.label)).ok();
                                 // Recheck swap readiness for active node (with tower requirement)
                                 let (active_swap_ready, active_swap_issues) =
-                                    check_node_swap_readiness(ssh_pool, node, DEFAULT_SSH_KEY, ledger_path.as_ref(), Some(false)).await;
+                                    check_node_swap_readiness(ssh_pool, node, &ssh_key, ledger_path.as_ref(), Some(false)).await;
                                 return Ok((
                                     crate::types::NodeStatus::Active,
                                     validator_type,
@@ -2399,7 +2399,7 @@ async fn detect_node_status_and_executable_with_progress(
                                 // logger.log(&format!("Node {} is STANDBY (identity {} does not match {})", node.label, identity, validator_pair.identity_pubkey)).ok();
                                 // Recheck swap readiness for standby node (without tower requirement)
                                 let (standby_swap_ready, standby_swap_issues) =
-                                    check_node_swap_readiness(ssh_pool, node, DEFAULT_SSH_KEY, ledger_path.as_ref(), Some(true)).await;
+                                    check_node_swap_readiness(ssh_pool, node, &ssh_key, ledger_path.as_ref(), Some(true)).await;
                                 return Ok((
                                     crate::types::NodeStatus::Standby,
                                     validator_type,

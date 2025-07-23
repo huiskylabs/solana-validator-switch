@@ -27,7 +27,7 @@ use crate::{ssh::AsyncSshPool, AppState};
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ViewState {
     Status,
-    DryRunSwitch,
+    Switch,
 }
 
 /// Enhanced UI App state with async support
@@ -38,6 +38,8 @@ pub struct EnhancedStatusApp {
     pub log_sender: tokio::sync::mpsc::UnboundedSender<LogMessage>,
     pub should_quit: Arc<RwLock<bool>>,
     pub view_state: Arc<RwLock<ViewState>>,
+    pub emergency_takeover_in_progress: Arc<RwLock<bool>>,
+    pub switch_confirmed: Arc<RwLock<bool>>,
 }
 
 /// UI State that can be shared across threads
@@ -54,9 +56,11 @@ pub struct UiState {
     pub catchup_data: Vec<NodePairStatus>,
 
     // Track consecutive catchup failures for standby nodes
+    #[allow(dead_code)]
     pub catchup_failure_counts: Vec<(u32, u32)>, // (node_0_failures, node_1_failures)
     
     // Track last alert time for catchup failures
+    #[allow(dead_code)]
     pub last_catchup_alert_times: Vec<(Option<Instant>, Option<Instant>)>, // (node_0_last_alert, node_1_last_alert)
 
     // SSH health status for each node
@@ -123,6 +127,7 @@ pub struct CatchupStatus {
     pub status: String,
     #[allow(dead_code)]
     pub last_updated: Instant,
+    pub is_streaming: bool,
 }
 
 #[derive(Clone)]
@@ -166,13 +171,35 @@ impl EnhancedStatusApp {
         let mut initial_catchup_data = Vec::new();
         let mut initial_ssh_health_data = Vec::new();
 
-        for _validator_status in &app_state.validator_statuses {
+        for validator_status in &app_state.validator_statuses {
             initial_vote_data.push(None);
 
-            let node_pair = NodePairStatus {
+            // Initialize catchup status for standby nodes
+            let mut node_pair = NodePairStatus {
                 node_0: None,
                 node_1: None,
             };
+            
+            if validator_status.nodes_with_status.len() >= 2 {
+                // Initialize for standby nodes or Firedancer nodes
+                if validator_status.nodes_with_status[0].status == crate::types::NodeStatus::Standby 
+                    || validator_status.nodes_with_status[0].validator_type == crate::types::ValidatorType::Firedancer {
+                    node_pair.node_0 = Some(CatchupStatus {
+                        status: "⏳ Initializing...".to_string(),
+                        last_updated: Instant::now(),
+                        is_streaming: false,
+                    });
+                }
+                if validator_status.nodes_with_status[1].status == crate::types::NodeStatus::Standby 
+                    || validator_status.nodes_with_status[1].validator_type == crate::types::ValidatorType::Firedancer {
+                    node_pair.node_1 = Some(CatchupStatus {
+                        status: "⏳ Initializing...".to_string(),
+                        last_updated: Instant::now(),
+                        is_streaming: false,
+                    });
+                }
+            }
+            
             initial_catchup_data.push(node_pair);
 
             let ssh_pair = NodePairSshStatus {
@@ -238,15 +265,54 @@ impl EnhancedStatusApp {
             log_sender,
             should_quit: Arc::new(RwLock::new(false)),
             view_state: Arc::new(RwLock::new(ViewState::Status)),
+            emergency_takeover_in_progress: Arc::new(RwLock::new(false)),
+            switch_confirmed: Arc::new(RwLock::new(false)),
         })
+    }
+    
+    /// Spawn continuous catchup streaming tasks for each node
+    fn spawn_catchup_streaming_tasks(&self) {
+        let ui_state = Arc::clone(&self.ui_state);
+        let app_state = Arc::clone(&self.app_state);
+        let ssh_pool = Arc::clone(&self.ssh_pool);
+        let log_sender = self.log_sender.clone();
+        
+        // Spawn a streaming task for each node
+        for (validator_idx, validator_status) in app_state.validator_statuses.iter().enumerate() {
+            for (node_idx, node) in validator_status.nodes_with_status.iter().enumerate() {
+                let node = node.clone();
+                let ui_state = Arc::clone(&ui_state);
+                let ssh_pool = Arc::clone(&ssh_pool);
+                let log_sender = log_sender.clone();
+                let ssh_key = app_state.detected_ssh_keys.get(&node.node.host).cloned();
+                
+                if let Some(ssh_key) = ssh_key {
+                    tokio::spawn(async move {
+                        stream_catchup_for_node(
+                            ssh_pool,
+                            node,
+                            ssh_key,
+                            ui_state,
+                            validator_idx,
+                            node_idx,
+                            log_sender,
+                        ).await;
+                    });
+                }
+            }
+        }
     }
 
     /// Spawn background tasks for data fetching
     pub fn spawn_background_tasks(&self) {
+        // Spawn continuous catchup streaming tasks for each node
+        self.spawn_catchup_streaming_tasks();
+        
         // Vote data refresh task
         let ui_state = Arc::clone(&self.ui_state);
         let app_state = Arc::clone(&self.app_state);
         let log_sender = self.log_sender.clone();
+        let emergency_takeover_flag = Arc::clone(&self.emergency_takeover_in_progress);
 
         tokio::spawn(async move {
             let mut interval = interval(Duration::from_secs(5));
@@ -460,6 +526,7 @@ impl EnhancedStatusApp {
                                                     let alert_manager = alert_mgr.clone();
                                                     let ssh_pool = app_state.ssh_pool.clone();
                                                     let ssh_keys = app_state.detected_ssh_keys.clone();
+                                                    let emergency_flag = emergency_takeover_flag.clone();
                                                     
                                                     tokio::spawn(async move {
                                                         execute_emergency_failover(
@@ -467,6 +534,7 @@ impl EnhancedStatusApp {
                                                             alert_manager,
                                                             ssh_pool,
                                                             ssh_keys,
+                                                            emergency_flag,
                                                         ).await;
                                                     });
                                                 } else {
@@ -543,7 +611,8 @@ impl EnhancedStatusApp {
             }
         });
 
-        // Catchup status refresh task
+        // Catchup status refresh task - DISABLED, using streaming instead
+        /*
         let ui_state = Arc::clone(&self.ui_state);
         let app_state = Arc::clone(&self.app_state);
         let ssh_pool = Arc::clone(&self.ssh_pool);
@@ -571,12 +640,14 @@ impl EnhancedStatusApp {
                             catchup.node_0 = Some(CatchupStatus {
                                 status: "Checking...".to_string(),
                                 last_updated: Instant::now(),
+                                is_streaming: false,
                             });
                         }
                         if catchup.node_1.is_some() {
                             catchup.node_1 = Some(CatchupStatus {
                                 status: "Checking...".to_string(),
                                 last_updated: Instant::now(),
+                                is_streaming: false,
                             });
                         }
                     }
@@ -758,6 +829,7 @@ impl EnhancedStatusApp {
                 state.last_catchup_refresh = Instant::now();
             }
         });
+        */
 
         // SSH health monitoring task
         let ui_state = Arc::clone(&self.ui_state);
@@ -951,6 +1023,7 @@ impl EnhancedStatusApp {
     }
 }
 
+#[allow(dead_code)]
 async fn fetch_catchup_for_node(
     ssh_pool: &AsyncSshPool,
     node: &crate::types::NodeWithStatus,
@@ -1001,6 +1074,7 @@ async fn fetch_catchup_for_node(
                     return Some(CatchupStatus {
                         status,
                         last_updated: Instant::now(),
+                        is_streaming: false,
                     });
                 }
                 Err(_) => return None,
@@ -1038,6 +1112,7 @@ async fn fetch_catchup_for_node(
         return Some(CatchupStatus {
             status: "CLI not found".to_string(),
             last_updated: Instant::now(),
+            is_streaming: false,
         });
     }
 
@@ -1140,6 +1215,7 @@ async fn fetch_catchup_for_node(
             Some(CatchupStatus {
                 status,
                 last_updated: Instant::now(),
+                is_streaming: false,
             })
         }
         Err(e) => {
@@ -1155,8 +1231,181 @@ async fn fetch_catchup_for_node(
     }
 }
 
+/// Stream catchup status continuously for a single node
+async fn stream_catchup_for_node(
+    ssh_pool: Arc<AsyncSshPool>,
+    node: crate::types::NodeWithStatus,
+    ssh_key: String,
+    ui_state: Arc<RwLock<UiState>>,
+    validator_idx: usize,
+    node_idx: usize,
+    log_sender: tokio::sync::mpsc::UnboundedSender<LogMessage>,
+) {
+    loop {
+        // Determine the catchup command based on node type
+        let catchup_command = if node.validator_type == crate::types::ValidatorType::Firedancer {
+            // For Firedancer, use fdctl status
+            if let Some(fdctl) = &node.fdctl_executable {
+                // Also wrap fdctl in bash -c for consistency
+                format!("bash -c '{} status'", fdctl)
+            } else {
+                // Sleep and retry
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                continue;
+            }
+        } else {
+            // For Agave/Jito, use solana catchup
+            let solana_cli = if let Some(cli) = &node.solana_cli_executable {
+                cli.clone()
+            } else if let Some(validator) = &node.agave_validator_executable {
+                validator.replace("agave-validator", "solana")
+            } else {
+                // Sleep and retry
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                continue;
+            };
+            
+            // Need to use bash -c to properly handle the command with its full path
+            format!("bash -c '{} catchup --our-localhost 2>&1'", solana_cli)
+        };
+        
+        // Log the command being executed
+        let _ = log_sender.send(LogMessage {
+            host: node.node.host.clone(),
+            message: format!("Starting catchup stream with command: {}", catchup_command),
+            timestamp: Instant::now(),
+            level: LogLevel::Info,
+        });
+        
+        // Create channel for streaming output
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(100);
+        
+        // Start the streaming command
+        let stream_task = ssh_pool.execute_command_streaming(
+            &node.node,
+            &ssh_key,
+            &catchup_command,
+            tx,
+        );
+        
+        // Process streaming output
+        let ui_state_clone = Arc::clone(&ui_state);
+        let is_firedancer = node.validator_type == crate::types::ValidatorType::Firedancer;
+        let process_task = tokio::spawn(async move {
+            while let Some(line) = rx.recv().await {
+                let last_output = line.trim().to_string();
+                
+                // Update UI state with the latest output
+                let mut state = ui_state_clone.write().await;
+                if let Some(catchup_data) = state.catchup_data.get_mut(validator_idx) {
+                    let status = parse_catchup_output(&last_output, is_firedancer);
+                    
+                    let catchup_status = CatchupStatus {
+                        status,
+                        last_updated: Instant::now(),
+                        is_streaming: true,
+                    };
+                    
+                    if node_idx == 0 {
+                        catchup_data.node_0 = Some(catchup_status);
+                    } else {
+                        catchup_data.node_1 = Some(catchup_status);
+                    }
+                }
+            }
+        });
+        
+        // Wait for either task to complete
+        tokio::select! {
+            result = stream_task => {
+                if let Err(e) = result {
+                    let _ = log_sender.send(LogMessage {
+                        host: node.node.host.clone(),
+                        message: format!("Catchup streaming error: {}", e),
+                        timestamp: Instant::now(),
+                        level: LogLevel::Error,
+                    });
+                }
+            }
+            _ = process_task => {
+                // Processing task completed
+            }
+        }
+        
+        // Mark as not streaming anymore
+        {
+            let mut state = ui_state.write().await;
+            if let Some(catchup_data) = state.catchup_data.get_mut(validator_idx) {
+                if node_idx == 0 {
+                    if let Some(ref mut status) = catchup_data.node_0 {
+                        status.is_streaming = false;
+                    }
+                } else {
+                    if let Some(ref mut status) = catchup_data.node_1 {
+                        status.is_streaming = false;
+                    }
+                }
+            }
+        }
+        
+        // Wait before retrying
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+}
+
+/// Parse catchup output to extract status
+fn parse_catchup_output(output: &str, is_firedancer: bool) -> String {
+    if is_firedancer {
+        // For Firedancer, check if it's running
+        if output.contains("running") {
+            "Caught up".to_string()
+        } else {
+            "Not running".to_string()
+        }
+    } else {
+        // For Agave/Jito, parse the catchup output
+        if output.contains("0 slot(s)") || output.contains("has caught up") {
+            "Caught up".to_string()
+        } else if let Some(pos) = output.find(" slot(s) behind") {
+            let start = output[..pos].rfind(' ').map(|i| i + 1).unwrap_or(0);
+            let slots_str = &output[start..pos];
+            if let Ok(slots) = slots_str.parse::<u64>() {
+                format!("{} slots behind", slots)
+            } else {
+                output.to_string()
+            }
+        } else if output.contains("bash:") && output.contains("line") {
+            // Parse bash errors more nicely
+            if output.contains("command not found") || output.contains("No such file") {
+                "CLI not found".to_string()
+            } else {
+                "Command error".to_string()
+            }
+        } else if output.contains("Error") || output.contains("error") {
+            if output.contains("RPC") {
+                "RPC Error".to_string()
+            } else if output.contains("connection") {
+                "Connection Error".to_string()
+            } else {
+                "Error".to_string()
+            }
+        } else if output.trim().is_empty() {
+            "Waiting...".to_string()
+        } else {
+            // Show the raw output if we can't parse it, but limit length
+            let trimmed = output.trim();
+            if trimmed.len() > 40 {
+                format!("{}...", trimmed.chars().take(37).collect::<String>())
+            } else {
+                trimmed.to_string()
+            }
+        }
+    }
+}
+
 /// Run the enhanced UI
-pub async fn run_enhanced_ui(app: &mut EnhancedStatusApp) -> Result<()> {
+/// Returns true if a switch was confirmed, false otherwise
+pub async fn run_enhanced_ui(app: &mut EnhancedStatusApp) -> Result<bool> {
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -1172,27 +1421,79 @@ pub async fn run_enhanced_ui(app: &mut EnhancedStatusApp) -> Result<()> {
 
     // Process log messages in background (keeping for internal use but not displaying)
     // Note: log messages are now consumed by the Telegram bot if enabled
+    
+    // Trigger an initial refresh when starting the UI
+    {
+        // Set refresh flags immediately so UI shows refreshing state
+        let mut ui_state_write = app.ui_state.write().await;
+        for refresh_state in ui_state_write.field_refresh_states.iter_mut() {
+            refresh_state.node_0.status_refreshing = true;
+            refresh_state.node_0.identity_refreshing = true;
+            refresh_state.node_0.version_refreshing = true;
+            refresh_state.node_1.status_refreshing = true;
+            refresh_state.node_1.identity_refreshing = true;
+            refresh_state.node_1.version_refreshing = true;
+        }
+        drop(ui_state_write);
+        
+        let app_state_clone = app.app_state.clone();
+        let ui_state_clone = app.ui_state.clone();
+        tokio::spawn(async move {
+            refresh_all_fields(app_state_clone, ui_state_clone).await;
+        });
+    }
 
     // Main UI loop
     let mut ui_interval = interval(Duration::from_millis(100)); // 10 FPS
 
+    let mut emergency_mode = false;
+    
     loop {
         // Check for quit signal
         if *app.should_quit.read().await {
             break;
         }
 
+        // Check if emergency takeover is in progress
+        let emergency_in_progress = *app.emergency_takeover_in_progress.read().await;
+        
+        if emergency_in_progress && !emergency_mode {
+            // Just entering emergency mode - cleanup terminal
+            emergency_mode = true;
+            terminal.clear()?;
+            disable_raw_mode()?;
+            execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+            terminal.show_cursor()?;
+        } else if !emergency_in_progress && emergency_mode {
+            // Just exiting emergency mode - restore terminal
+            emergency_mode = false;
+            enable_raw_mode()?;
+            execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+            terminal.clear()?;
+            terminal.hide_cursor()?;
+        }
+        
+        if emergency_in_progress {
+            // During emergency takeover, just wait without rendering
+            ui_interval.tick().await;
+            continue;
+        }
+
         // Handle keyboard events
         if event::poll(Duration::from_millis(10))? {
             if let Event::Key(key) = event::read()? {
-                handle_key_event(
-                    key,
-                    &app.ui_state,
-                    &app.should_quit,
-                    &app.view_state,
-                    &app.app_state,
-                )
-                .await?;
+                // Only handle key press events, not key releases
+                if key.kind == crossterm::event::KeyEventKind::Press {
+                    handle_key_event(
+                        key,
+                        &app.ui_state,
+                        &app.should_quit,
+                        &app.view_state,
+                        &app.app_state,
+                        &app.switch_confirmed,
+                    )
+                    .await?;
+                }
             }
         }
 
@@ -1202,7 +1503,7 @@ pub async fn run_enhanced_ui(app: &mut EnhancedStatusApp) -> Result<()> {
 
         terminal.draw(|f| match *view_state_read {
             ViewState::Status => draw_ui(f, &ui_state_read, &app.app_state),
-            ViewState::DryRunSwitch => draw_dry_run_switch_ui(f, &app.app_state),
+            ViewState::Switch => draw_switch_ui(f, &app.app_state),
         })?;
 
         drop(ui_state_read);
@@ -1217,7 +1518,8 @@ pub async fn run_enhanced_ui(app: &mut EnhancedStatusApp) -> Result<()> {
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
-    Ok(())
+    // Return whether switch was confirmed
+    Ok(*app.switch_confirmed.read().await)
 }
 
 /// Handle keyboard events
@@ -1227,25 +1529,47 @@ async fn handle_key_event(
     should_quit: &Arc<RwLock<bool>>,
     view_state: &Arc<RwLock<ViewState>>,
     _app_state: &Arc<AppState>,
+    switch_confirmed: &Arc<RwLock<bool>>,
 ) -> Result<()> {
     // Don't hold a write lock for the entire function!
     
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => {
-            *should_quit.write().await = true;
+            let current_view = *view_state.read().await;
+            if current_view == ViewState::Switch {
+                // In switch view, go back to status view
+                let mut view = view_state.write().await;
+                *view = ViewState::Status;
+                
+                // Trigger a refresh when returning to status view
+                let app_state_clone = _app_state.clone();
+                let ui_state_clone = ui_state.clone();
+                tokio::spawn(async move {
+                    refresh_all_fields(app_state_clone, ui_state_clone).await;
+                });
+            } else {
+                // In status view, quit the application
+                *should_quit.write().await = true;
+            }
         }
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             *should_quit.write().await = true;
         }
-        KeyCode::Char('v') | KeyCode::Char('V') => {
-            // Show validator status view
+        KeyCode::Char('s') | KeyCode::Char('S') => {
+            // Show switch confirmation view
             let mut view = view_state.write().await;
-            *view = ViewState::Status;
+            *view = ViewState::Switch;
         }
-        KeyCode::Char('d') | KeyCode::Char('D') => {
-            // Show dry-run switch view (SD = Switch Dry-run, but just 'd' in CLI)
-            let mut view = view_state.write().await;
-            *view = ViewState::DryRunSwitch;
+        KeyCode::Char('y') | KeyCode::Char('Y') => {
+            // Confirm and execute switch if in switch view
+            let current_view = *view_state.read().await;
+            if current_view == ViewState::Switch {
+                // Set switch confirmed flag and quit to perform switch
+                *switch_confirmed.write().await = true;
+                *should_quit.write().await = true;
+                // Force immediate exit from the event loop
+                return Ok(());
+            }
         }
         KeyCode::Char('r') | KeyCode::Char('R') => {
             // Refresh fields in the validator status view
@@ -1278,7 +1602,6 @@ async fn handle_key_event(
                 });
             }
         }
-        // Removed 's' key handling - real switch should only be done via CLI command or Telegram
         _ => {}
     }
 
@@ -1369,17 +1692,6 @@ fn draw_side_by_side_tables(
     last_ssh_health_refresh: Instant,
     field_refresh_state: Option<&NodeFieldRefreshState>,
 ) {
-    // Find active and standby nodes
-    let active_node_index = validator_status
-        .nodes_with_status
-        .iter()
-        .position(|n| n.status == crate::types::NodeStatus::Active);
-    
-    let standby_node_index = validator_status
-        .nodes_with_status
-        .iter()
-        .position(|n| n.status == crate::types::NodeStatus::Standby);
-
     // Split area horizontally
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -1389,15 +1701,11 @@ fn draw_side_by_side_tables(
         ])
         .split(area);
 
-    // Prepare node indices for display (active on left, standby on right)
-    let (left_node_idx, right_node_idx) = match (active_node_index, standby_node_index) {
-        (Some(active), Some(standby)) => (active, standby),
-        (Some(active), None) => (active, 1 - active), // If no standby, show the other node
-        (None, Some(standby)) => (1 - standby, standby), // If no active, show the other node first
-        (None, None) => (0, 1), // Default to first two nodes
-    };
+    // Always show nodes in the same order (node 0 on left, node 1 on right)
+    // This keeps the hosts in consistent positions
+    let (left_node_idx, right_node_idx) = (0, 1);
 
-    // Draw left table (active node)
+    // Draw left table (node 0)
     if let Some(node) = validator_status.nodes_with_status.get(left_node_idx) {
         let catchup_status = catchup_data.and_then(|c| {
             if left_node_idx == 0 { c.node_0.as_ref() } else { c.node_1.as_ref() }
@@ -1428,7 +1736,7 @@ fn draw_side_by_side_tables(
         );
     }
 
-    // Draw right table (standby node)
+    // Draw right table (node 1)
     if let Some(node) = validator_status.nodes_with_status.get(right_node_idx) {
         let catchup_status = catchup_data.and_then(|c| {
             if right_node_idx == 0 { c.node_0.as_ref() } else { c.node_1.as_ref() }
@@ -1470,11 +1778,11 @@ fn draw_single_node_table(
     previous_last_slot: Option<u64>,
     increment_time: Option<Instant>,
     app_state: &AppState,
-    last_catchup_refresh: Instant,
+    _last_catchup_refresh: Instant,
     ssh_health: Option<&SshHealthStatus>,
     last_ssh_health_refresh: Instant,
     field_refresh_state: Option<&FieldRefreshStates>,
-    is_left_table: bool,
+    _is_left_table: bool,
 ) {
     // Add padding around the table
     let padded_area = Rect {
@@ -1631,39 +1939,60 @@ fn draw_single_node_table(
     // Section separator before Vote
     rows.push(create_section_header_with_label("VOTE STATUS"));
 
-    // Catchup status
-    if let Some(catchup) = catchup_status {
-        let elapsed = last_catchup_refresh.elapsed().as_secs();
-        let next_check_in = if elapsed >= 30 { 0 } else { 30 - elapsed };
-        let next_check_suffix = if next_check_in > 0 {
-            format!(" (next in {}s)", next_check_in)
-        } else {
-            String::new()
-        };
-
-        let status = if catchup.status == "Checking..." {
-            "🔄 Checking...".to_string()
-        } else {
-            catchup.status.clone()
-        };
-        
-        let status_display = if !status.contains("Checking") && next_check_in > 0 {
-            format!("{}{}", status, next_check_suffix)
-        } else {
-            status
-        };
-
-        rows.push(Row::new(vec![
-            Cell::from("Catchup"),
-            Cell::from(status_display.clone()).style(if status_display.contains("Caught up") {
-                Style::default().fg(Color::Green)
-            } else if status_display.contains("Error") {
-                Style::default().fg(Color::Red)
-            } else if status_display.contains("Checking") {
-                Style::default().fg(Color::DarkGray)
+    // Catchup/Status display
+    let row_label = if node.validator_type == crate::types::ValidatorType::Firedancer {
+        "Status"  // For Firedancer, show as "Status" since fdctl status shows running state
+    } else {
+        "Catchup" // For Agave/Jito, show as "Catchup"
+    };
+    
+    // Show catchup/status for standby nodes and Firedancer nodes (regardless of active/standby)
+    if node.status == crate::types::NodeStatus::Standby || node.validator_type == crate::types::ValidatorType::Firedancer {
+        if let Some(catchup) = catchup_status {
+            let status_display = if catchup.is_streaming {
+                // Add special handling for errors during streaming
+                if catchup.status.starts_with("[ERROR]") {
+                    // Show a cleaner error message
+                    "❌ Command failed".to_string()
+                } else {
+                    format!("🔄 {}", catchup.status)
+                }
+            } else if catchup.status == "Waiting..." {
+                "⏳ Starting...".to_string()
+            } else if catchup.status == "CLI not found" {
+                "❌ Solana CLI not found".to_string()
+            } else if catchup.status == "Command error" {
+                "❌ Command error".to_string()
             } else {
-                Style::default().fg(Color::Yellow)
-            }),
+                catchup.status.clone()
+            };
+
+            rows.push(Row::new(vec![
+                Cell::from(row_label),
+                Cell::from(status_display.clone()).style(if status_display.contains("Caught up") {
+                    Style::default().fg(Color::Green)
+                } else if status_display.contains("Error") || status_display.contains("not found") {
+                    Style::default().fg(Color::Red)
+                } else if status_display.contains("🔄") || status_display.contains("⏳") {
+                    Style::default().fg(Color::DarkGray)
+                } else if status_display.contains("behind") {
+                    Style::default().fg(Color::Yellow)
+                } else {
+                    Style::default().fg(Color::White)
+                }),
+            ]));
+        } else {
+            // No catchup data yet
+            rows.push(Row::new(vec![
+                Cell::from(row_label),
+                Cell::from("⏳ Initializing...").style(Style::default().fg(Color::DarkGray)),
+            ]));
+        }
+    } else {
+        // Active Agave/Jito nodes don't need catchup
+        rows.push(Row::new(vec![
+            Cell::from(row_label),
+            Cell::from("-").style(Style::default().fg(Color::DarkGray)),
         ]));
     }
 
@@ -1827,7 +2156,8 @@ fn draw_single_node_table(
         }
     }
 
-    let border_style = if is_left_table {
+    // Highlight border based on node status, not position
+    let border_style = if node.status == crate::types::NodeStatus::Active {
         Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
@@ -2353,8 +2683,7 @@ fn draw_footer(f: &mut ratatui::Frame, area: Rect, ui_state: &UiState) {
     };
     
     let help_text = format!(
-        "q/Esc: Quit | v: Validator view | r: Refresh | d: Dry-run switch | Auto-refresh: 5s | Time: {}{}",
-        chrono::Local::now().format("%H:%M:%S"),
+        "q/Esc: Quit | r: Refresh (5s) | s: Switch{}",
         refresh_indicator
     );
 
@@ -2371,6 +2700,7 @@ async fn execute_emergency_failover(
     alert_manager: AlertManager,
     ssh_pool: Arc<crate::ssh::AsyncSshPool>,
     detected_ssh_keys: std::collections::HashMap<String, String>,
+    emergency_takeover_flag: Arc<RwLock<bool>>,
 ) {
     // Find active and standby nodes
     let (active_node, standby_node) = match (
@@ -2386,6 +2716,12 @@ async fn execute_emergency_failover(
         }
     };
 
+    // Set the emergency takeover flag to suspend UI rendering
+    *emergency_takeover_flag.write().await = true;
+    
+    // Wait a moment for the UI to stop rendering and cleanup terminal
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    
     let mut emergency_failover = crate::emergency_failover::EmergencyFailover::new(
         active_node,
         standby_node,
@@ -2398,10 +2734,16 @@ async fn execute_emergency_failover(
     if let Err(e) = emergency_failover.execute_emergency_takeover().await {
         eprintln!("❌ Emergency failover error: {}", e);
     }
+    
+    // Wait a moment for the user to see the results
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    
+    // Clear the emergency takeover flag to resume UI
+    *emergency_takeover_flag.write().await = false;
 }
 
-/// Draw the dry-run switch UI
-fn draw_dry_run_switch_ui(f: &mut ratatui::Frame, app_state: &AppState) {
+/// Draw the switch UI
+fn draw_switch_ui(f: &mut ratatui::Frame, app_state: &AppState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -2412,7 +2754,7 @@ fn draw_dry_run_switch_ui(f: &mut ratatui::Frame, app_state: &AppState) {
         .split(f.size());
 
     // Header
-    let header = Paragraph::new("🔄 DRY RUN SWITCH VIEW (Triggered from Telegram)")
+    let header = Paragraph::new("🔄 SWITCH VALIDATOR")
         .style(
             Style::default()
                 .fg(Color::Yellow)
@@ -2487,33 +2829,33 @@ fn draw_dry_run_switch_ui(f: &mut ratatui::Frame, app_state: &AppState) {
         );
         f.render_widget(status_widget, content_chunks[0]);
 
-        // Actions that would be performed
+        // Actions that will be performed
         let actions_text = vec![
-            Line::from("Actions to be performed:")
+            Line::from("Actions that will be performed:")
                 .style(Style::default().add_modifier(Modifier::BOLD)),
             Line::from("  1. Switch active node to unfunded identity"),
             Line::from("  2. Transfer tower file to standby node"),
             Line::from("  3. Switch standby node to funded identity"),
             Line::from(""),
-            Line::from("⚠️  This is a DRY RUN - No actual changes will be made").style(
+            Line::from("⚠️  Press 'y' to confirm switch or 'q' to cancel").style(
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(Color::Red)
                     .add_modifier(Modifier::BOLD),
             ),
         ];
 
         let actions_widget = Paragraph::new(actions_text).block(
             Block::default()
-                .title(" Dry Run Actions ")
+                .title(" Switch Actions ")
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Yellow)),
+                .border_style(Style::default().fg(Color::Red)),
         );
         f.render_widget(actions_widget, content_chunks[1]);
     }
 
     // Footer
     let footer =
-        Paragraph::new("Press 'q' to quit | Auto-returning to status view in 10 seconds...")
+        Paragraph::new("Press 'y' to confirm switch | Press 'q' to cancel")
             .style(Style::default().fg(Color::DarkGray))
             .alignment(Alignment::Center);
     f.render_widget(footer, chunks[2]);
@@ -3063,6 +3405,25 @@ pub async fn show_enhanced_status_ui(app_state: &AppState) -> Result<()> {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let app_state_arc = Arc::new(app_state.clone());
-    let mut app = EnhancedStatusApp::new(app_state_arc).await?;
-    run_enhanced_ui(&mut app).await
+    let mut app = EnhancedStatusApp::new(app_state_arc.clone()).await?;
+    let switch_confirmed = run_enhanced_ui(&mut app).await?;
+    
+    if switch_confirmed {
+        // Execute the switch
+        // Use the switch command with confirmation already provided
+        let mut app_state_mut = app_state.clone();
+        let result = crate::commands::switch::switch_command_with_confirmation(
+            false,  // not a dry run
+            &mut app_state_mut,
+            false,  // don't require confirmation again
+        ).await?;
+        
+        if result {
+            println!("\n✅ Switch completed successfully!");
+        } else {
+            println!("\n❌ Switch was not completed");
+        }
+    }
+    
+    Ok(())
 }

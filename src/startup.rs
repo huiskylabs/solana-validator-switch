@@ -2284,8 +2284,9 @@ async fn detect_node_status_and_executable_with_progress(
     });
     logger.log("Checking swap readiness...")?;
 
+    // Initial check - assume standby for now (skip tower requirement)
     let (swap_ready, mut swap_issues) =
-        check_node_swap_readiness(ssh_pool, node, DEFAULT_SSH_KEY, ledger_path.as_ref(), None).await;
+        check_node_swap_readiness(ssh_pool, node, DEFAULT_SSH_KEY, ledger_path.as_ref(), Some(true)).await;
 
     if swap_ready {
         logger.log_success("Node is ready for swap")?;

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.2] - 2025-01-23
+
+### Fixed
+- UI refresh behavior now only triggers after successful switch completion, not on initial load
+- Added TODO comments for future TOML parser refactoring in Firedancer config parsing
+
+### Changed
+- Removed unnecessary UI refresh when canceling switch view
+- Improved post-switch UI restart with background refresh for updated validator status
+
 ## [1.2.1] - 2025-01-23
 
 ### Fixed

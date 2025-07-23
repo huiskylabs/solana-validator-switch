@@ -1,6 +1,6 @@
 [package]
 name = "solana-validator-switch"
-version = "1.2.0"
+version = "1.2.1"
 edition = "2021"
 description = "Professional-grade CLI tool for ultra-fast Solana validator switching"
 authors = ["huisky <huiskylabs@gmail.com>"]

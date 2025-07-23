@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2025-01-23
+
+### Fixed
+- UI event handling now correctly filters key press events only, fixing the double 'y' press issue in switch confirmation
+- Startup checks now properly skip tower file requirement for standby nodes during initial validation
+- RPC port detection improved to read actual configured ports from validator command lines
+
+### Changed
+- Enhanced UI rendering during emergency takeover to prevent display corruption
+- Improved catchup status streaming with real-time updates for both Agave/Jito and Firedancer validators
+
 ## [1.2.0] - 2025-01-19
 
 ### Added

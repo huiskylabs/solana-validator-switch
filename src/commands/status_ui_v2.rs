@@ -2736,9 +2736,65 @@ async fn refresh_node_status_and_identity(
         }
     };
     
+    // Detect RPC port based on validator type
+    let rpc_port = match node.validator_type {
+        crate::types::ValidatorType::Firedancer => {
+            // For Firedancer, get the config file and extract RPC port from TOML
+            let mut port = 8899; // default
+            
+            // First, find the running fdctl process to get config path
+            let ps_cmd = "ps aux | grep -E 'bin/fdctl' | grep -v grep";
+            if let Ok(ps_output) = ssh_pool.execute_command(&node.node, &ssh_key, ps_cmd).await {
+                // Extract config path from command line
+                if let Some(line) = ps_output.lines().next() {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    for (i, part) in parts.iter().enumerate() {
+                        if part == &"--config" && i + 1 < parts.len() {
+                            let config_path = parts[i + 1];
+                            // Read RPC port from config
+                            let grep_cmd = format!("cat {} | grep -A 5 '\\[rpc\\]' | grep 'port' | grep -o '[0-9]\\+' | head -1", config_path);
+                            if let Ok(port_output) = ssh_pool.execute_command(&node.node, &ssh_key, &grep_cmd).await {
+                                if let Ok(parsed_port) = port_output.trim().parse::<u16>() {
+                                    port = parsed_port;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            port
+        }
+        crate::types::ValidatorType::Agave | crate::types::ValidatorType::Jito => {
+            // For Agave/Jito, extract --rpc-port from command line
+            let mut port = 8899; // default
+            
+            let ps_cmd = "ps aux | grep -E 'agave-validator|solana-validator' | grep -v grep";
+            if let Ok(ps_output) = ssh_pool.execute_command(&node.node, &ssh_key, ps_cmd).await {
+                if let Some(line) = ps_output.lines().next() {
+                    // Look for --rpc-port argument
+                    if let Some(rpc_port_pos) = line.find("--rpc-port") {
+                        let remaining = &line[rpc_port_pos + 10..]; // Skip "--rpc-port"
+                        let parts: Vec<&str> = remaining.trim().split_whitespace().collect();
+                        if !parts.is_empty() {
+                            if let Ok(parsed_port) = parts[0].parse::<u16>() {
+                                port = parsed_port;
+                            }
+                        }
+                    }
+                }
+            }
+            port
+        }
+        _ => 8899, // default for unknown types
+    };
+    
     // All validator types use RPC to get identity
-    let rpc_command = r#"curl -s http://localhost:8899 -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","id":1,"method":"getIdentity"}' 2>&1"#;
-    let command = rpc_command.to_string();
+    let rpc_command = format!(
+        r#"curl -s http://localhost:{} -X POST -H "Content-Type: application/json" -d '{{"jsonrpc":"2.0","id":1,"method":"getIdentity"}}' 2>&1"#,
+        rpc_port
+    );
+    let command = rpc_command;
     let use_rpc = true;
     
     

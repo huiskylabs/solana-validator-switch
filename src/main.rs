@@ -35,6 +35,7 @@ mod startup_checks;
 mod startup_logger;
 mod types;
 mod validator_metadata;
+mod validator_rpc;
 
 use commands::{status_command, switch_command, test_alert_command};
 use ssh::AsyncSshPool;

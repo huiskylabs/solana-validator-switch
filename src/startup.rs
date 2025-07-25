@@ -1421,7 +1421,7 @@ async fn detect_node_status_and_executable(
     let mut solana_cli_executable = None;
     let mut _main_validator_executable = None;
     let mut version = None;
-    let mut sync_status = None;
+    let mut sync_status;
     let mut current_identity = None;
     let mut ledger_path = None;
     #[allow(dead_code)]
@@ -1568,71 +1568,53 @@ async fn detect_node_status_and_executable(
         }
     }
 
-    // Detect sync status using catchup command
-    // Derive solana CLI from agave-validator path or use existing solana_cli_executable
-    let solana_cli = if let Some(ref cli) = solana_cli_executable {
-        cli.clone()
-    } else if let Some(ref agave_exec) = agave_validator_executable {
-        // For non-Firedancer, derive solana CLI from agave-validator path
-        agave_exec.replace("agave-validator", "solana")
-    } else {
-        // If no solana CLI found, use empty string and skip
-        String::new()
-    };
-
-    if !solana_cli.is_empty() {
-        let catchup_cmd = format!("timeout 10 {} catchup --our-localhost 2>&1", solana_cli);
-        if let Ok(catchup_output) = ssh_pool
-            .execute_command_with_early_exit(node, &ssh_key, &catchup_cmd, |output| {
-                output.contains("0 slot(s)") || output.contains("has caught up")
-            })
-            .await
-        {
-            for line in catchup_output.lines() {
-                // Handle both "has caught up" and "0 slot(s) behind" formats
-                if line.contains("has caught up") || line.contains("0 slot(s) behind") {
-                    if let Some(caught_up_pos) = line.find(" has caught up") {
-                        let identity = line[..caught_up_pos].trim();
-                        // logger.log(&format!("Extracted identity from catchup: {}", identity)).ok();
-                        if current_identity.is_none() && !identity.is_empty() {
-                            current_identity = Some(identity.to_string());
-                            // logger.log(&format!("Set current_identity to: {}", identity)).ok();
-                        }
-
-                        // Extract slot information
-                        if let Some(us_start) = line.find("us:") {
-                            let us_end = line[us_start + 3..]
-                                .find(' ')
-                                .unwrap_or(line.len() - us_start - 3)
-                                + us_start
-                                + 3;
-                            let us_slot = &line[us_start + 3..us_end];
-                            sync_status = Some(format!("Caught up (slot: {})", us_slot));
-                        } else {
-                            sync_status = Some("Caught up".to_string());
-                        }
-                        break;
-                    } else if line.contains("0 slot(s) behind") {
-                        // Extract slot information from Firedancer format
-                        if let Some(us_start) = line.find("us:") {
-                            let us_end = line[us_start + 3..]
-                                .find(' ')
-                                .unwrap_or(line.len() - us_start - 3)
-                                + us_start
-                                + 3;
-                            let us_slot = &line[us_start + 3..us_end];
-                            sync_status = Some(format!("Caught up (slot: {})", us_slot));
-                        } else {
-                            sync_status = Some("Caught up".to_string());
-                        }
-                        break;
-                    }
-                }
+    // Detect sync status using RPC calls
+    // We need to get the full command line from the ps output to extract RPC port
+    let mut command_line = None;
+    if let Ok(output) = ssh_pool.execute_command(node, &ssh_key, ps_cmd).await {
+        let lines: Vec<&str> = output.lines().collect();
+        for line in lines {
+            if line.contains("bin/fdctl") || line.contains("agave-validator") || line.contains("solana-validator") {
+                command_line = Some(line.to_string());
+                break;
             }
         }
+    }
 
-        // If no catchup info, set a default sync status
-        if sync_status.is_none() {
+    // Get identity and health status via RPC
+    match crate::validator_rpc::get_identity_and_health(
+        ssh_pool,
+        node,
+        &ssh_key,
+        validator_type.clone(),
+        command_line.as_deref(),
+    )
+    .await
+    {
+        Ok((identity, is_healthy)) => {
+            if current_identity.is_none() && !identity.is_empty() {
+                current_identity = Some(identity);
+            }
+            sync_status = Some(if is_healthy { 
+                "Caught up".to_string() 
+            } else { 
+                "Not healthy".to_string() 
+            });
+        }
+        Err(_) => {
+            // If RPC fails, try to get just the identity
+            if let Ok(identity) = crate::validator_rpc::get_identity(
+                ssh_pool,
+                node,
+                &ssh_key,
+                crate::validator_rpc::get_rpc_port(validator_type.clone(), command_line.as_deref()),
+            )
+            .await
+            {
+                if current_identity.is_none() && !identity.is_empty() {
+                    current_identity = Some(identity);
+                }
+            }
             sync_status = Some("Unknown".to_string());
         }
     }
@@ -1641,96 +1623,89 @@ async fn detect_node_status_and_executable(
     let (mut swap_ready, mut swap_issues) =
         check_node_swap_readiness(ssh_pool, node, &ssh_key, ledger_path.as_ref(), Some(true)).await;
 
-    // Use catchup command to get the active identity
-    // Derive solana CLI from agave-validator path
-    let solana_cli_path = if let Some(ref agave_exec) = agave_validator_executable {
-        // Replace agave-validator with solana in the path
-        agave_exec.replace("agave-validator", "solana")
-    } else {
-        // Fallback to empty string if no agave executable found
-        String::new()
-    };
+    // Use RPC to get the active identity
+    // Get the full command line from the ps output to extract RPC port (if we need it again)
+    // We may already have command_line from above, but let's ensure we have it
+    if command_line.is_none() {
+        if let Ok(output) = ssh_pool.execute_command(node, &ssh_key, ps_cmd).await {
+            let lines: Vec<&str> = output.lines().collect();
+            for line in lines {
+                if line.contains("bin/fdctl") || line.contains("agave-validator") || line.contains("solana-validator") {
+                    command_line = Some(line.to_string());
+                    break;
+                }
+            }
+        }
+    }
 
-    let catchup_cmd = format!(
-        "timeout 10 {} catchup --our-localhost 2>&1",
-        solana_cli_path
-    );
-
-    match ssh_pool
-        .execute_command_with_early_exit(node, &ssh_key, &catchup_cmd, |output| {
-            output.contains("0 slot(s)") || output.contains("has caught up")
-        })
-        .await
+    match crate::validator_rpc::get_identity(
+        ssh_pool,
+        node,
+        &ssh_key,
+        crate::validator_rpc::get_rpc_port(validator_type.clone(), command_line.as_deref()),
+    )
+    .await
     {
-        Ok(output) => {
-            // Parse the catchup output to find identity
-            for line in output.lines() {
-                if line.contains("has caught up") {
-                    if let Some(caught_up_pos) = line.find(" has caught up") {
-                        let identity = line[..caught_up_pos].trim();
-                        // logger.log(&format!("Extracted identity from catchup (final check): {}", identity)).ok();
-                        if !identity.is_empty() {
-                            current_identity = Some(identity.to_string());
-                            // logger.log(&format!("Set current_identity to: {}", identity)).ok();
+        Ok(identity) => {
+            if !identity.is_empty() {
+                current_identity = Some(identity.clone());
+                // logger.log(&format!("Set current_identity to: {}", identity)).ok();
 
-                            // Check if this identity matches the validator's funded identity
-                            // logger.log(&format!("Comparing identity {} with validator identity {}", identity, validator_pair.identity_pubkey)).ok();
-                            if identity == validator_pair.identity_pubkey {
-                                // logger.log_success(&format!("Node {} is ACTIVE (identity matches)", node.label)).ok();
-                                // For active nodes, we need to check if tower file exists
-                                if let Some(ledger) = ledger_path.as_ref() {
-                                    let tower_check_cmd = format!("ls {}/tower-1_9-*.bin >/dev/null 2>&1", ledger);
-                                    match ssh_pool.execute_command(node, &ssh_key, &tower_check_cmd).await {
-                                        Ok(_) => {
-                                            // Tower file exists, swap_ready remains as is
-                                        }
-                                        Err(_) => {
-                                            // Tower file missing for active node
-                                            swap_ready = false;
-                                            swap_issues.push("Tower file not found (required for active nodes)".to_string());
-                                        }
-                                    }
-                                }
-                                return Ok((
-                                    crate::types::NodeStatus::Active,
-                                    validator_type,
-                                    agave_validator_executable,
-                                    fdctl_executable,
-                                    solana_cli_executable,
-                                    version,
-                                    sync_status,
-                                    current_identity,
-                                    ledger_path,
-                                    Some(swap_ready),
-                                    swap_issues,
-                                ));
-                            } else {
-                                // logger.log(&format!("Node {} is STANDBY (identity {} does not match {})", node.label, identity, validator_pair.identity_pubkey)).ok();
-                                // For standby nodes, swap_ready and swap_issues are already set correctly (no tower needed)
-                                return Ok((
-                                    crate::types::NodeStatus::Standby,
-                                    validator_type,
-                                    agave_validator_executable,
-                                    fdctl_executable,
-                                    solana_cli_executable,
-                                    version,
-                                    sync_status,
-                                    current_identity,
-                                    ledger_path,
-                                    Some(swap_ready),
-                                    swap_issues,
-                                ));
+                // Check if this identity matches the validator's funded identity
+                // logger.log(&format!("Comparing identity {} with validator identity {}", identity, validator_pair.identity_pubkey)).ok();
+                if identity == validator_pair.identity_pubkey {
+                    // logger.log_success(&format!("Node {} is ACTIVE (identity matches)", node.label)).ok();
+                    // For active nodes, we need to check if tower file exists
+                    if let Some(ledger) = ledger_path.as_ref() {
+                        let tower_check_cmd = format!("ls {}/tower-1_9-*.bin >/dev/null 2>&1", ledger);
+                        match ssh_pool.execute_command(node, &ssh_key, &tower_check_cmd).await {
+                            Ok(_) => {
+                                // Tower file exists, swap_ready remains as is
+                            }
+                            Err(_) => {
+                                // Tower file missing for active node
+                                swap_ready = false;
+                                swap_issues.push("Tower file not found (required for active nodes)".to_string());
                             }
                         }
                     }
+                    return Ok((
+                        crate::types::NodeStatus::Active,
+                        validator_type.clone(),
+                        agave_validator_executable,
+                        fdctl_executable,
+                        solana_cli_executable,
+                        version,
+                        sync_status,
+                        current_identity,
+                        ledger_path,
+                        Some(swap_ready),
+                        swap_issues,
+                    ));
+                } else {
+                    // logger.log(&format!("Node {} is STANDBY (identity {} does not match {})", node.label, identity, validator_pair.identity_pubkey)).ok();
+                    // For standby nodes, swap_ready and swap_issues are already set correctly (no tower needed)
+                    return Ok((
+                        crate::types::NodeStatus::Standby,
+                        validator_type.clone(),
+                        agave_validator_executable,
+                        fdctl_executable,
+                        solana_cli_executable,
+                        version,
+                        sync_status,
+                        current_identity,
+                        ledger_path,
+                        Some(swap_ready),
+                        swap_issues,
+                    ));
                 }
             }
 
-            // If we can't find the Identity line from either method, assume unknown
+            // If we can't find the Identity, assume unknown
             // logger.log_warning(&format!("Could not determine node status for {} - no matching identity found", node.label)).ok();
             Ok((
                 crate::types::NodeStatus::Unknown,
-                validator_type,
+                validator_type.clone(),
                 agave_validator_executable,
                 fdctl_executable,
                 solana_cli_executable,
@@ -1743,7 +1718,7 @@ async fn detect_node_status_and_executable(
             ))
         }
         Err(_e) => {
-            // logger.log_error("catchup command", &format!("Failed for node {}: {:?}", node.label, e)).ok();
+            // logger.log_error("RPC identity check", &format!("Failed for node {}: {:?}", node.label, e)).ok();
             Ok((
                 crate::types::NodeStatus::Unknown,
                 validator_type,
@@ -1926,7 +1901,7 @@ async fn detect_node_status_and_executable_with_progress(
     let mut solana_cli_executable = None;
     let mut _main_validator_executable = None;
     let mut version = None;
-    let mut sync_status = None;
+    let mut sync_status;
     let mut current_identity = None;
     let mut ledger_path = None;
     #[allow(dead_code)]
@@ -2229,71 +2204,53 @@ async fn detect_node_status_and_executable_with_progress(
     });
     logger.log("Checking sync status...")?;
 
-    // Detect sync status using catchup command
-    // Derive solana CLI from agave-validator path or use existing solana_cli_executable
-    let solana_cli = if let Some(ref cli) = solana_cli_executable {
-        cli.clone()
-    } else if let Some(ref agave_exec) = agave_validator_executable {
-        // For non-Firedancer, derive solana CLI from agave-validator path
-        agave_exec.replace("agave-validator", "solana")
-    } else {
-        // If no solana CLI found, use empty string and skip
-        String::new()
-    };
-
-    if !solana_cli.is_empty() {
-        let catchup_cmd = format!("timeout 10 {} catchup --our-localhost 2>&1", solana_cli);
-        if let Ok(catchup_output) = ssh_pool
-            .execute_command_with_early_exit(node, &ssh_key, &catchup_cmd, |output| {
-                output.contains("0 slot(s)") || output.contains("has caught up")
-            })
-            .await
-        {
-            for line in catchup_output.lines() {
-                // Handle both "has caught up" and "0 slot(s) behind" formats
-                if line.contains("has caught up") || line.contains("0 slot(s) behind") {
-                    if let Some(caught_up_pos) = line.find(" has caught up") {
-                        let identity = line[..caught_up_pos].trim();
-                        // logger.log(&format!("Extracted identity from catchup: {}", identity)).ok();
-                        if current_identity.is_none() && !identity.is_empty() {
-                            current_identity = Some(identity.to_string());
-                            // logger.log(&format!("Set current_identity to: {}", identity)).ok();
-                        }
-
-                        // Extract slot information
-                        if let Some(us_start) = line.find("us:") {
-                            let us_end = line[us_start + 3..]
-                                .find(' ')
-                                .unwrap_or(line.len() - us_start - 3)
-                                + us_start
-                                + 3;
-                            let us_slot = &line[us_start + 3..us_end];
-                            sync_status = Some(format!("Caught up (slot: {})", us_slot));
-                        } else {
-                            sync_status = Some("Caught up".to_string());
-                        }
-                        break;
-                    } else if line.contains("0 slot(s) behind") {
-                        // Extract slot information from Firedancer format
-                        if let Some(us_start) = line.find("us:") {
-                            let us_end = line[us_start + 3..]
-                                .find(' ')
-                                .unwrap_or(line.len() - us_start - 3)
-                                + us_start
-                                + 3;
-                            let us_slot = &line[us_start + 3..us_end];
-                            sync_status = Some(format!("Caught up (slot: {})", us_slot));
-                        } else {
-                            sync_status = Some("Caught up".to_string());
-                        }
-                        break;
-                    }
-                }
+    // Detect sync status using RPC calls
+    // We need to get the full command line from the ps output to extract RPC port
+    let mut command_line = None;
+    if let Ok(output) = ssh_pool.execute_command(node, &ssh_key, ps_cmd).await {
+        let lines: Vec<&str> = output.lines().collect();
+        for line in lines {
+            if line.contains("bin/fdctl") || line.contains("agave-validator") || line.contains("solana-validator") {
+                command_line = Some(line.to_string());
+                break;
             }
         }
+    }
 
-        // If no catchup info, set a default sync status
-        if sync_status.is_none() {
+    // Get identity and health status via RPC
+    match crate::validator_rpc::get_identity_and_health(
+        ssh_pool,
+        node,
+        &ssh_key,
+        validator_type.clone(),
+        command_line.as_deref(),
+    )
+    .await
+    {
+        Ok((identity, is_healthy)) => {
+            if current_identity.is_none() && !identity.is_empty() {
+                current_identity = Some(identity);
+            }
+            sync_status = Some(if is_healthy { 
+                "Caught up".to_string() 
+            } else { 
+                "Not healthy".to_string() 
+            });
+        }
+        Err(_) => {
+            // If RPC fails, try to get just the identity
+            if let Ok(identity) = crate::validator_rpc::get_identity(
+                ssh_pool,
+                node,
+                &ssh_key,
+                crate::validator_rpc::get_rpc_port(validator_type.clone(), command_line.as_deref()),
+            )
+            .await
+            {
+                if current_identity.is_none() && !identity.is_empty() {
+                    current_identity = Some(identity);
+                }
+            }
             sync_status = Some("Unknown".to_string());
         }
     }
@@ -2360,97 +2317,95 @@ async fn detect_node_status_and_executable_with_progress(
         }
     }
 
-    // Step 7: Identity Detection using catchup command
+    // Step 7: Identity Detection using RPC
     progress_bar.suspend(|| {
         println!("      🔍 Detecting active identity...");
     });
     logger.log("Detecting active identity...")?;
 
-    // Use catchup command to get identity
-    let solana_cli_fallback = if let Some(ref cli) = solana_cli_executable {
-        cli.clone()
-    } else if let Some(ref agave_exec) = agave_validator_executable {
-        agave_exec.replace("agave-validator", "solana")
-    } else {
-        String::new()
-    };
-
-    if !solana_cli_fallback.is_empty() {
-        let catchup_cmd = format!(
-            "timeout 10 {} catchup --our-localhost 2>&1",
-            solana_cli_fallback
-        );
-        if let Ok(catchup_output) = ssh_pool
-            .execute_command_with_early_exit(node, &ssh_key, &catchup_cmd, |output| {
-                output.contains("0 slot(s)") || output.contains("has caught up")
-            })
-            .await
-        {
-            for line in catchup_output.lines() {
-                if line.contains("has caught up") {
-                    if let Some(caught_up_pos) = line.find(" has caught up") {
-                        let identity = line[..caught_up_pos].trim();
-                        // logger.log(&format!("Extracted identity from catchup (final check): {}", identity)).ok();
-                        if !identity.is_empty() {
-                            current_identity = Some(identity.to_string());
-                            // logger.log(&format!("Set current_identity to: {}", identity)).ok();
-
-                            // Check if this identity matches the validator's funded identity
-                            // logger.log(&format!("Comparing identity {} with validator identity {}", identity, validator_pair.identity_pubkey)).ok();
-                            if identity == validator_pair.identity_pubkey {
-                                // logger.log_success(&format!("Node {} is ACTIVE (identity matches)", node.label)).ok();
-                                // For active nodes, we need to check if tower file exists
-                                if let Some(ledger) = ledger_path.as_ref() {
-                                    let tower_check_cmd = format!("ls {}/tower-1_9-*.bin >/dev/null 2>&1", ledger);
-                                    match ssh_pool.execute_command(node, &ssh_key, &tower_check_cmd).await {
-                                        Ok(_) => {
-                                            // Tower file exists, swap_ready remains as is
-                                        }
-                                        Err(_) => {
-                                            // Tower file missing for active node
-                                            swap_ready = false;
-                                            swap_issues.push("Tower file not found (required for active nodes)".to_string());
-                                        }
-                                    }
-                                }
-                                return Ok((
-                                    crate::types::NodeStatus::Active,
-                                    validator_type,
-                                    agave_validator_executable,
-                                    fdctl_executable,
-                                    solana_cli_executable,
-                                    version,
-                                    sync_status,
-                                    current_identity,
-                                    ledger_path,
-                                    Some(swap_ready),
-                                    swap_issues,
-                                ));
-                            } else {
-                                // logger.log(&format!("Node {} is STANDBY (identity {} does not match {})", node.label, identity, validator_pair.identity_pubkey)).ok();
-                                // For standby nodes, swap_ready and swap_issues are already set correctly (no tower needed)
-                                return Ok((
-                                    crate::types::NodeStatus::Standby,
-                                    validator_type,
-                                    agave_validator_executable,
-                                    fdctl_executable,
-                                    solana_cli_executable,
-                                    version,
-                                    sync_status,
-                                    current_identity,
-                                    ledger_path,
-                                    Some(swap_ready),
-                                    swap_issues,
-                                ));
-                            }
-                        }
-                    }
+    // Use RPC to get identity
+    // Get the full command line from the ps output to extract RPC port (if we need it again)
+    if command_line.is_none() {
+        if let Ok(output) = ssh_pool.execute_command(node, &ssh_key, ps_cmd).await {
+            let lines: Vec<&str> = output.lines().collect();
+            for line in lines {
+                if line.contains("bin/fdctl") || line.contains("agave-validator") || line.contains("solana-validator") {
+                    command_line = Some(line.to_string());
+                    break;
                 }
             }
         }
     }
 
-    // If we can't find the identity from catchup, assume unknown
+    match crate::validator_rpc::get_identity(
+        ssh_pool,
+        node,
+        &ssh_key,
+        crate::validator_rpc::get_rpc_port(validator_type.clone(), command_line.as_deref()),
+    )
+    .await
+    {
+        Ok(identity) => {
+            if !identity.is_empty() {
+                current_identity = Some(identity.clone());
+                // logger.log(&format!("Set current_identity to: {}", identity)).ok();
+
+                // Check if this identity matches the validator's funded identity
+                // logger.log(&format!("Comparing identity {} with validator identity {}", identity, validator_pair.identity_pubkey)).ok();
+                if identity == validator_pair.identity_pubkey {
+                    // logger.log_success(&format!("Node {} is ACTIVE (identity matches)", node.label)).ok();
+                    // For active nodes, we need to check if tower file exists
+                    if let Some(ledger) = ledger_path.as_ref() {
+                        let tower_check_cmd = format!("ls {}/tower-1_9-*.bin >/dev/null 2>&1", ledger);
+                        match ssh_pool.execute_command(node, &ssh_key, &tower_check_cmd).await {
+                            Ok(_) => {
+                                // Tower file exists, swap_ready remains as is
+                            }
+                            Err(_) => {
+                                // Tower file missing for active node
+                                swap_ready = false;
+                                swap_issues.push("Tower file not found (required for active nodes)".to_string());
+                            }
+                        }
+                    }
+                    return Ok((
+                        crate::types::NodeStatus::Active,
+                        validator_type.clone(),
+                        agave_validator_executable,
+                        fdctl_executable,
+                        solana_cli_executable,
+                        version,
+                        sync_status,
+                        current_identity,
+                        ledger_path,
+                        Some(swap_ready),
+                        swap_issues,
+                    ));
+                } else {
+                    // logger.log(&format!("Node {} is STANDBY (identity {} does not match {})", node.label, identity, validator_pair.identity_pubkey)).ok();
+                    // For standby nodes, swap_ready and swap_issues are already set correctly (no tower needed)
+                    return Ok((
+                        crate::types::NodeStatus::Standby,
+                        validator_type.clone(),
+                        agave_validator_executable,
+                        fdctl_executable,
+                        solana_cli_executable,
+                        version,
+                        sync_status,
+                        current_identity,
+                        ledger_path,
+                        Some(swap_ready),
+                        swap_issues,
+                    ));
+                }
+            }
+        }
+        Err(_e) => {
+            // logger.log_error("RPC identity check", &format!("Failed for node {}: {:?}", node.label, e)).ok();
+        }
+    }
+
+    // If we can't find the identity from RPC, assume unknown
     progress_bar.suspend(|| {
         println!("      ❌ Identity: Unable to determine");
     });

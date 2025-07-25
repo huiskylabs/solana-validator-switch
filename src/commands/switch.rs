@@ -423,7 +423,7 @@ impl SwitchManager {
             self.identity_switch_time = Some(total_switch_start.elapsed());
         }
 
-        // Step 4: Verify new active node catchup (former standby)
+        // Step 4: Verify new active node health (former standby)
         println_if_not_silent!(
             "\n{}",
             "✅ Step 4: Verify New Active Node (Former Standby)"
@@ -923,55 +923,52 @@ impl SwitchManager {
     }
 
     async fn verify_backup_catchup(&mut self, dry_run: bool) -> Result<()> {
-        // Use detected solana CLI or fall back to default
-        let default_solana = "solana".to_string();
-        let solana_cli = self
-            .standby_node_with_status
-            .solana_cli_executable
-            .as_ref()
-            .unwrap_or(&default_solana);
-
-        let catchup_cmd = format!("{} catchup --our-localhost", solana_cli);
         println_if_not_silent!(
-            "ssh {}@{} '{}'",
-            self.standby_node_with_status.node.user,
-            self.standby_node_with_status.node.host,
-            catchup_cmd
+            "Verifying health status of new active validator..."
         );
 
         if !dry_run {
             // No sleep - verify immediately!
             let spinner = ConditionalSpinner::new(
-                "Verifying new active validator (former standby) catchup status...",
+                "Verifying new active validator (former standby) health status...",
             );
 
-            let catchup_result = {
+            // Use RPC health check instead of catchup command
+            let rpc_port = crate::validator_rpc::get_rpc_port(
+                self.standby_node_with_status.validator_type.clone(),
+                None,
+            );
+            
+            let health_result = {
                 let ssh_key =
                     self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
                 let pool = self.ssh_pool.clone();
-
-                // Use early exit when we see "0 slot(s) behind"
-                pool.execute_command_with_early_exit(
+                
+                crate::validator_rpc::get_health(
+                    &pool,
                     &self.standby_node_with_status.node,
                     &ssh_key,
-                    &catchup_cmd,
-                    |output| output.contains("0 slot(s)") || output.contains("has caught up"),
+                    rpc_port,
                 )
-                .await?
+                .await
             };
 
-            if catchup_result.contains("0 slot(s) behind") {
-                spinner.stop_with_message(
-                    "✅ New active validator (former standby) is caught up with funded identity",
-                );
-            } else if catchup_result.contains("slots behind") {
-                spinner.stop_with_message(
-                    "✅ New active validator (former standby) is syncing with funded identity",
-                );
-            } else {
-                spinner.stop_with_message(
-                    "⚠️  New active validator sync status unclear - check manually",
-                );
+            match health_result {
+                Ok(true) => {
+                    spinner.stop_with_message(
+                        "✅ New active validator (former standby) is healthy with funded identity",
+                    );
+                }
+                Ok(false) => {
+                    spinner.stop_with_message(
+                        "⚠️  New active validator (former standby) is not yet healthy with funded identity",
+                    );
+                }
+                Err(e) => {
+                    spinner.stop_with_message(
+                        &format!("⚠️  Health check error: {}", e),
+                    );
+                }
             }
         }
 

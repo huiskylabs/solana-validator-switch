@@ -65,6 +65,9 @@ pub struct UiState {
 
     // SSH health status for each node
     pub ssh_health_data: Vec<NodePairSshStatus>,
+    
+    // RPC health status for each node
+    pub rpc_health_data: Vec<NodePairRpcStatus>,
 
     // Comprehensive health tracking for each validator
     pub validator_health: Vec<NodeHealthStatus>,
@@ -85,6 +88,9 @@ pub struct UiState {
     
     #[allow(dead_code)]
     pub is_refreshing: bool,
+    
+    // Track last refresh time (either manual or auto)
+    pub last_refresh_time: Instant,
 }
 
 #[derive(Debug, Clone)]
@@ -100,6 +106,8 @@ pub struct FieldRefreshStates {
     pub version_refreshing: bool,
     pub catchup_refreshing: bool,
     pub health_refreshing: bool,
+    pub ssh_connectivity_refreshing: bool,
+    pub rpc_health_refreshing: bool,
 }
 
 impl Default for FieldRefreshStates {
@@ -110,6 +118,8 @@ impl Default for FieldRefreshStates {
             version_refreshing: false,
             catchup_refreshing: false,
             health_refreshing: false,
+            ssh_connectivity_refreshing: false,
+            rpc_health_refreshing: false,
         }
     }
 }
@@ -134,6 +144,19 @@ pub struct CatchupStatus {
 pub struct NodePairSshStatus {
     pub node_0: SshHealthStatus,
     pub node_1: SshHealthStatus,
+}
+
+#[derive(Clone)]
+pub struct NodePairRpcStatus {
+    pub node_0: RpcHealthStatus,
+    pub node_1: RpcHealthStatus,
+}
+
+#[derive(Clone)]
+pub struct RpcHealthStatus {
+    pub is_healthy: bool,
+    pub last_check: Option<Instant>,
+    pub error_message: Option<String>,
 }
 
 #[derive(Clone)]
@@ -216,6 +239,24 @@ impl EnhancedStatusApp {
             };
             initial_ssh_health_data.push(ssh_pair);
         }
+        
+        // Initialize RPC health data
+        let mut initial_rpc_health_data = Vec::new();
+        for _ in 0..app_state.validator_statuses.len() {
+            let rpc_pair = NodePairRpcStatus {
+                node_0: RpcHealthStatus {
+                    is_healthy: false,
+                    last_check: None,
+                    error_message: None,
+                },
+                node_1: RpcHealthStatus {
+                    is_healthy: false,
+                    last_check: None,
+                    error_message: None,
+                },
+            };
+            initial_rpc_health_data.push(rpc_pair);
+        }
 
         // Initialize health tracking
         let mut initial_validator_health = Vec::new();
@@ -248,6 +289,7 @@ impl EnhancedStatusApp {
             catchup_failure_counts: vec![(0, 0); app_state.validator_statuses.len()],
             last_catchup_alert_times: vec![(None, None); app_state.validator_statuses.len()],
             ssh_health_data: initial_ssh_health_data,
+            rpc_health_data: initial_rpc_health_data,
             validator_health: initial_validator_health,
             rpc_failure_tracker: initial_rpc_trackers,
             last_vote_refresh: Instant::now(),
@@ -256,6 +298,7 @@ impl EnhancedStatusApp {
             field_refresh_states: initial_field_refresh_states,
             validator_statuses: app_state.validator_statuses.clone(),
             is_refreshing: false,
+            last_refresh_time: Instant::now(),
         }));
 
         Ok(Self {
@@ -308,15 +351,55 @@ impl EnhancedStatusApp {
         // Spawn continuous catchup streaming tasks for each node
         self.spawn_catchup_streaming_tasks();
         
-        // Vote data refresh task
+        // Simple auto-refresh task (refreshes all fields every 10 seconds)
+        let ui_state_for_refresh = Arc::clone(&self.ui_state);
+        let app_state_for_refresh = Arc::clone(&self.app_state);
+        
+        tokio::spawn(async move {
+            let mut interval = interval(Duration::from_secs(10));
+            
+            loop {
+                interval.tick().await;
+                
+                // Update last refresh time
+                {
+                    let mut state = ui_state_for_refresh.write().await;
+                    state.last_refresh_time = Instant::now();
+                    state.is_refreshing = true;
+                    
+                    // Set all field refresh states to true
+                    for refresh_state in state.field_refresh_states.iter_mut() {
+                        refresh_state.node_0.status_refreshing = true;
+                        refresh_state.node_0.identity_refreshing = true;
+                        refresh_state.node_0.version_refreshing = true;
+                        refresh_state.node_0.ssh_connectivity_refreshing = true;
+                        refresh_state.node_0.rpc_health_refreshing = true;
+                        refresh_state.node_1.status_refreshing = true;
+                        refresh_state.node_1.identity_refreshing = true;
+                        refresh_state.node_1.version_refreshing = true;
+                        refresh_state.node_1.ssh_connectivity_refreshing = true;
+                        refresh_state.node_1.rpc_health_refreshing = true;
+                    }
+                }
+                
+                // Spawn the refresh (exactly like manual refresh)
+                let ui_state_clone = ui_state_for_refresh.clone();
+                let app_state_clone = app_state_for_refresh.clone();
+                tokio::spawn(async move {
+                    refresh_all_fields(app_state_clone, ui_state_clone).await;
+                });
+            }
+        });
+        
+        // Original vote data refresh task for alerts
         let ui_state = Arc::clone(&self.ui_state);
         let app_state = Arc::clone(&self.app_state);
         let log_sender = self.log_sender.clone();
         let emergency_takeover_flag = Arc::clone(&self.emergency_takeover_in_progress);
 
         tokio::spawn(async move {
-            let mut interval = interval(Duration::from_secs(5));
-
+            let mut interval = interval(Duration::from_secs(30)); // Different interval for vote data alerts
+            
             // Initialize alert manager and tracker if alerts are configured
             let alert_manager = app_state
                 .config
@@ -324,17 +407,17 @@ impl EnhancedStatusApp {
                 .as_ref()
                 .filter(|config| config.enabled)
                 .map(|config| AlertManager::new(config.clone()));
-
+            
             let nodes_per_validator = 2; // Assuming 2 nodes per validator
             let mut alert_tracker = ComprehensiveAlertTracker::new(
                 app_state.validator_statuses.len(),
                 nodes_per_validator
             );
-
+            
             loop {
                 interval.tick().await;
 
-                // Fetch vote data for all validators
+                // Also fetch vote data for alerts
                 let mut new_vote_data = Vec::new();
 
                 for (idx, validator_status) in app_state.validator_statuses.iter().enumerate() {
@@ -831,7 +914,8 @@ impl EnhancedStatusApp {
         });
         */
 
-        // SSH health monitoring task
+        // SSH health monitoring task - DISABLED, using refresh mechanism instead
+        /*
         let ui_state = Arc::clone(&self.ui_state);
         let app_state = Arc::clone(&self.app_state);
         let ssh_pool = Arc::clone(&self.ssh_pool);
@@ -1018,6 +1102,7 @@ impl EnhancedStatusApp {
                 state.last_ssh_health_refresh = Instant::now();
             }
         });
+        */
 
         // Telegram bot polling has been removed - bot only responds to messages now
     }
@@ -1423,11 +1508,29 @@ pub async fn run_enhanced_ui(app: &mut EnhancedStatusApp) -> Result<bool> {
     // Note: log messages are now consumed by the Telegram bot if enabled
 
     // Main UI loop
-    let mut ui_interval = interval(Duration::from_millis(100)); // 10 FPS
-
+    let frame_duration = Duration::from_millis(100); // 10 FPS
+    let mut last_frame = Instant::now();
     let mut emergency_mode = false;
     
     loop {
+        // Process events with a balanced timeout for responsive keypresses
+        if event::poll(Duration::from_millis(10))? {
+            match event::read()? {
+                Event::Key(key) if key.kind == crossterm::event::KeyEventKind::Press => {
+                    handle_key_event(
+                        key,
+                        &app.ui_state,
+                        &app.should_quit,
+                        &app.view_state,
+                        &app.app_state,
+                        &app.switch_confirmed,
+                    )
+                    .await?;
+                }
+                _ => {}
+            }
+        }
+        
         // Check for quit signal
         if *app.should_quit.read().await {
             break;
@@ -1454,48 +1557,39 @@ pub async fn run_enhanced_ui(app: &mut EnhancedStatusApp) -> Result<bool> {
         
         if emergency_in_progress {
             // During emergency takeover, just wait without rendering
-            ui_interval.tick().await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
             continue;
         }
 
-        // Handle keyboard events
-        if event::poll(Duration::from_millis(10))? {
-            if let Event::Key(key) = event::read()? {
-                // Only handle key press events, not key releases
-                if key.kind == crossterm::event::KeyEventKind::Press {
-                    handle_key_event(
-                        key,
-                        &app.ui_state,
-                        &app.should_quit,
-                        &app.view_state,
-                        &app.app_state,
-                        &app.switch_confirmed,
-                    )
-                    .await?;
-                }
-            }
+        // Only draw if enough time has passed since last frame
+        let now = Instant::now();
+        if now.duration_since(last_frame) >= frame_duration {
+            let ui_state_read = app.ui_state.read().await;
+            let view_state_read = app.view_state.read().await;
+
+            terminal.draw(|f| match *view_state_read {
+                ViewState::Status => draw_ui(f, &ui_state_read, &app.app_state),
+                ViewState::Switch => draw_switch_ui(f, &app.app_state),
+            })?;
+
+            drop(ui_state_read);
+            drop(view_state_read);
+            
+            last_frame = now;
         }
 
-        // Draw UI based on current view
-        let ui_state_read = app.ui_state.read().await;
-        let view_state_read = app.view_state.read().await;
-
-        terminal.draw(|f| match *view_state_read {
-            ViewState::Status => draw_ui(f, &ui_state_read, &app.app_state),
-            ViewState::Switch => draw_switch_ui(f, &app.app_state),
-        })?;
-
-        drop(ui_state_read);
-        drop(view_state_read);
-
-        // Wait for next frame
-        ui_interval.tick().await;
+        // Tiny yield to prevent busy waiting
+        tokio::task::yield_now().await;
     }
 
     // Restore terminal
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
+    
+    // Ensure terminal is fully restored before returning
+    std::io::stdout().flush()?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Return whether switch was confirmed
     Ok(*app.switch_confirmed.read().await)
@@ -1532,6 +1626,9 @@ async fn handle_key_event(
             // Show switch confirmation view
             let mut view = view_state.write().await;
             *view = ViewState::Switch;
+            drop(view); // Release lock immediately
+            // Force immediate redraw
+            tokio::task::yield_now().await;
         }
         KeyCode::Char('y') | KeyCode::Char('Y') => {
             // Confirm and execute switch if in switch view
@@ -1552,6 +1649,7 @@ async fn handle_key_event(
                 // Set refresh states immediately before spawning
                 {
                     let mut ui_state_write = ui_state.write().await;
+                    ui_state_write.last_refresh_time = Instant::now(); // Reset the auto-refresh timer
                     ui_state_write.is_refreshing = true;
                     
                     // Set all field refresh states to true immediately
@@ -1559,9 +1657,13 @@ async fn handle_key_event(
                         refresh_state.node_0.status_refreshing = true;
                         refresh_state.node_0.identity_refreshing = true;
                         refresh_state.node_0.version_refreshing = true;
+                        refresh_state.node_0.ssh_connectivity_refreshing = true;
+                        refresh_state.node_0.rpc_health_refreshing = true;
                         refresh_state.node_1.status_refreshing = true;
                         refresh_state.node_1.identity_refreshing = true;
                         refresh_state.node_1.version_refreshing = true;
+                        refresh_state.node_1.ssh_connectivity_refreshing = true;
+                        refresh_state.node_1.rpc_health_refreshing = true;
                     }
                 }
                 
@@ -1628,10 +1730,10 @@ fn draw_validator_summaries(
         .enumerate()
     {
         let vote_data = ui_state.vote_data.get(idx).and_then(|v| v.as_ref());
-        let catchup_data = ui_state.catchup_data.get(idx);
         let prev_slot = ui_state.previous_last_slots.get(idx).and_then(|&v| v);
         let inc_time = ui_state.increment_times.get(idx).and_then(|&v| v);
         let ssh_health_data = ui_state.ssh_health_data.get(idx);
+        let rpc_health_data = ui_state.rpc_health_data.get(idx);
 
         let field_refresh_state = ui_state.field_refresh_states.get(idx);
         draw_side_by_side_tables(
@@ -1639,12 +1741,12 @@ fn draw_validator_summaries(
             *chunk,
             validator_status,
             vote_data,
-            catchup_data,
             prev_slot,
             inc_time,
             _app_state,
             ui_state.last_catchup_refresh,
             ssh_health_data,
+            rpc_health_data,
             ui_state.last_ssh_health_refresh,
             field_refresh_state,
         );
@@ -1656,12 +1758,12 @@ fn draw_side_by_side_tables(
     area: Rect,
     validator_status: &crate::ValidatorStatus,
     vote_data: Option<&ValidatorVoteData>,
-    catchup_data: Option<&NodePairStatus>,
     previous_last_slot: Option<u64>,
     increment_time: Option<Instant>,
     app_state: &AppState,
     last_catchup_refresh: Instant,
     ssh_health_data: Option<&NodePairSshStatus>,
+    rpc_health_data: Option<&NodePairRpcStatus>,
     last_ssh_health_refresh: Instant,
     field_refresh_state: Option<&NodeFieldRefreshState>,
 ) {
@@ -1680,11 +1782,12 @@ fn draw_side_by_side_tables(
 
     // Draw left table (node 0)
     if let Some(node) = validator_status.nodes_with_status.get(left_node_idx) {
-        let catchup_status = catchup_data.and_then(|c| {
-            if left_node_idx == 0 { c.node_0.as_ref() } else { c.node_1.as_ref() }
-        });
         let ssh_health = ssh_health_data.and_then(|s| {
             if left_node_idx == 0 { Some(&s.node_0) } else { Some(&s.node_1) }
+        });
+        
+        let rpc_health = rpc_health_data.and_then(|r| {
+            if left_node_idx == 0 { Some(&r.node_0) } else { Some(&r.node_1) }
         });
         
         let node_refresh_state = field_refresh_state.map(|s| {
@@ -1697,12 +1800,12 @@ fn draw_side_by_side_tables(
             validator_status,
             node,
             vote_data,
-            catchup_status,
             previous_last_slot,
             increment_time,
             app_state,
             last_catchup_refresh,
             ssh_health,
+            rpc_health,
             last_ssh_health_refresh,
             node_refresh_state,
             true, // is_left_table
@@ -1711,11 +1814,12 @@ fn draw_side_by_side_tables(
 
     // Draw right table (node 1)
     if let Some(node) = validator_status.nodes_with_status.get(right_node_idx) {
-        let catchup_status = catchup_data.and_then(|c| {
-            if right_node_idx == 0 { c.node_0.as_ref() } else { c.node_1.as_ref() }
-        });
         let ssh_health = ssh_health_data.and_then(|s| {
             if right_node_idx == 0 { Some(&s.node_0) } else { Some(&s.node_1) }
+        });
+        
+        let rpc_health = rpc_health_data.and_then(|r| {
+            if right_node_idx == 0 { Some(&r.node_0) } else { Some(&r.node_1) }
         });
         
         let node_refresh_state = field_refresh_state.map(|s| {
@@ -1728,12 +1832,12 @@ fn draw_side_by_side_tables(
             validator_status,
             node,
             vote_data,
-            catchup_status,
             previous_last_slot,
             increment_time,
             app_state,
             last_catchup_refresh,
             ssh_health,
+            rpc_health,
             last_ssh_health_refresh,
             node_refresh_state,
             false, // is_left_table
@@ -1747,12 +1851,12 @@ fn draw_single_node_table(
     validator_status: &crate::ValidatorStatus,
     node: &crate::types::NodeWithStatus,
     vote_data: Option<&ValidatorVoteData>,
-    catchup_status: Option<&CatchupStatus>,
     previous_last_slot: Option<u64>,
     increment_time: Option<Instant>,
     app_state: &AppState,
     _last_catchup_refresh: Instant,
     ssh_health: Option<&SshHealthStatus>,
+    rpc_health: Option<&RpcHealthStatus>,
     last_ssh_health_refresh: Instant,
     field_refresh_state: Option<&FieldRefreshStates>,
     _is_left_table: bool,
@@ -1912,63 +2016,6 @@ fn draw_single_node_table(
     // Section separator before Vote
     rows.push(create_section_header_with_label("VOTE STATUS"));
 
-    // Catchup/Status display
-    let row_label = if node.validator_type == crate::types::ValidatorType::Firedancer {
-        "Status"  // For Firedancer, show as "Status" since fdctl status shows running state
-    } else {
-        "Catchup" // For Agave/Jito, show as "Catchup"
-    };
-    
-    // Show catchup/status for standby nodes and Firedancer nodes (regardless of active/standby)
-    if node.status == crate::types::NodeStatus::Standby || node.validator_type == crate::types::ValidatorType::Firedancer {
-        if let Some(catchup) = catchup_status {
-            let status_display = if catchup.is_streaming {
-                // Add special handling for errors during streaming
-                if catchup.status.starts_with("[ERROR]") {
-                    // Show a cleaner error message
-                    "❌ Command failed".to_string()
-                } else {
-                    format!("🔄 {}", catchup.status)
-                }
-            } else if catchup.status == "Waiting..." {
-                "⏳ Starting...".to_string()
-            } else if catchup.status == "CLI not found" {
-                "❌ Solana CLI not found".to_string()
-            } else if catchup.status == "Command error" {
-                "❌ Command error".to_string()
-            } else {
-                catchup.status.clone()
-            };
-
-            rows.push(Row::new(vec![
-                Cell::from(row_label),
-                Cell::from(status_display.clone()).style(if status_display.contains("Caught up") {
-                    Style::default().fg(Color::Green)
-                } else if status_display.contains("Error") || status_display.contains("not found") {
-                    Style::default().fg(Color::Red)
-                } else if status_display.contains("🔄") || status_display.contains("⏳") {
-                    Style::default().fg(Color::DarkGray)
-                } else if status_display.contains("behind") {
-                    Style::default().fg(Color::Yellow)
-                } else {
-                    Style::default().fg(Color::White)
-                }),
-            ]));
-        } else {
-            // No catchup data yet
-            rows.push(Row::new(vec![
-                Cell::from(row_label),
-                Cell::from("⏳ Initializing...").style(Style::default().fg(Color::DarkGray)),
-            ]));
-        }
-    } else {
-        // Active Agave/Jito nodes don't need catchup
-        rows.push(Row::new(vec![
-            Cell::from(row_label),
-            Cell::from("-").style(Style::default().fg(Color::DarkGray)),
-        ]));
-    }
-
     // Vote status - always show
     let is_active = node.status == crate::types::NodeStatus::Active;
     
@@ -2025,17 +2072,12 @@ fn draw_single_node_table(
     // Section separator before SSH
     rows.push(create_section_header_with_label("HEALTH"));
 
-    // Node health status
-    let health_display = if let Some(health) = ssh_health {
-        let elapsed = last_ssh_health_refresh.elapsed().as_secs();
-        let next_check_in = if elapsed >= 30 { 0 } else { 30 - elapsed };
-        
+    // SSH connectivity status
+    let health_display = if field_refresh_state.map(|s| s.ssh_connectivity_refreshing).unwrap_or(false) {
+        "🔄 Refreshing...".to_string()
+    } else if let Some(health) = ssh_health {
         if health.is_healthy {
-            if next_check_in > 0 {
-                format!("✅ Healthy (next check in {}s)", next_check_in)
-            } else {
-                "✅ Healthy (checking...)".to_string()
-            }
+            "✅ SSH connected".to_string()
         } else {
             let failure_duration = health.failure_start
                 .map(|start| start.elapsed())
@@ -2049,7 +2091,36 @@ fn draw_single_node_table(
                 format!("{}h", failure_duration.as_secs() / 3600)
             };
             
-            format!("❌ Failed (for {})", duration_str)
+            format!("❌ SSH failed (for {})", duration_str)
+        }
+    } else {
+        "⏳ Checking...".to_string()
+    };
+    
+    rows.push(Row::new(vec![
+        Cell::from("SSH Connectivity"),
+        Cell::from(health_display.clone()).style(
+            if health_display.contains("SSH connected") {
+                Style::default().fg(Color::Green)
+            } else if health_display.contains("SSH failed") {
+                Style::default().fg(Color::Red)
+            } else {
+                Style::default().fg(Color::Yellow)
+            }
+        ),
+    ]));
+    
+    // Node Health (RPC getHealth check)
+    let rpc_health_display = if field_refresh_state.map(|s| s.rpc_health_refreshing).unwrap_or(false) {
+        "🔄 Refreshing...".to_string()
+    } else if let Some(health) = rpc_health {
+        if health.is_healthy {
+            "✅ Healthy".to_string()
+        } else {
+            match &health.error_message {
+                Some(msg) if msg.contains("error") => format!("❌ Error: {}", msg),
+                _ => "❌ Unhealthy".to_string(),
+            }
         }
     } else {
         "⏳ Checking...".to_string()
@@ -2057,10 +2128,10 @@ fn draw_single_node_table(
     
     rows.push(Row::new(vec![
         Cell::from("Node Health"),
-        Cell::from(health_display.clone()).style(
-            if health_display.contains("Healthy") {
+        Cell::from(rpc_health_display.clone()).style(
+            if rpc_health_display.contains("Healthy") {
                 Style::default().fg(Color::Green)
-            } else if health_display.contains("Failed") {
+            } else if rpc_health_display.contains("Error") || rpc_health_display.contains("Unhealthy") {
                 Style::default().fg(Color::Red)
             } else {
                 Style::default().fg(Color::Yellow)
@@ -2178,7 +2249,6 @@ fn draw_validator_table(
     area: Rect,
     validator_status: &crate::ValidatorStatus,
     vote_data: Option<&ValidatorVoteData>,
-    catchup_data: Option<&NodePairStatus>,
     previous_last_slot: Option<u64>,
     increment_time: Option<Instant>,
     app_state: &AppState,
@@ -2463,75 +2533,6 @@ fn draw_validator_table(
             ]));
         }
 
-        // Catchup status
-        if let Some(catchup) = catchup_data {
-            // Calculate seconds until next catchup check first
-            let elapsed = last_catchup_refresh.elapsed().as_secs();
-            let next_check_in = if elapsed >= 30 { 0 } else { 30 - elapsed };
-            let next_check_suffix = if next_check_in > 0 {
-                format!(" (next in {}s)", next_check_in)
-            } else {
-                String::new()
-            };
-
-            let node_0_status = catchup
-                .node_0
-                .as_ref()
-                .map(|c| {
-                    let status = if c.status == "Checking..." {
-                        "🔄 Checking...".to_string()
-                    } else {
-                        c.status.clone()
-                    };
-                    // Add countdown suffix for non-checking states
-                    if !status.contains("Checking") && next_check_in > 0 {
-                        format!("{}{}", status, next_check_suffix)
-                    } else {
-                        status
-                    }
-                })
-                .unwrap_or_else(|| "🔄 Checking...".to_string());
-            let node_1_status = catchup
-                .node_1
-                .as_ref()
-                .map(|c| {
-                    let status = if c.status == "Checking..." {
-                        "🔄 Checking...".to_string()
-                    } else {
-                        c.status.clone()
-                    };
-                    // Add countdown suffix for non-checking states
-                    if !status.contains("Checking") && next_check_in > 0 {
-                        format!("{}{}", status, next_check_suffix)
-                    } else {
-                        status
-                    }
-                })
-                .unwrap_or_else(|| "🔄 Checking...".to_string());
-
-            rows.push(Row::new(vec![
-                Cell::from("Catchup"),
-                Cell::from(node_0_status.clone()).style(if node_0_status.contains("Caught up") {
-                    Style::default().fg(Color::Green)
-                } else if node_0_status.contains("Error") {
-                    Style::default().fg(Color::Red)
-                } else if node_0_status.contains("Checking") {
-                    Style::default().fg(Color::DarkGray)
-                } else {
-                    Style::default().fg(Color::Yellow)
-                }),
-                Cell::from(node_1_status.clone()).style(if node_1_status.contains("Caught up") {
-                    Style::default().fg(Color::Green)
-                } else if node_1_status.contains("Error") {
-                    Style::default().fg(Color::Red)
-                } else if node_1_status.contains("Checking") {
-                    Style::default().fg(Color::DarkGray)
-                } else {
-                    Style::default().fg(Color::Yellow)
-                }),
-            ]));
-        }
-
         // Vote status row with slot info - moved to bottom
         if let Some(vote_data) = vote_data {
             let last_slot_info = vote_data.recent_votes.last().map(|lv| lv.slot);
@@ -2643,21 +2644,18 @@ fn draw_validator_table(
 // Removed draw_logs function as logs are no longer displayed
 
 fn draw_footer(f: &mut ratatui::Frame, area: Rect, ui_state: &UiState) {
-    // Check if any fields are refreshing
-    let is_refreshing = ui_state.field_refresh_states.iter().any(|state| {
-        state.node_0.status_refreshing || state.node_0.identity_refreshing || state.node_0.version_refreshing ||
-        state.node_1.status_refreshing || state.node_1.identity_refreshing || state.node_1.version_refreshing
-    });
-    
-    let refresh_indicator = if is_refreshing {
-        " | 🔄 Refreshing..."
+    // Calculate time until next auto-refresh (every 10 seconds)
+    let elapsed = ui_state.last_refresh_time.elapsed();
+    let refresh_text = if elapsed < Duration::from_secs(10) {
+        let remaining = 10 - elapsed.as_secs();
+        format!("(R)efresh (in {}s)", remaining)
     } else {
-        ""
+        "(R)efresh".to_string()
     };
     
     let help_text = format!(
-        "q/Esc: Quit | r: Refresh (5s) | s: Switch{}",
-        refresh_indicator
+        "(Q)uit | {} | (S)witch",
+        refresh_text
     );
 
     let footer = Paragraph::new(help_text)
@@ -3004,6 +3002,132 @@ async fn refresh_validator_fields(
                 ui_state_clone,
             ).await;
         });
+        
+        // Refresh SSH connectivity
+        let ui_state_clone = ui_state.clone();
+        let node_clone = node.clone();
+        let ssh_pool_clone = ssh_pool.clone();
+        let ssh_key_clone = ssh_key.clone();
+        
+        tokio::spawn(async move {
+            refresh_ssh_connectivity(
+                validator_idx,
+                node_idx,
+                node_clone,
+                ssh_pool_clone,
+                ssh_key_clone,
+                ui_state_clone,
+            ).await;
+        });
+        
+        // Refresh RPC health
+        let ui_state_clone = ui_state.clone();
+        let node_clone = node.clone();
+        let ssh_pool_clone = ssh_pool.clone();
+        let ssh_key_clone = ssh_key.clone();
+        
+        tokio::spawn(async move {
+            refresh_rpc_health(
+                validator_idx,
+                node_idx,
+                node_clone,
+                ssh_pool_clone,
+                ssh_key_clone,
+                ui_state_clone,
+            ).await;
+        });
+    }
+}
+
+/// Refresh SSH connectivity for a specific node
+async fn refresh_ssh_connectivity(
+    validator_idx: usize,
+    node_idx: usize,
+    node: crate::types::NodeWithStatus,
+    ssh_pool: Arc<crate::ssh::AsyncSshPool>,
+    ssh_key: String,
+    ui_state: Arc<RwLock<UiState>>,
+) {
+    // Check SSH connectivity
+    let is_healthy = match ssh_pool.execute_command(&node.node, &ssh_key, "true").await {
+        Ok(_) => true,
+        Err(_) => false,
+    };
+    
+    // Update UI state
+    let mut state = ui_state.write().await;
+    if let Some(ssh_data) = state.ssh_health_data.get_mut(validator_idx) {
+        let ssh_status = if node_idx == 0 {
+            &mut ssh_data.node_0
+        } else {
+            &mut ssh_data.node_1
+        };
+        
+        ssh_status.is_healthy = is_healthy;
+        if is_healthy {
+            ssh_status.last_success = Some(Instant::now());
+            ssh_status.failure_start = None;
+        } else if ssh_status.is_healthy {
+            // This is the first failure
+            ssh_status.failure_start = Some(Instant::now());
+        }
+    }
+    
+    // Clear the refresh flag
+    if let Some(refresh_state) = state.field_refresh_states.get_mut(validator_idx) {
+        if node_idx == 0 {
+            refresh_state.node_0.ssh_connectivity_refreshing = false;
+        } else {
+            refresh_state.node_1.ssh_connectivity_refreshing = false;
+        }
+    }
+    
+    // Update refresh timestamp
+    state.last_ssh_health_refresh = Instant::now();
+}
+
+/// Refresh RPC health for a specific node
+async fn refresh_rpc_health(
+    validator_idx: usize,
+    node_idx: usize,
+    node: crate::types::NodeWithStatus,
+    ssh_pool: Arc<crate::ssh::AsyncSshPool>,
+    ssh_key: String,
+    ui_state: Arc<RwLock<UiState>>,
+) {
+    use crate::validator_rpc::{get_rpc_port, get_health};
+    
+    // Get RPC port based on validator type
+    // TODO: Extract command line from ps output to detect custom RPC ports
+    let rpc_port = get_rpc_port(node.validator_type, None);
+    
+    // Check RPC health
+    let (is_healthy, error_msg) = match get_health(&ssh_pool, &node.node, &ssh_key, rpc_port).await {
+        Ok(healthy) => (healthy, None),
+        Err(e) => (false, Some(e.to_string())),
+    };
+    
+    // Update UI state
+    let mut state = ui_state.write().await;
+    if let Some(rpc_data) = state.rpc_health_data.get_mut(validator_idx) {
+        let rpc_status = if node_idx == 0 {
+            &mut rpc_data.node_0
+        } else {
+            &mut rpc_data.node_1
+        };
+        
+        rpc_status.is_healthy = is_healthy;
+        rpc_status.last_check = Some(Instant::now());
+        rpc_status.error_message = error_msg;
+    }
+    
+    // Clear the refresh flag
+    if let Some(refresh_state) = state.field_refresh_states.get_mut(validator_idx) {
+        if node_idx == 0 {
+            refresh_state.node_0.rpc_health_refreshing = false;
+        } else {
+            refresh_state.node_1.rpc_health_refreshing = false;
+        }
     }
 }
 

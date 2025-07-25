@@ -52,12 +52,19 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Check current validator status
-    Status,
+    Status {
+        /// Select validator by index (0-based) or identity prefix
+        #[arg(short, long)]
+        validator: Option<String>,
+    },
     /// Switch between primary and backup validators
     Switch {
         /// Preview switch without executing
         #[arg(short, long)]
         dry_run: bool,
+        /// Select validator by index (0-based) or identity prefix
+        #[arg(short, long)]
+        validator: Option<String>,
     },
     /// Test alert configuration
     TestAlert,
@@ -71,6 +78,7 @@ pub struct AppState {
     pub validator_statuses: Vec<ValidatorStatus>,
     pub metadata_cache: Arc<tokio::sync::Mutex<validator_metadata::MetadataCache>>,
     pub detected_ssh_keys: std::collections::HashMap<String, String>, // host -> key_path mapping
+    pub selected_validator_index: usize, // Currently selected validator pair
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +93,36 @@ impl AppState {
         // Use the comprehensive startup checklist
         startup::run_startup_checklist().await
     }
+    
+    /// Parse validator selection from CLI argument
+    fn select_validator_from_arg(&mut self, validator_arg: &str) -> Result<()> {
+        // Try parsing as index first
+        if let Ok(index) = validator_arg.parse::<usize>() {
+            if index < self.validator_statuses.len() {
+                self.selected_validator_index = index;
+                return Ok(());
+            } else {
+                return Err(anyhow::anyhow!("Validator index {} out of range (max: {})", 
+                    index, self.validator_statuses.len() - 1));
+            }
+        }
+        
+        // Try matching by identity prefix
+        let matches: Vec<(usize, &ValidatorStatus)> = self.validator_statuses
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| v.validator_pair.identity_pubkey.starts_with(validator_arg))
+            .collect();
+        
+        match matches.len() {
+            0 => Err(anyhow::anyhow!("No validator found matching '{}'", validator_arg)),
+            1 => {
+                self.selected_validator_index = matches[0].0;
+                Ok(())
+            }
+            _ => Err(anyhow::anyhow!("Multiple validators match '{}'. Please be more specific.", validator_arg)),
+        }
+    }
 }
 
 #[tokio::main]
@@ -95,16 +133,24 @@ async fn main() -> Result<()> {
     let app_state = AppState::new().await?;
 
     match cli.command {
-        Some(Commands::Status) => {
-            if let Some(state) = app_state.as_ref() {
-                status_command(state).await?;
+        Some(Commands::Status { validator }) => {
+            if let Some(mut state) = app_state {
+                // Apply validator selection if provided
+                if let Some(validator_arg) = validator {
+                    state.select_validator_from_arg(&validator_arg)?;
+                }
+                status_command(&state).await?;
             } else {
                 // Startup validation already showed detailed error messages
                 std::process::exit(1);
             }
         }
-        Some(Commands::Switch { dry_run }) => {
+        Some(Commands::Switch { dry_run, validator }) => {
             if let Some(mut state) = app_state {
+                // Apply validator selection if provided
+                if let Some(validator_arg) = validator {
+                    state.select_validator_from_arg(&validator_arg)?;
+                }
                 let show_status = switch_command(dry_run, &mut state).await?;
                 if show_status && !dry_run {
                     status_command(&state).await?;
@@ -157,36 +203,92 @@ async fn show_interactive_menu(mut app_state: AppState) -> Result<()> {
     );
     println!();
 
+    // Show current validator info if multiple validators
+    if app_state.validator_statuses.len() > 1 {
+        println!("{}", format!("Currently managing {} validator pairs:", app_state.validator_statuses.len()).bright_yellow());
+        for (idx, validator_status) in app_state.validator_statuses.iter().enumerate() {
+            let identity = &validator_status.validator_pair.identity_pubkey;
+            let label = validator_status.nodes_with_status.first()
+                .map(|n| n.node.label.clone())
+                .unwrap_or_else(|| format!("Validator {}", idx + 1));
+            let short_identity = if identity.len() > 8 {
+                format!("{}...{}", &identity[..4], &identity[identity.len()-4..])
+            } else {
+                identity.clone()
+            };
+            
+            let marker = if idx == app_state.selected_validator_index { "▶" } else { " " };
+            println!("{} {}. {} ({})", marker, idx + 1, label, short_identity);
+        }
+        println!();
+    }
+
     loop {
-        let mut options = vec![
+        let mut options = vec![];
+        
+        // Add validator selection option if multiple validators
+        if app_state.validator_statuses.len() > 1 {
+            options.push("🎯 Select Validator - Choose which validator to manage");
+        }
+        
+        options.extend_from_slice(&[
             "📋 Status - Check current validator status",
             "🔄 Switch - Switch between primary and backup validators",
             "🔔 Test Alert - Test alert configuration",
-        ];
-
-        options.push("❌ Exit");
+            "❌ Exit",
+        ]);
 
         let selection = Select::new("What would you like to do?", options.clone()).prompt()?;
 
-        let index = options.iter().position(|x| x == &selection).unwrap();
-
-        match index {
-            0 => {
-                status_command(&app_state).await?;
-            }
-            1 => show_switch_menu(&mut app_state).await?,
-            2 => {
-                test_alert_command(&app_state).await?;
-            }
-            3 => {
-                // Exit
-                println!("{}", "👋 Goodbye!".bright_green());
-                break;
-            }
-            _ => unreachable!(),
+        let selected_option = selection;
+        
+        if app_state.validator_statuses.len() > 1 && selected_option == "🎯 Select Validator - Choose which validator to manage" {
+            select_validator(&mut app_state).await?;
+        } else if selected_option == "📋 Status - Check current validator status" {
+            status_command(&app_state).await?;
+        } else if selected_option == "🔄 Switch - Switch between primary and backup validators" {
+            show_switch_menu(&mut app_state).await?;
+        } else if selected_option == "🔔 Test Alert - Test alert configuration" {
+            test_alert_command(&app_state).await?;
+        } else if selected_option == "❌ Exit" {
+            println!("{}", "👋 Goodbye!".bright_green());
+            break;
         }
     }
 
+    Ok(())
+}
+
+async fn select_validator(app_state: &mut AppState) -> Result<()> {
+    use colored::*;
+    use inquire::Select;
+    
+    println!("\n{}", "🎯 Select Validator".bright_cyan().bold());
+    
+    let mut options = Vec::new();
+    for (idx, validator_status) in app_state.validator_statuses.iter().enumerate() {
+        let identity = &validator_status.validator_pair.identity_pubkey;
+        let label = validator_status.nodes_with_status.first()
+            .map(|n| n.node.label.clone())
+            .unwrap_or_else(|| format!("Validator {}", idx + 1));
+        let short_identity = if identity.len() > 8 {
+            format!("{}...{}", &identity[..4], &identity[identity.len()-4..])
+        } else {
+            identity.clone()
+        };
+        
+        let option = format!("{}. {} ({})", idx + 1, label, short_identity);
+        options.push(option);
+    }
+    
+    let selection = Select::new("Choose a validator to manage:", options.clone()).prompt()?;
+    
+    let index = options.iter().position(|x| x == &selection).unwrap();
+    app_state.selected_validator_index = index;
+    
+    println!("{}", format!("✅ Selected: {}", selection).bright_green());
+    println!();
+    
     Ok(())
 }
 

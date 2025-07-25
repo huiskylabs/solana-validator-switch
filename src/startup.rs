@@ -243,6 +243,7 @@ pub async fn run_startup_checklist() -> Result<Option<crate::AppState>> {
                 validator_statuses,
                 metadata_cache,
                 detected_ssh_keys,
+                selected_validator_index: 0, // Default to first validator
             };
             
             // Perform auto-failover safety checks if enabled
@@ -1100,9 +1101,15 @@ async fn show_ready_prompt() {
         print!("\x1B[2J\x1B[1;1H"); // Clear entire screen and move to top
         io::stdout().flush().unwrap();
     } else {
-        // Wait for any key press
-        let mut input = String::new();
-        let _ = io::stdin().read_line(&mut input);
+        // Actually wait for ANY key press, not just Enter
+        use crossterm::event::{self, Event};
+        crossterm::terminal::enable_raw_mode().ok();
+        loop {
+            if let Ok(Event::Key(_)) = event::read() {
+                break;
+            }
+        }
+        crossterm::terminal::disable_raw_mode().ok();
 
         // Clear the ready prompt
         print!("\x1B[8A\x1B[2K"); // Move up 8 lines and clear
@@ -1421,7 +1428,7 @@ async fn detect_node_status_and_executable(
     let mut solana_cli_executable = None;
     let mut _main_validator_executable = None;
     let mut version = None;
-    let mut sync_status;
+    let sync_status;
     let mut current_identity = None;
     let mut ledger_path = None;
     #[allow(dead_code)]
@@ -1901,7 +1908,7 @@ async fn detect_node_status_and_executable_with_progress(
     let mut solana_cli_executable = None;
     let mut _main_validator_executable = None;
     let mut version = None;
-    let mut sync_status;
+    let sync_status;
     let mut current_identity = None;
     let mut ledger_path = None;
     #[allow(dead_code)]

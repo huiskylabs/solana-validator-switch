@@ -50,12 +50,14 @@ svs           # Opens interactive menu
 
 ### Command Line Mode
 ```bash
-svs status              # Check validator status
-svs switch              # Perform validator switch
-svs switch --dry-run    # Preview switch without executing
-svs test-alert          # Test Telegram alert configuration
-svs --version           # Show version
-svs --help              # Show help
+svs status                    # Check validator status
+svs status --validator 0      # Check specific validator by index
+svs switch                    # Perform validator switch
+svs switch --dry-run          # Preview switch without executing
+svs switch --validator 1      # Switch specific validator by index
+svs test-alert                # Test Telegram alert configuration
+svs --version                 # Show version
+svs --help                    # Show help
 ```
 
 
@@ -119,11 +121,13 @@ You'll receive notifications for:
 - **Optimized Tower Transfer**: Streaming base64 decode + dd for minimal latency
 - **Universal Support**: Works with Firedancer, Agave, Solana, and Jito validators
 - **Interactive Dashboard**: Real-time monitoring with Ratatui-based terminal UI
+  - **Ultra-responsive keyboard controls** - Dedicated thread ensures instant response
+  - **Multi-validator support** - Tab key to switch between validator pairs
   - Auto-refresh countdown timer shows time until next refresh
   - Manual refresh (R key) with no cooldown
   - SSH connectivity status monitoring
   - RPC node health status via getHealth checks
-  - Responsive keyboard shortcuts (Q)uit, (R)efresh, (S)witch
+  - Responsive keyboard shortcuts (Q)uit, (R)efresh, (S)witch, (Tab) cycle validators
 - **Telegram Alerts**: Real-time notifications for validator health and switch events
   - Delinquency alerts when validator stops voting
   - Switch success/failure notifications
@@ -171,10 +175,11 @@ If SVS saves you time and SOL, consider:
 - [x] **Modern async architecture** - Tokio-based async runtime with Arc<Session> efficiency
 - [x] **Telegram notifications** - Real-time alerts for validator health and switch events
 - [x] **Continuous monitoring** - Real-time validator health monitoring with delinquency alerts
+- [x] **Multi-validator support** - Manage multiple validator pairs with Tab key switching
+- [x] **Ultra-responsive UI** - Dedicated keyboard thread prevents blocking, action-based processing
 
 ### 🚧 In Progress
 - [ ] **Auto-switch on failure** - Automatic failover when primary validator goes down
-- [ ] **Multi-validator support** - Manage multiple validator pairs from one interface
 - [ ] **Slack/Discord notifications** - Additional notification channels beyond Telegram
 
 Have ideas? [Open an issue](https://github.com/huiskylabs/solana-validator-switch/issues) or contribute!

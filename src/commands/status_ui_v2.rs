@@ -4,6 +4,34 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+
+/// Helper for acquiring read lock with timeout
+async fn read_lock_with_timeout<T>(
+    lock: &Arc<RwLock<T>>,
+    timeout_ms: u64,
+) -> Result<tokio::sync::RwLockReadGuard<'_, T>> {
+    match tokio::time::timeout(
+        Duration::from_millis(timeout_ms),
+        lock.read()
+    ).await {
+        Ok(guard) => Ok(guard),
+        Err(_) => Err(anyhow::anyhow!("Failed to acquire read lock within {}ms", timeout_ms)),
+    }
+}
+
+/// Helper for acquiring write lock with timeout
+async fn write_lock_with_timeout<T>(
+    lock: &Arc<RwLock<T>>,
+    timeout_ms: u64,
+) -> Result<tokio::sync::RwLockWriteGuard<'_, T>> {
+    match tokio::time::timeout(
+        Duration::from_millis(timeout_ms),
+        lock.write()
+    ).await {
+        Ok(guard) => Ok(guard),
+        Err(_) => Err(anyhow::anyhow!("Failed to acquire write lock within {}ms", timeout_ms)),
+    }
+}
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -18,16 +46,399 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tokio::time::interval;
 
-use crate::alert::{AlertManager, ComprehensiveAlertTracker};
+// Required imports for alerts and vote data
+use crate::alert::AlertManager;
 use crate::solana_rpc::{fetch_vote_account_data, ValidatorVoteData};
 use crate::types::{FailureTracker, NodeHealthStatus};
 use crate::{ssh::AsyncSshPool, AppState};
+
+/// Refresh vote data for all validators and send alerts
+async fn refresh_vote_data_for_alerts(
+    app_state: Arc<AppState>,
+    ui_state: Arc<RwLock<UiState>>,
+    log_sender: tokio::sync::mpsc::UnboundedSender<LogMessage>,
+    alert_manager: Option<AlertManager>,
+) {
+    let mut new_vote_data = Vec::new();
+
+    // Fetch vote data for all validators
+    for (idx, validator_status) in app_state.validator_statuses.iter().enumerate() {
+        let validator_pair = &validator_status.validator_pair;
+
+        match fetch_vote_account_data(&validator_pair.rpc, &validator_pair.vote_pubkey).await {
+            Ok(data) => {
+                // Update RPC success
+                if let Ok(mut state) = ui_state.try_write() {
+                    state.rpc_failure_tracker[idx].record_success();
+                }
+
+                let _ = log_sender.send(LogMessage {
+                    host: format!("validator-{}", idx),
+                    message: format!(
+                        "Vote data fetched: last slot {}",
+                        data.recent_votes.last().map(|v| v.slot).unwrap_or(0)
+                    ),
+                    timestamp: Instant::now(),
+                    level: LogLevel::Info,
+                });
+
+                new_vote_data.push(Some(data));
+            }
+            Err(e) => {
+                // Update RPC failure
+                if let Ok(mut state) = ui_state.try_write() {
+                    state.rpc_failure_tracker[idx].record_failure(e.to_string());
+                }
+
+                let _ = log_sender.send(LogMessage {
+                    host: format!("validator-{}", idx),
+                    message: format!("Failed to fetch vote data: {}", e),
+                    timestamp: Instant::now(),
+                    level: LogLevel::Error,
+                });
+
+                new_vote_data.push(None);
+            }
+        }
+    }
+
+    // Update UI state and check for delinquency alerts
+    if let Ok(mut state) = ui_state.try_write() {
+        // Update vote data
+        let mut new_slot_times = Vec::new();
+        let mut new_increments = Vec::new();
+
+        for (idx, new_data) in new_vote_data.iter().enumerate() {
+            if let Some(new) = new_data {
+                let new_last_slot = new.recent_votes.last().map(|v| v.slot);
+
+                // Check if this is a new slot
+                if let Some(new_slot) = new_last_slot {
+                    // Check against our tracked slot time
+                    let should_update_slot_time = if let Some(tracked) =
+                        state.last_vote_slot_times.get(idx).and_then(|&v| v)
+                    {
+                        tracked.0 != new_slot // Slot has changed
+                    } else {
+                        true // No previous tracking
+                    };
+
+                    if should_update_slot_time {
+                        new_slot_times.push(Some((new_slot, Instant::now())));
+                    } else {
+                        // Slot hasn't changed, keep existing time
+                        new_slot_times.push(state.last_vote_slot_times.get(idx).and_then(|&v| v));
+
+                        // Check for delinquency
+                        if let (Some(alert_mgr), Some((_, last_change_time))) = (
+                            alert_manager.as_ref(),
+                            state.last_vote_slot_times.get(idx).and_then(|&v| v),
+                        ) {
+                            let seconds_since_vote = last_change_time.elapsed().as_secs();
+                            let threshold = app_state
+                                .config
+                                .alert_config
+                                .as_ref()
+                                .map(|c| c.delinquency_threshold_seconds)
+                                .unwrap_or(30);
+
+                            if seconds_since_vote >= threshold {
+                                // Send delinquency alert
+                                let validator_pair = &app_state.validator_statuses[idx].validator_pair;
+                                let unknown_label = "Unknown".to_string();
+                                let active_node = app_state.validator_statuses[idx]
+                                    .nodes_with_status
+                                    .iter()
+                                    .find(|n| n.status == crate::types::NodeStatus::Active)
+                                    .map(|n| &n.node.label)
+                                    .unwrap_or(&unknown_label);
+
+                                let is_active = app_state.validator_statuses[idx]
+                                    .nodes_with_status
+                                    .iter()
+                                    .any(|n| n.status == crate::types::NodeStatus::Active);
+
+                                let node_health = state.validator_health[idx].clone();
+
+                                if let Err(e) = alert_mgr
+                                    .send_delinquency_alert_with_health(
+                                        &validator_pair.identity_pubkey,
+                                        active_node,
+                                        is_active,
+                                        new_slot,
+                                        seconds_since_vote,
+                                        &node_health,
+                                    )
+                                    .await
+                                {
+                                    let _ = log_sender.send(LogMessage {
+                                        host: format!("validator-{}", idx),
+                                        message: format!("Failed to send delinquency alert: {}", e),
+                                        timestamp: Instant::now(),
+                                        level: LogLevel::Error,
+                                    });
+                                }
+                            }
+                        }
+                    }
+
+                    // Handle increment display
+                    if let Some(old) = state.vote_data.get(idx).and_then(|v| v.as_ref()) {
+                        if let Some(old_last_slot) = old.recent_votes.last().map(|v| v.slot) {
+                            if new_slot > old_last_slot {
+                                new_increments.push(Some(Instant::now()));
+                            } else {
+                                new_increments.push(None);
+                            }
+                        } else {
+                            new_increments.push(None);
+                        }
+                    } else {
+                        new_increments.push(None);
+                    }
+                } else {
+                    new_increments.push(None);
+                    new_slot_times.push(None);
+                }
+            } else {
+                new_increments.push(None);
+                new_slot_times.push(state.last_vote_slot_times.get(idx).and_then(|&v| v));
+            }
+        }
+
+        // Update state
+        state.vote_data = new_vote_data;
+        state.increment_times = new_increments;
+        state.last_vote_slot_times = new_slot_times;
+        state.last_vote_refresh = Instant::now();
+    }
+}
 
 /// View states for the UI
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ViewState {
     Status,
     Switch,
+}
+
+/// UI Actions that can be triggered by keypresses
+#[derive(Debug, Clone)]
+enum UiAction {
+    Quit,
+    Refresh,
+    ShowSwitch,
+    ConfirmSwitch,
+    CancelSwitch,
+    NextValidator,
+}
+
+/// Convert keyboard event to UI action without any async operations
+fn key_to_action(key: KeyEvent, current_view: &ViewState) -> Option<UiAction> {
+    match key.code {
+        KeyCode::Char('q') | KeyCode::Esc => {
+            if *current_view == ViewState::Switch {
+                Some(UiAction::CancelSwitch)
+            } else {
+                Some(UiAction::Quit)
+            }
+        }
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Some(UiAction::Quit)
+        }
+        KeyCode::Char('s') | KeyCode::Char('S') => {
+            if *current_view == ViewState::Status {
+                Some(UiAction::ShowSwitch)
+            } else {
+                None
+            }
+        }
+        KeyCode::Char('y') | KeyCode::Char('Y') => {
+            if *current_view == ViewState::Switch {
+                Some(UiAction::ConfirmSwitch)
+            } else {
+                None
+            }
+        }
+        KeyCode::Char('r') | KeyCode::Char('R') => {
+            if *current_view == ViewState::Status {
+                Some(UiAction::Refresh)
+            } else {
+                None
+            }
+        }
+        KeyCode::Tab => {
+            if *current_view == ViewState::Status {
+                Some(UiAction::NextValidator)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Process UI actions with timeouts to prevent blocking
+async fn process_ui_action(
+    action: UiAction,
+    ui_state: &Arc<RwLock<UiState>>,
+    should_quit: &Arc<RwLock<bool>>,
+    view_state: &Arc<RwLock<ViewState>>,
+    app_state: &Arc<AppState>,
+    switch_confirmed: &Arc<RwLock<bool>>,
+) -> Result<()> {
+    match action {
+        UiAction::Quit => {
+            // Use timeout for write lock
+            let quit_write = tokio::time::timeout(
+                Duration::from_millis(50),
+                should_quit.write()
+            ).await;
+            
+            if let Ok(mut quit) = quit_write {
+                *quit = true;
+            }
+        }
+        UiAction::CancelSwitch => {
+            // Use timeout for write lock
+            let view_write = tokio::time::timeout(
+                Duration::from_millis(50),
+                view_state.write()
+            ).await;
+            
+            if let Ok(mut view) = view_write {
+                *view = ViewState::Status;
+            }
+        }
+        UiAction::ShowSwitch => {
+            // Use timeout for write lock
+            let view_write = tokio::time::timeout(
+                Duration::from_millis(50),
+                view_state.write()
+            ).await;
+            
+            if let Ok(mut view) = view_write {
+                *view = ViewState::Switch;
+            }
+        }
+        UiAction::ConfirmSwitch => {
+            // Use timeouts for both write locks
+            let switch_write = tokio::time::timeout(
+                Duration::from_millis(50),
+                switch_confirmed.write()
+            ).await;
+            
+            let quit_write = tokio::time::timeout(
+                Duration::from_millis(50),
+                should_quit.write()
+            ).await;
+            
+            if let (Ok(mut switch), Ok(mut quit)) = (switch_write, quit_write) {
+                *switch = true;
+                *quit = true;
+            }
+        }
+        UiAction::Refresh => {
+            // Handle refresh with timeout
+            handle_refresh_with_timeout(ui_state, app_state).await?;
+        }
+        UiAction::NextValidator => {
+            // Handle validator switch with timeout
+            handle_validator_switch_with_timeout(ui_state, app_state).await?;
+        }
+    }
+    
+    Ok(())
+}
+
+/// Handle refresh with timeout to prevent blocking
+async fn handle_refresh_with_timeout(ui_state: &Arc<RwLock<UiState>>, app_state: &Arc<AppState>) -> Result<()> {
+    // Try to acquire write lock with timeout
+    let ui_write = tokio::time::timeout(
+        Duration::from_millis(50),
+        ui_state.write()
+    ).await;
+    
+    if let Ok(mut ui_state_write) = ui_write {
+        ui_state_write.last_refresh_time = Instant::now();
+        ui_state_write.is_refreshing = true;
+        
+        // Set all field refresh states to true
+        for refresh_state in ui_state_write.field_refresh_states.iter_mut() {
+            refresh_state.node_0.status_refreshing = true;
+            refresh_state.node_0.identity_refreshing = true;
+            refresh_state.node_0.version_refreshing = true;
+            refresh_state.node_0.ssh_connectivity_refreshing = true;
+            refresh_state.node_0.rpc_health_refreshing = true;
+            refresh_state.node_1.status_refreshing = true;
+            refresh_state.node_1.identity_refreshing = true;
+            refresh_state.node_1.version_refreshing = true;
+            refresh_state.node_1.ssh_connectivity_refreshing = true;
+            refresh_state.node_1.rpc_health_refreshing = true;
+        }
+    }
+    
+    // Clone what we need for the async refresh
+    let app_state_clone = app_state.clone();
+    let ui_state_clone = ui_state.clone();
+    
+    // Spawn the refresh operation without blocking
+    tokio::spawn(async move {
+        refresh_all_fields(app_state_clone, ui_state_clone).await;
+    });
+    
+    Ok(())
+}
+
+/// Handle validator switch with timeout to prevent blocking
+async fn handle_validator_switch_with_timeout(
+    ui_state: &Arc<RwLock<UiState>>,
+    app_state: &Arc<AppState>,
+) -> Result<()> {
+    // Only switch if multiple validators exist
+    if app_state.validator_statuses.len() <= 1 {
+        return Ok(());
+    }
+    
+    // Try to acquire write lock with timeout
+    let ui_write = tokio::time::timeout(
+        Duration::from_millis(50),
+        ui_state.write()
+    ).await;
+    
+    if let Ok(mut ui_state_write) = ui_write {
+        // Cycle to next validator
+        ui_state_write.selected_validator_index = 
+            (ui_state_write.selected_validator_index + 1) % app_state.validator_statuses.len();
+        
+        // Mark as refreshing to trigger data update
+        ui_state_write.is_refreshing = true;
+        ui_state_write.last_refresh_time = Instant::now();
+        
+        // Set all field refresh states to true for the new validator
+        for refresh_state in ui_state_write.field_refresh_states.iter_mut() {
+            refresh_state.node_0.status_refreshing = true;
+            refresh_state.node_0.identity_refreshing = true;
+            refresh_state.node_0.version_refreshing = true;
+            refresh_state.node_0.ssh_connectivity_refreshing = true;
+            refresh_state.node_0.rpc_health_refreshing = true;
+            refresh_state.node_1.status_refreshing = true;
+            refresh_state.node_1.identity_refreshing = true;
+            refresh_state.node_1.version_refreshing = true;
+            refresh_state.node_1.ssh_connectivity_refreshing = true;
+            refresh_state.node_1.rpc_health_refreshing = true;
+        }
+    }
+    
+    // Clone what we need for the async refresh
+    let app_state_clone = app_state.clone();
+    let ui_state_clone = ui_state.clone();
+    
+    // Spawn the refresh operation without blocking
+    tokio::spawn(async move {
+        refresh_all_fields(app_state_clone, ui_state_clone).await;
+    });
+    
+    Ok(())
 }
 
 /// Enhanced UI App state with async support
@@ -40,6 +451,8 @@ pub struct EnhancedStatusApp {
     pub view_state: Arc<RwLock<ViewState>>,
     pub emergency_takeover_in_progress: Arc<RwLock<bool>>,
     pub switch_confirmed: Arc<RwLock<bool>>,
+    pub background_tasks: Arc<RwLock<Vec<tokio::task::JoinHandle<()>>>>,
+    pub last_manual_refresh: Arc<RwLock<Instant>>,
 }
 
 /// UI State that can be shared across threads
@@ -48,6 +461,7 @@ pub struct UiState {
     pub vote_data: Vec<Option<ValidatorVoteData>>,
     pub previous_last_slots: Vec<Option<u64>>,
     pub increment_times: Vec<Option<Instant>>,
+    pub selected_validator_index: usize,
 
     // Track when each validator's last vote slot changed
     pub last_vote_slot_times: Vec<Option<(u64, Instant)>>, // (slot, time when slot last changed)
@@ -284,6 +698,7 @@ impl EnhancedStatusApp {
             vote_data: initial_vote_data,
             previous_last_slots: Vec::new(),
             increment_times: Vec::new(),
+            selected_validator_index: app_state.selected_validator_index,
             last_vote_slot_times: vec![None; app_state.validator_statuses.len()],
             catchup_data: initial_catchup_data,
             catchup_failure_counts: vec![(0, 0); app_state.validator_statuses.len()],
@@ -310,6 +725,8 @@ impl EnhancedStatusApp {
             view_state: Arc::new(RwLock::new(ViewState::Status)),
             emergency_takeover_in_progress: Arc::new(RwLock::new(false)),
             switch_confirmed: Arc::new(RwLock::new(false)),
+            background_tasks: Arc::new(RwLock::new(Vec::new())),
+            last_manual_refresh: Arc::new(RwLock::new(Instant::now() - Duration::from_secs(60))),
         })
     }
     
@@ -348,27 +765,41 @@ impl EnhancedStatusApp {
 
     /// Spawn background tasks for data fetching
     pub fn spawn_background_tasks(&self) {
-        // Spawn continuous catchup streaming tasks for each node
-        self.spawn_catchup_streaming_tasks();
-        
-        // Simple auto-refresh task (refreshes all fields every 10 seconds)
+        // Unified refresh task that runs every 10 seconds and includes vote data for alerts
         let ui_state_for_refresh = Arc::clone(&self.ui_state);
         let app_state_for_refresh = Arc::clone(&self.app_state);
+        let log_sender = self.log_sender.clone();
         
         tokio::spawn(async move {
             let mut interval = interval(Duration::from_secs(10));
             
+            // Initialize alert manager if alerts are configured
+            let alert_manager = app_state_for_refresh
+                .config
+                .alert_config
+                .as_ref()
+                .filter(|config| config.enabled)
+                .map(|config| AlertManager::new(config.clone()));
+            
             loop {
                 interval.tick().await;
                 
-                // Update last refresh time
-                {
-                    let mut state = ui_state_for_refresh.write().await;
+                // Skip if already refreshing
+                if let Ok(state) = ui_state_for_refresh.try_read() {
+                    if state.is_refreshing {
+                        continue;
+                    }
+                }
+                
+                // Mark as refreshing
+                if let Ok(mut state) = ui_state_for_refresh.try_write() {
                     state.last_refresh_time = Instant::now();
                     state.is_refreshing = true;
                     
-                    // Set all field refresh states to true
-                    for refresh_state in state.field_refresh_states.iter_mut() {
+                    // Only refresh the currently selected validator
+                    let selected_idx = state.selected_validator_index;
+                    if selected_idx < state.field_refresh_states.len() {
+                        let refresh_state = &mut state.field_refresh_states[selected_idx];
                         refresh_state.node_0.status_refreshing = true;
                         refresh_state.node_0.identity_refreshing = true;
                         refresh_state.node_0.version_refreshing = true;
@@ -382,23 +813,38 @@ impl EnhancedStatusApp {
                     }
                 }
                 
-                // Spawn the refresh (exactly like manual refresh)
+                // Fetch vote data for all validators (needed for alerts)
+                let ui_state_vote = ui_state_for_refresh.clone();
+                let app_state_vote = app_state_for_refresh.clone();
+                let log_sender_vote = log_sender.clone();
+                let alert_manager_vote = alert_manager.clone();
+                
+                tokio::spawn(async move {
+                    refresh_vote_data_for_alerts(
+                        app_state_vote,
+                        ui_state_vote,
+                        log_sender_vote,
+                        alert_manager_vote,
+                    ).await;
+                });
+                
+                // Do the UI field refresh
                 let ui_state_clone = ui_state_for_refresh.clone();
                 let app_state_clone = app_state_for_refresh.clone();
+                
                 tokio::spawn(async move {
                     refresh_all_fields(app_state_clone, ui_state_clone).await;
                 });
             }
         });
         
-        // Original vote data refresh task for alerts
-        let ui_state = Arc::clone(&self.ui_state);
-        let app_state = Arc::clone(&self.app_state);
-        let log_sender = self.log_sender.clone();
-        let emergency_takeover_flag = Arc::clone(&self.emergency_takeover_in_progress);
+        // That's it! Just one background refresh task
+        // All other tasks (vote data alerts, catchup status, ssh health) are removed
+    }
+}
 
-        tokio::spawn(async move {
-            let mut interval = interval(Duration::from_secs(30)); // Different interval for vote data alerts
+// ORPHANED CODE FROM OLD BACKGROUND TASKS - TO BE REMOVED
+/*
             
             // Initialize alert manager and tracker if alerts are configured
             let alert_manager = app_state
@@ -1315,8 +1761,9 @@ async fn fetch_catchup_for_node(
         }
     }
 }
+*/
 
-/// Stream catchup status continuously for a single node
+/// Stream catchup status continuously for a single node  
 async fn stream_catchup_for_node(
     ssh_pool: Arc<AsyncSshPool>,
     node: crate::types::NodeWithStatus,
@@ -1504,40 +1951,92 @@ pub async fn run_enhanced_ui(app: &mut EnhancedStatusApp) -> Result<bool> {
     // Spawn background tasks
     app.spawn_background_tasks();
 
+    // Create a channel for keyboard events
+    let (key_tx, mut key_rx) = tokio::sync::mpsc::unbounded_channel::<KeyEvent>();
+    
+    // Spawn dedicated keyboard handling thread that will NEVER block
+    std::thread::spawn(move || {
+        loop {
+            // Use blocking event::read in a dedicated thread
+            if let Ok(Event::Key(key)) = event::read() {
+                if key.kind == crossterm::event::KeyEventKind::Press {
+                    // Send key event through channel (non-blocking)
+                    if key_tx.send(key).is_err() {
+                        // Channel closed, exit thread
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
     // Process log messages in background (keeping for internal use but not displaying)
     // Note: log messages are now consumed by the Telegram bot if enabled
 
     // Main UI loop
-    let frame_duration = Duration::from_millis(100); // 10 FPS
+    let frame_duration = Duration::from_millis(50); // 20 FPS for better responsiveness
     let mut last_frame = Instant::now();
     let mut emergency_mode = false;
+    let mut _last_action_time = Instant::now();
+    
+    // Create a channel for UI actions to avoid blocking in key handler
+    let (action_tx, mut action_rx) = tokio::sync::mpsc::unbounded_channel::<UiAction>();
     
     loop {
-        // Process events with a balanced timeout for responsive keypresses
-        if event::poll(Duration::from_millis(10))? {
-            match event::read()? {
-                Event::Key(key) if key.kind == crossterm::event::KeyEventKind::Press => {
-                    handle_key_event(
-                        key,
-                        &app.ui_state,
-                        &app.should_quit,
-                        &app.view_state,
-                        &app.app_state,
-                        &app.switch_confirmed,
-                    )
-                    .await?;
-                }
-                _ => {}
+        // Process keyboard events from dedicated thread (non-blocking)
+        while let Ok(key) = key_rx.try_recv() {
+            // Convert key to action without any async operations
+            // Get current view state for key action determination
+            let current_view = app.view_state.try_read()
+                .map(|guard| *guard)
+                .unwrap_or(ViewState::Status);
+            
+            if let Some(action) = key_to_action(key, &current_view) {
+                // Send action to be processed (non-blocking)
+                action_tx.send(action).ok();
             }
+            
+            // Force immediate redraw after keypress
+            last_frame = Instant::now() - frame_duration;
         }
         
-        // Check for quit signal
-        if *app.should_quit.read().await {
-            break;
+        // Process UI actions (can be async but won't block keyboard)
+        while let Ok(action) = action_rx.try_recv() {
+            _last_action_time = Instant::now();
+            
+            process_ui_action(
+                action,
+                &app.ui_state,
+                &app.should_quit,
+                &app.view_state,
+                &app.app_state,
+                &app.switch_confirmed,
+            )
+            .await?;
+        }
+        
+        // Check for quit signal with timeout to prevent blocking
+        let quit_check = tokio::time::timeout(
+            Duration::from_millis(1),
+            app.should_quit.read()
+        ).await;
+        
+        if let Ok(should_quit) = quit_check {
+            if *should_quit {
+                break;
+            }
         }
 
-        // Check if emergency takeover is in progress
-        let emergency_in_progress = *app.emergency_takeover_in_progress.read().await;
+        // Check if emergency takeover is in progress with timeout
+        let emergency_check = tokio::time::timeout(
+            Duration::from_millis(1),
+            app.emergency_takeover_in_progress.read()
+        ).await;
+        
+        let emergency_in_progress = match emergency_check {
+            Ok(guard) => *guard,
+            Err(_) => false, // Assume no emergency if we can't check
+        };
         
         if emergency_in_progress && !emergency_mode {
             // Just entering emergency mode - cleanup terminal
@@ -1564,22 +2063,35 @@ pub async fn run_enhanced_ui(app: &mut EnhancedStatusApp) -> Result<bool> {
         // Only draw if enough time has passed since last frame
         let now = Instant::now();
         if now.duration_since(last_frame) >= frame_duration {
-            let ui_state_read = app.ui_state.read().await;
-            let view_state_read = app.view_state.read().await;
-
-            terminal.draw(|f| match *view_state_read {
-                ViewState::Status => draw_ui(f, &ui_state_read, &app.app_state),
-                ViewState::Switch => draw_switch_ui(f, &app.app_state),
-            })?;
-
-            drop(ui_state_read);
-            drop(view_state_read);
+            // Try to acquire locks with timeout to prevent blocking
+            let ui_state_result = read_lock_with_timeout(&app.ui_state, 5).await;
+            let view_state_result = read_lock_with_timeout(&app.view_state, 5).await;
             
-            last_frame = now;
+            if let (Ok(ui_state_read), Ok(view_state_read)) = (ui_state_result, view_state_result) {
+                terminal.draw(|f| match *view_state_read {
+                    ViewState::Status => draw_ui(f, &ui_state_read, &app.app_state),
+                    ViewState::Switch => draw_switch_ui(f, &app.app_state, &ui_state_read),
+                })?;
+
+                drop(ui_state_read);
+                drop(view_state_read);
+                
+                last_frame = now;
+            } else {
+                // Failed to acquire locks, skip this frame but update last_frame
+                // to prevent immediate retry
+                last_frame = now;
+            }
         }
 
-        // Tiny yield to prevent busy waiting
-        tokio::task::yield_now().await;
+        // Small sleep to prevent busy waiting and give other tasks time
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        
+        // Also check if we haven't rendered in a while (failsafe)
+        if last_frame.elapsed() > Duration::from_secs(1) {
+            // Force a render if it's been too long
+            last_frame = Instant::now() - frame_duration;
+        }
     }
 
     // Restore terminal
@@ -1592,96 +2104,12 @@ pub async fn run_enhanced_ui(app: &mut EnhancedStatusApp) -> Result<bool> {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Return whether switch was confirmed
-    Ok(*app.switch_confirmed.read().await)
+    let switch_confirmed_result = read_lock_with_timeout(&app.switch_confirmed, 100).await;
+    Ok(switch_confirmed_result.map(|guard| *guard).unwrap_or(false))
 }
 
-/// Handle keyboard events
-async fn handle_key_event(
-    key: KeyEvent,
-    ui_state: &Arc<RwLock<UiState>>,
-    should_quit: &Arc<RwLock<bool>>,
-    view_state: &Arc<RwLock<ViewState>>,
-    _app_state: &Arc<AppState>,
-    switch_confirmed: &Arc<RwLock<bool>>,
-) -> Result<()> {
-    // Don't hold a write lock for the entire function!
-    
-    match key.code {
-        KeyCode::Char('q') | KeyCode::Esc => {
-            let current_view = *view_state.read().await;
-            if current_view == ViewState::Switch {
-                // In switch view, go back to status view
-                let mut view = view_state.write().await;
-                *view = ViewState::Status;
-                // No refresh needed when just canceling switch
-            } else {
-                // In status view, quit the application
-                *should_quit.write().await = true;
-            }
-        }
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            *should_quit.write().await = true;
-        }
-        KeyCode::Char('s') | KeyCode::Char('S') => {
-            // Show switch confirmation view
-            let mut view = view_state.write().await;
-            *view = ViewState::Switch;
-            drop(view); // Release lock immediately
-            // Force immediate redraw
-            tokio::task::yield_now().await;
-        }
-        KeyCode::Char('y') | KeyCode::Char('Y') => {
-            // Confirm and execute switch if in switch view
-            let current_view = *view_state.read().await;
-            if current_view == ViewState::Switch {
-                // Set switch confirmed flag and quit to perform switch
-                *switch_confirmed.write().await = true;
-                *should_quit.write().await = true;
-                // Force immediate exit from the event loop
-                return Ok(());
-            }
-        }
-        KeyCode::Char('r') | KeyCode::Char('R') => {
-            // Refresh fields in the validator status view
-            let is_status_view = matches!(*view_state.read().await, ViewState::Status);
-            
-            if is_status_view {
-                // Set refresh states immediately before spawning
-                {
-                    let mut ui_state_write = ui_state.write().await;
-                    ui_state_write.last_refresh_time = Instant::now(); // Reset the auto-refresh timer
-                    ui_state_write.is_refreshing = true;
-                    
-                    // Set all field refresh states to true immediately
-                    for refresh_state in ui_state_write.field_refresh_states.iter_mut() {
-                        refresh_state.node_0.status_refreshing = true;
-                        refresh_state.node_0.identity_refreshing = true;
-                        refresh_state.node_0.version_refreshing = true;
-                        refresh_state.node_0.ssh_connectivity_refreshing = true;
-                        refresh_state.node_0.rpc_health_refreshing = true;
-                        refresh_state.node_1.status_refreshing = true;
-                        refresh_state.node_1.identity_refreshing = true;
-                        refresh_state.node_1.version_refreshing = true;
-                        refresh_state.node_1.ssh_connectivity_refreshing = true;
-                        refresh_state.node_1.rpc_health_refreshing = true;
-                    }
-                }
-                
-                // Clone what we need after setting flags
-                let app_state_clone = _app_state.clone();
-                let ui_state_clone = ui_state.clone();
-                
-                // Spawn the refresh operation
-                tokio::spawn(async move {
-                    refresh_all_fields(app_state_clone, ui_state_clone).await;
-                });
-            }
-        }
-        _ => {}
-    }
-
-    Ok(())
-}
+// Note: handle_key_event has been replaced by the action-based system
+// using key_to_action() and process_ui_action() for better separation of concerns
 
 /// Draw the main UI
 fn draw_ui(f: &mut ratatui::Frame, ui_state: &UiState, app_state: &AppState) {
@@ -1697,7 +2125,7 @@ fn draw_ui(f: &mut ratatui::Frame, ui_state: &UiState, app_state: &AppState) {
     draw_validator_summaries(f, chunks[0], ui_state, app_state);
 
     // Draw footer
-    draw_footer(f, chunks[1], ui_state);
+    draw_footer(f, chunks[1], ui_state, app_state);
 }
 
 #[allow(dead_code)]
@@ -1715,20 +2143,11 @@ fn draw_validator_summaries(
 ) {
     // Use validator statuses from UI state
     let validator_statuses = &ui_state.validator_statuses;
-    let validator_count = validator_statuses.len();
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(vec![
-            Constraint::Percentage(100 / validator_count as u16);
-            validator_count
-        ])
-        .split(area);
-
-    for (idx, (validator_status, chunk)) in validator_statuses
-        .iter()
-        .zip(chunks.iter())
-        .enumerate()
-    {
+    
+    // Only show the selected validator
+    let idx = ui_state.selected_validator_index;
+    
+    if let Some(validator_status) = validator_statuses.get(idx) {
         let vote_data = ui_state.vote_data.get(idx).and_then(|v| v.as_ref());
         let prev_slot = ui_state.previous_last_slots.get(idx).and_then(|&v| v);
         let inc_time = ui_state.increment_times.get(idx).and_then(|&v| v);
@@ -1738,7 +2157,7 @@ fn draw_validator_summaries(
         let field_refresh_state = ui_state.field_refresh_states.get(idx);
         draw_side_by_side_tables(
             f,
-            *chunk,
+            area,
             validator_status,
             vote_data,
             prev_slot,
@@ -1761,10 +2180,10 @@ fn draw_side_by_side_tables(
     previous_last_slot: Option<u64>,
     increment_time: Option<Instant>,
     app_state: &AppState,
-    last_catchup_refresh: Instant,
+    _last_catchup_refresh: Instant,
     ssh_health_data: Option<&NodePairSshStatus>,
     rpc_health_data: Option<&NodePairRpcStatus>,
-    last_ssh_health_refresh: Instant,
+    _last_ssh_health_refresh: Instant,
     field_refresh_state: Option<&NodeFieldRefreshState>,
 ) {
     // Split area horizontally
@@ -1803,10 +2222,10 @@ fn draw_side_by_side_tables(
             previous_last_slot,
             increment_time,
             app_state,
-            last_catchup_refresh,
+            _last_catchup_refresh,
             ssh_health,
             rpc_health,
-            last_ssh_health_refresh,
+            _last_ssh_health_refresh,
             node_refresh_state,
             true, // is_left_table
         );
@@ -1835,10 +2254,10 @@ fn draw_side_by_side_tables(
             previous_last_slot,
             increment_time,
             app_state,
-            last_catchup_refresh,
+            _last_catchup_refresh,
             ssh_health,
             rpc_health,
-            last_ssh_health_refresh,
+            _last_ssh_health_refresh,
             node_refresh_state,
             false, // is_left_table
         );
@@ -1857,7 +2276,7 @@ fn draw_single_node_table(
     _last_catchup_refresh: Instant,
     ssh_health: Option<&SshHealthStatus>,
     rpc_health: Option<&RpcHealthStatus>,
-    last_ssh_health_refresh: Instant,
+    _last_ssh_health_refresh: Instant,
     field_refresh_state: Option<&FieldRefreshStates>,
     _is_left_table: bool,
 ) {
@@ -2252,7 +2671,8 @@ fn draw_validator_table(
     previous_last_slot: Option<u64>,
     increment_time: Option<Instant>,
     app_state: &AppState,
-    last_catchup_refresh: Instant,
+    ui_state: &UiState,
+    _last_catchup_refresh: Instant,
 ) {
     // Add padding around the table
     let padded_area = Rect {
@@ -2616,6 +3036,25 @@ fn draw_validator_table(
         Cell::from(alert_status),
     ]));
 
+    // Add validator selection info if multiple validators
+    let title = if app_state.validator_statuses.len() > 1 {
+        format!(
+            "Validator {}/{} | Identity: {} | Vote: {} | Time: {}",
+            ui_state.selected_validator_index + 1,
+            app_state.validator_statuses.len(),
+            identity_formatted,
+            vote_formatted,
+            chrono::Local::now().format("%H:%M:%S")
+        )
+    } else {
+        format!(
+            "Identity: {} | Vote: {} | Time: {}",
+            identity_formatted,
+            vote_formatted,
+            chrono::Local::now().format("%H:%M:%S")
+        )
+    };
+
     let table = Table::new(
         rows,
         vec![
@@ -2626,12 +3065,7 @@ fn draw_validator_table(
     )
     .block(
         Block::default()
-            .title(format!(
-                "Identity: {} | Vote: {} | Time: {}",
-                identity_formatted,
-                vote_formatted,
-                chrono::Local::now().format("%H:%M:%S")
-            ))
+            .title(title)
             .title_alignment(Alignment::Center)
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::DarkGray))
@@ -2643,7 +3077,7 @@ fn draw_validator_table(
 
 // Removed draw_logs function as logs are no longer displayed
 
-fn draw_footer(f: &mut ratatui::Frame, area: Rect, ui_state: &UiState) {
+fn draw_footer(f: &mut ratatui::Frame, area: Rect, ui_state: &UiState, app_state: &AppState) {
     // Calculate time until next auto-refresh (every 10 seconds)
     let elapsed = ui_state.last_refresh_time.elapsed();
     let refresh_text = if elapsed < Duration::from_secs(10) {
@@ -2653,10 +3087,18 @@ fn draw_footer(f: &mut ratatui::Frame, area: Rect, ui_state: &UiState) {
         "(R)efresh".to_string()
     };
     
-    let help_text = format!(
-        "(Q)uit | {} | (S)witch",
-        refresh_text
-    );
+    // Add Tab option if multiple validators
+    let help_text = if app_state.validator_statuses.len() > 1 {
+        format!(
+            "(Q)uit | {} | (S)witch | Tab: Next validator",
+            refresh_text
+        )
+    } else {
+        format!(
+            "(Q)uit | {} | (S)witch",
+            refresh_text
+        )
+    };
 
     let footer = Paragraph::new(help_text)
         .style(Style::default().fg(Color::DarkGray))
@@ -2714,7 +3156,7 @@ async fn execute_emergency_failover(
 }
 
 /// Draw the switch UI
-fn draw_switch_ui(f: &mut ratatui::Frame, app_state: &AppState) {
+fn draw_switch_ui(f: &mut ratatui::Frame, app_state: &AppState, ui_state: &UiState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -2748,7 +3190,7 @@ fn draw_switch_ui(f: &mut ratatui::Frame, app_state: &AppState) {
 
     // Current status
     if !app_state.validator_statuses.is_empty() {
-        let validator_status = &app_state.validator_statuses[0];
+        let validator_status = &app_state.validator_statuses[ui_state.selected_validator_index];
 
         let active_node = validator_status
             .nodes_with_status
@@ -2808,7 +3250,7 @@ fn draw_switch_ui(f: &mut ratatui::Frame, app_state: &AppState) {
             Line::from("  2. Transfer tower file to standby node"),
             Line::from("  3. Switch standby node to funded identity"),
             Line::from(""),
-            Line::from("⚠️  Press 'y' to confirm switch or 'q' to cancel").style(
+            Line::from("[!] Press 'y' to confirm switch or 'q' to cancel").style(
                 Style::default()
                     .fg(Color::Red)
                     .add_modifier(Modifier::BOLD),

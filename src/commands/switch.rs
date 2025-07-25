@@ -60,8 +60,8 @@ pub async fn switch_command_with_confirmation(
         return Err(anyhow!("No validators configured"));
     }
 
-    // For now, use the first validator
-    let validator_status = &app_state.validator_statuses[0];
+    // Use the selected validator
+    let validator_status = &app_state.validator_statuses[app_state.selected_validator_index];
     let validator_pair = &validator_status.validator_pair;
 
     // Find active and standby nodes with full status information
@@ -240,7 +240,7 @@ pub async fn switch_command_with_confirmation(
             let mut active_idx = None;
             let mut standby_idx = None;
             
-            for (idx, node_with_status) in app_state.validator_statuses[0].nodes_with_status.iter().enumerate() {
+            for (idx, node_with_status) in app_state.validator_statuses[app_state.selected_validator_index].nodes_with_status.iter().enumerate() {
                 match node_with_status.status {
                     crate::types::NodeStatus::Active => active_idx = Some(idx),
                     crate::types::NodeStatus::Standby => standby_idx = Some(idx),
@@ -250,15 +250,23 @@ pub async fn switch_command_with_confirmation(
             
             // Swap the statuses
             if let (Some(active), Some(standby)) = (active_idx, standby_idx) {
-                app_state.validator_statuses[0].nodes_with_status[active].status = crate::types::NodeStatus::Standby;
-                app_state.validator_statuses[0].nodes_with_status[standby].status = crate::types::NodeStatus::Active;
+                app_state.validator_statuses[app_state.selected_validator_index].nodes_with_status[active].status = crate::types::NodeStatus::Standby;
+                app_state.validator_statuses[app_state.selected_validator_index].nodes_with_status[standby].status = crate::types::NodeStatus::Active;
             }
         }
         
         println_if_not_silent!();
         println_if_not_silent!("{}", "Press any key to view status...".dimmed());
         if !is_silent_mode() {
-            let _ = std::io::stdin().read_line(&mut String::new());
+            // Actually wait for ANY key press, not just Enter
+            use crossterm::event::{self, Event};
+            crossterm::terminal::enable_raw_mode().ok();
+            loop {
+                if let Ok(Event::Key(_)) = event::read() {
+                    break;
+                }
+            }
+            crossterm::terminal::disable_raw_mode().ok();
         }
     }
 
@@ -982,7 +990,15 @@ impl SwitchManager {
             println_if_not_silent!();
             println_if_not_silent!("{}", "Press any key to continue...".dimmed());
             if !is_silent_mode() {
-                let _ = std::io::stdin().read_line(&mut String::new());
+                // Actually wait for ANY key press, not just Enter
+                use crossterm::event::{self, Event};
+                crossterm::terminal::enable_raw_mode().ok();
+                loop {
+                    if let Ok(Event::Key(_)) = event::read() {
+                        break;
+                    }
+                }
+                crossterm::terminal::disable_raw_mode().ok();
             }
         } else {
             println_if_not_silent!("✅ Validator identity switch completed successfully");

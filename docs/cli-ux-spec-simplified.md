@@ -236,7 +236,7 @@ $ svs monitor
 ┌─────────────────────────────────────────────────────────────┐
 │  🟢 Solana Validator Switch CLI v1.0.0                     │
 │  🔒 SSH Key Auth Active                                     │
-│  🔄 Auto-refresh: ON (every 2s) | Last: 2024-07-06 15:42:33│
+│  🔄 Auto-refresh: ON (every 10s) | Last: 2024-07-06 15:42:33│
 └─────────────────────────────────────────────────────────────┘
 
 ╭─ PRIMARY NODE ──────────────────╮ ╭─ BACKUP NODE ───────────────────╮
@@ -246,13 +246,14 @@ $ svs monitor
 │                                 │ │                                 │
 │  🎯 Slot: 245,123,890           │ │  🎯 Slot: 245,123,885           │
 │  📊 Vote Dist: 1                │ │  📊 Vote Dist: 6                │
-│  💚 Health: 🟢 Excellent        │ │  💚 Health: 🟢 Good             │
-│  ⏱️  Last Vote: 2s ago          │ │  🔄 Catchup: ✅ Synced          │
+│  💚 Node Health: 🟢 Healthy     │ │  💚 Node Health: 🟢 Healthy     │
+│  ⏱️  Last Vote: 2s ago          │ │  ⏱️  Last Vote: 8s ago          │
 │  📈 Uptime: 99.8%               │ │  📈 Uptime: 99.9%               │
 │                                 │ │                                 │
 │  🔑 Identity: B7Kx...9Mz4       │ │  🔑 Identity: C8Ly...1Az5       │
 │  💰 Status: FUNDED   ✅         │ │  💰 Status: UNFUNDED ❌         │
 │  🗳️  Voting: ACTIVE  ✅         │ │  🗳️  Voting: STANDBY 🟡         │
+│  🔗 SSH: ✅ Connected           │ │  🔗 SSH: ✅ Connected           │
 │                                 │ │                                 │
 │  💾 Disk: 89% (⚠️ Warning)      │ │  💾 Disk: 45% ✅               │
 │  🧠 RAM:  67% ✅                │ │  🧠 RAM:  72% ✅               │
@@ -277,11 +278,11 @@ $ svs monitor
 └─────────────────────────────────────────────────────────────┘
 
 ┌─ COMMANDS ──────────────────────────────────────────────────┐
-│  s  Switch validator                  q  Quit                    │
-│  r  Refresh now                      c  Configuration            │
-│  h  Health details                   l  Logs                     │
-│  t  Toggle auto-refresh              w  Watch mode              │
-│  ?  Help                             x  Exit CLI                 │
+│  (S)witch validator                  (Q)uit                     │
+│  (R)efresh now (in 8s)              (C)onfiguration             │
+│  (H)ealth details                   (L)ogs                      │
+│  (T)oggle auto-refresh              (W)atch mode               │
+│  (?)  Help                          (X)  Exit CLI               │
 └─────────────────────────────────────────────────────────────┘
 
 Command: _
@@ -323,7 +324,7 @@ Select option [1-6]:
 Command: t
 
 🔄 Auto-refresh toggled OFF
-⏱️  Refresh interval: 2 seconds
+⏱️  Refresh interval: 10 seconds
 📊 Last refresh: 15:42:33
 
 Press any key to continue...
@@ -585,7 +586,7 @@ svs config --get nodes.primary.host
     "endpoint": "https://api.mainnet-beta.solana.com"
   },
   "monitoring": {
-    "interval": 2,
+    "interval": 10,
     "healthThreshold": 5,
     "readinessThreshold": 10
   },

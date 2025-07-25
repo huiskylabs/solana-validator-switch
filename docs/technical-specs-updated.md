@@ -234,28 +234,30 @@ interface MonitoringData {
   identity: string;
   version: string;
   client: ValidatorClient;
-  resources: SystemResources;
+  sshConnectivity: boolean;
+  rpcHealth: boolean;
 }
 
 class Monitor {
   private async collectNodeData(ssh: SSHConnection): Promise<MonitoringData> {
     // Parallel data collection for efficiency
-    const [slot, voteInfo, health, resources] = await Promise.all([
+    const [slot, voteInfo, identity, rpcHealth] = await Promise.all([
       this.getSlot(ssh),
       this.getVoteInfo(ssh),
-      this.getHealth(ssh),
-      this.getSystemResources(ssh)
+      this.getIdentity(ssh),
+      this.getRpcHealth(ssh)
     ]);
     
     return {
       slot,
       voteDistance: voteInfo.distance,
       lastVoteTime: voteInfo.lastVote,
-      health: this.calculateHealth(voteInfo, resources),
-      identity: voteInfo.identity,
-      version: health.version,
-      client: this.detectClient(health.version),
-      resources
+      health: this.calculateHealth(voteInfo),
+      identity: identity.identity,
+      version: identity.version,
+      client: this.detectClient(identity.version),
+      sshConnectivity: true,  // If we got here, SSH is connected
+      rpcHealth
     };
   }
 }
@@ -272,10 +274,11 @@ calculateHealth(data: MonitoringData): HealthScore {
   else if (data.voteDistance <= 50) score -= 30;
   else score -= 50;
   
-  // Resource usage impact
-  if (data.resources.cpu > 90) score -= 20;
-  if (data.resources.memory > 90) score -= 20;
-  if (data.resources.disk > 85) score -= 10;
+  // SSH connectivity impact
+  if (!data.sshConnectivity) score -= 40;
+  
+  // RPC health impact
+  if (!data.rpcHealth) score -= 30;
   
   // Last vote time impact
   const secondsSinceVote = Date.now() / 1000 - data.lastVoteTime;
@@ -354,34 +357,63 @@ class ConfigManager {
 ## Terminal UI Architecture
 
 ### **Interactive Dashboard Stack:**
-```typescript
-// Using blessed for terminal UI
-interface DashboardComponents {
-  screen: blessed.Widgets.Screen;
-  primaryBox: blessed.Widgets.BoxElement;
-  backupBox: blessed.Widgets.BoxElement;
-  statusBar: blessed.Widgets.BoxElement;
-  logWindow: blessed.Widgets.LogElement;
-  helpModal: blessed.Widgets.BoxElement;
+```rust
+// Using Ratatui for terminal UI with auto-refresh countdown
+pub struct DashboardState {
+    pub validators: Vec<ValidatorInfo>,
+    pub last_refresh: Instant,
+    pub auto_refresh_interval: Duration,
+    pub ssh_connectivity: HashMap<String, bool>,
+    pub rpc_health: HashMap<String, bool>,
 }
 
-class Dashboard {
-  private components: DashboardComponents;
-  private updateInterval: NodeJS.Timer;
-  
-  async start(): Promise<void> {
-    this.createLayout();
-    this.bindKeyboardShortcuts();
-    this.startDataUpdates();
-    this.screen.render();
-  }
-  
-  private bindKeyboardShortcuts(): void {
-    this.screen.key(['s'], () => this.initiateSwitch());
-    this.screen.key(['r'], () => this.refreshNow());
-    this.screen.key(['h'], () => this.toggleHelp());
-    this.screen.key(['q', 'C-c'], () => this.quit());
-  }
+impl Dashboard {
+    pub async fn run(&mut self) -> Result<()> {
+        // Setup terminal
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+        
+        // Main event loop
+        loop {
+            // Event polling with 10ms timeout for responsive keypresses
+            if event::poll(Duration::from_millis(10))? {
+                match event::read()? {
+                    Event::Key(key) if key.code == KeyCode::Char('q') => break,
+                    Event::Key(key) if key.code == KeyCode::Char('r') => {
+                        self.refresh_all_fields().await?;
+                    },
+                    Event::Key(key) if key.code == KeyCode::Char('s') => {
+                        self.initiate_switch().await?;
+                    },
+                    _ => {}
+                }
+            }
+            
+            // Auto-refresh check
+            if self.last_refresh.elapsed() >= Duration::from_secs(10) {
+                self.refresh_all_fields().await?;
+            }
+            
+            // Render UI with countdown
+            self.render_ui()?;
+        }
+        
+        Ok(())
+    }
+    
+    fn render_footer(&self, area: Rect, buf: &mut Buffer) {
+        let time_until_refresh = Duration::from_secs(10) - self.last_refresh.elapsed();
+        let footer_text = format!(
+            "(Q)uit | (R)efresh (in {}s) | (S)witch",
+            time_until_refresh.as_secs()
+        );
+        
+        Paragraph::new(footer_text)
+            .style(Style::default().fg(Color::Gray))
+            .alignment(Alignment::Center)
+            .render(area, buf);
+    }
 }
 ```
 
@@ -489,10 +521,11 @@ class CommandBatcher {
 ## Expected Performance
 
 ### **Monitoring Mode:**
-- **Update frequency**: 2 seconds
-- **CPU usage**: <5%
-- **Memory usage**: ~50MB
-- **Network usage**: ~2KB/s
+- **Update frequency**: 10 seconds (with countdown timer)
+- **Manual refresh**: Instant via 'R' key
+- **CPU usage**: <3%
+- **Memory usage**: ~30MB
+- **Network usage**: ~1KB/s
 
 ### **Switch Operation:**
 - **Total time**: 30-45 seconds

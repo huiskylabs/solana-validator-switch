@@ -24,11 +24,21 @@ svs test-alert          # Test Telegram alerts
 
 The status command shows:
 - Validator type and version
-- Active/Standby status
+- Active/Standby status based on identity
+- Current validator identity
+- SSH connectivity status
+- RPC node health via getHealth
 - Vote status with slot info
-- Catchup status with countdown
 - Alert configuration
 - Swap readiness
+
+### Interactive Status Mode
+
+When in status view, use these keyboard shortcuts:
+- `(Q)uit` - Exit the status view
+- `(R)efresh` - Manually refresh all data immediately
+- `(S)witch` - Initiate validator switch
+- Auto-refresh occurs every 10 seconds with countdown timer in footer
 
 ## Switch Operation
 
@@ -42,6 +52,17 @@ Total time: ~1 second average
 
 ## Keyboard Shortcuts
 
-- `q` or `Esc` - Quit
+### Main Menu
 - `Enter` - Select menu item
-- Arrow keys - Navigate
+- Arrow keys - Navigate up/down
+- `q` or `Esc` - Quit
+
+### Status View
+- `Q` - Quit to main menu
+- `R` - Refresh all data immediately
+- `S` - Start switch process
+- `Esc` - Exit status view
+
+### Switch Confirmation
+- `y` - Confirm and proceed with switch
+- `q` or `Esc` - Cancel switch operation

@@ -109,22 +109,31 @@ You'll receive notifications for:
 - **RPC Connection Failures** (LOW PRIORITY): When RPC calls fail due to throttling or network issues
   - Triggers after 100 consecutive failures or 30 minutes of failures
   - Very loose thresholds to avoid noise
-- **Catchup Failures**: When standby node fails catchup 3 times in a row
 - **Switch Results**: Success/failure notifications with timing details
 
 ## Key Features
 
 - **Ultra-Fast Switching**: Get the fastest switch possible with optimized streaming operations
-- **Runtime Status Detection**: Automatic active/standby node detection using validator monitor
+- **Runtime Status Detection**: Automatic active/standby node detection using RPC calls
 - **SSH Connection Pooling**: Persistent connections with multiplexing for ultra-fast operations
 - **Optimized Tower Transfer**: Streaming base64 decode + dd for minimal latency
 - **Universal Support**: Works with Firedancer, Agave, Solana, and Jito validators
 - **Interactive Dashboard**: Real-time monitoring with Ratatui-based terminal UI
+  - Auto-refresh countdown timer shows time until next refresh
+  - Manual refresh (R key) with no cooldown
+  - SSH connectivity status monitoring
+  - RPC node health status via getHealth checks
+  - Responsive keyboard shortcuts (Q)uit, (R)efresh, (S)witch
 - **Telegram Alerts**: Real-time notifications for validator health and switch events
   - Delinquency alerts when validator stops voting
-  - Standby node catchup failure monitoring
   - Switch success/failure notifications
-- **Enhanced Status Display**: Improved UI with countdown timers and alert status
+  - SSH connection failure alerts (after 30 minutes)
+  - RPC connection failure alerts (after 30 minutes)
+- **Enhanced Status Display**: Streamlined UI with real-time updates
+  - Shows active/standby status based on identity
+  - Current validator identity display
+  - Version information for all validator types
+  - SSH connectivity and RPC health indicators
 
 ## Security
 

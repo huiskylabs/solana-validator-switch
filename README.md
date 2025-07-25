@@ -178,38 +178,9 @@ If SVS saves you time and SOL, consider:
 - [x] **Multi-validator support** - Manage multiple validator pairs with Tab key switching
 - [x] **Ultra-responsive UI** - Dedicated keyboard thread prevents blocking, action-based processing
 
-### 🚧 In Progress
-- [ ] **Auto-switch on failure** - Automatic failover when primary validator goes down
-- [ ] **Slack/Discord notifications** - Additional notification channels beyond Telegram
+- [x] **Auto-switch on failure** - Automatic failover when primary validator goes down
 
 Have ideas? [Open an issue](https://github.com/huiskylabs/solana-validator-switch/issues) or contribute!
-
-## Development
-
-### Pre-commit Hooks
-
-To ensure code quality and prevent CI failures, set up pre-commit hooks:
-
-```bash
-# Install pre-commit hooks
-./setup-hooks.sh
-
-# The hook will now run automatically on every commit
-git commit -m "Your commit message"
-
-# To bypass the hook in emergencies
-git commit --no-verify -m "Emergency commit"
-
-# To run checks manually
-.githooks/pre-commit
-```
-
-The pre-commit hook runs the exact same checks as GitHub Actions CI:
-- Code formatting check (`cargo fmt -- --check`)
-- Clippy linting (`cargo clippy -- -D warnings`)
-- Tests (`cargo test --verbose`)
-- Build verification (`cargo build --verbose --release`)
-- Security audit (`cargo audit`)
 
 ## License
 

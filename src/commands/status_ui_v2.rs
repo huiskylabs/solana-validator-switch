@@ -1,4 +1,5 @@
 use anyhow::Result;
+use crate::startup::check_node_swap_readiness;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     execute,
@@ -369,11 +370,13 @@ async fn handle_refresh_with_timeout(ui_state: &Arc<RwLock<UiState>>, app_state:
             refresh_state.node_0.version_refreshing = true;
             refresh_state.node_0.ssh_connectivity_refreshing = true;
             refresh_state.node_0.rpc_health_refreshing = true;
+            refresh_state.node_0.swap_readiness_refreshing = true;
             refresh_state.node_1.status_refreshing = true;
             refresh_state.node_1.identity_refreshing = true;
             refresh_state.node_1.version_refreshing = true;
             refresh_state.node_1.ssh_connectivity_refreshing = true;
             refresh_state.node_1.rpc_health_refreshing = true;
+            refresh_state.node_1.swap_readiness_refreshing = true;
         }
     }
     
@@ -421,11 +424,13 @@ async fn handle_validator_switch_with_timeout(
             refresh_state.node_0.version_refreshing = true;
             refresh_state.node_0.ssh_connectivity_refreshing = true;
             refresh_state.node_0.rpc_health_refreshing = true;
+            refresh_state.node_0.swap_readiness_refreshing = true;
             refresh_state.node_1.status_refreshing = true;
             refresh_state.node_1.identity_refreshing = true;
             refresh_state.node_1.version_refreshing = true;
             refresh_state.node_1.ssh_connectivity_refreshing = true;
             refresh_state.node_1.rpc_health_refreshing = true;
+            refresh_state.node_1.swap_readiness_refreshing = true;
         }
     }
     
@@ -522,6 +527,7 @@ pub struct FieldRefreshStates {
     pub health_refreshing: bool,
     pub ssh_connectivity_refreshing: bool,
     pub rpc_health_refreshing: bool,
+    pub swap_readiness_refreshing: bool,
 }
 
 impl Default for FieldRefreshStates {
@@ -534,6 +540,7 @@ impl Default for FieldRefreshStates {
             health_refreshing: false,
             ssh_connectivity_refreshing: false,
             rpc_health_refreshing: false,
+            swap_readiness_refreshing: false,
         }
     }
 }
@@ -805,11 +812,13 @@ impl EnhancedStatusApp {
                         refresh_state.node_0.version_refreshing = true;
                         refresh_state.node_0.ssh_connectivity_refreshing = true;
                         refresh_state.node_0.rpc_health_refreshing = true;
+                        refresh_state.node_0.swap_readiness_refreshing = true;
                         refresh_state.node_1.status_refreshing = true;
                         refresh_state.node_1.identity_refreshing = true;
                         refresh_state.node_1.version_refreshing = true;
                         refresh_state.node_1.ssh_connectivity_refreshing = true;
                         refresh_state.node_1.rpc_health_refreshing = true;
+                        refresh_state.node_1.swap_readiness_refreshing = true;
                     }
                 }
                 
@@ -2372,17 +2381,27 @@ fn draw_single_node_table(
     ]));
 
     // Swap readiness
+    let swap_ready_display = if field_refresh_state.map_or(false, |s| s.swap_readiness_refreshing) {
+        "🔄 Refreshing...".to_string()
+    } else {
+        match node.swap_ready {
+            Some(true) => "✅ Ready",
+            Some(false) => "❌ Not Ready",
+            None => "⏳ Checking..."
+        }.to_string()
+    };
+    
     rows.push(Row::new(vec![
         Cell::from("Swap Ready"),
-        Cell::from(if node.swap_ready.unwrap_or(false) {
-            "✅ Ready"
+        Cell::from(swap_ready_display.clone())
+        .style(Style::default().fg(if field_refresh_state.map_or(false, |s| s.swap_readiness_refreshing) {
+            Color::Cyan
         } else {
-            "❌ Not Ready"
-        })
-        .style(Style::default().fg(if node.swap_ready.unwrap_or(false) {
-            Color::Green
-        } else {
-            Color::Red
+            match node.swap_ready {
+                Some(true) => Color::Green,
+                Some(false) => Color::Red,
+                None => Color::Yellow
+            }
         })),
     ]));
 
@@ -2846,25 +2865,25 @@ fn draw_validator_table(
         // Swap readiness row
         rows.push(Row::new(vec![
             Cell::from("Swap Ready"),
-            Cell::from(if node_0.swap_ready.unwrap_or(false) {
-                "✅ Ready"
-            } else {
-                "❌ Not Ready"
+            Cell::from(match node_0.swap_ready {
+                Some(true) => "✅ Ready",
+                Some(false) => "❌ Not Ready",
+                None => "⏳ Checking..."
             })
-            .style(Style::default().fg(if node_0.swap_ready.unwrap_or(false) {
-                Color::Green
-            } else {
-                Color::Red
+            .style(Style::default().fg(match node_0.swap_ready {
+                Some(true) => Color::Green,
+                Some(false) => Color::Red,
+                None => Color::Yellow
             })),
-            Cell::from(if node_1.swap_ready.unwrap_or(false) {
-                "✅ Ready"
-            } else {
-                "❌ Not Ready"
+            Cell::from(match node_1.swap_ready {
+                Some(true) => "✅ Ready",
+                Some(false) => "❌ Not Ready",
+                None => "⏳ Checking..."
             })
-            .style(Style::default().fg(if node_1.swap_ready.unwrap_or(false) {
-                Color::Green
-            } else {
-                Color::Red
+            .style(Style::default().fg(match node_1.swap_ready {
+                Some(true) => Color::Green,
+                Some(false) => Color::Red,
+                None => Color::Yellow
             })),
         ]));
 
@@ -3478,6 +3497,22 @@ async fn refresh_validator_fields(
                 ui_state_clone,
             ).await;
         });
+        
+        // Refresh swap readiness
+        let app_state_clone = app_state.clone();
+        let ui_state_clone = ui_state.clone();
+        
+        tokio::spawn(async move {
+            // Small delay to ensure UI shows loading state
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            
+            refresh_swap_readiness(
+                app_state_clone,
+                ui_state_clone,
+                validator_idx,
+                node_idx,
+            ).await;
+        });
     }
 }
 
@@ -3935,6 +3970,68 @@ async fn refresh_node_version(
 }
 
 /// Entry point for the enhanced UI
+async fn refresh_swap_readiness(
+    app_state: Arc<AppState>,
+    ui_state: Arc<RwLock<UiState>>,
+    validator_idx: usize,
+    node_idx: usize,
+) {
+    // Set refreshing state
+    {
+        let mut ui_write = ui_state.write().await;
+        if validator_idx < ui_write.field_refresh_states.len() {
+            if node_idx == 0 {
+                ui_write.field_refresh_states[validator_idx].node_0.swap_readiness_refreshing = true;
+            } else {
+                ui_write.field_refresh_states[validator_idx].node_1.swap_readiness_refreshing = true;
+            }
+        }
+    }
+    
+    // Perform the swap readiness check
+    if validator_idx < app_state.validator_statuses.len() {
+        let validator_status = &app_state.validator_statuses[validator_idx];
+        if node_idx < validator_status.nodes_with_status.len() {
+            let node = &validator_status.nodes_with_status[node_idx];
+            let ssh_key = app_state.detected_ssh_keys.get(&node.node.host);
+            
+            if let Some(ssh_key) = ssh_key {
+                // Check swap readiness for the node
+                let (ready, issues) = check_node_swap_readiness(
+                    &app_state.ssh_pool,
+                    &node.node,
+                    ssh_key,
+                    node.ledger_path.as_ref(),
+                    Some(node.status == crate::types::NodeStatus::Standby),
+                ).await;
+                let (swap_ready, swap_issues) = (Some(ready), issues);
+                
+                // Update the node's swap readiness in UI state
+                {
+                    let mut ui_write = ui_state.write().await;
+                    if validator_idx < ui_write.validator_statuses.len() && 
+                       node_idx < ui_write.validator_statuses[validator_idx].nodes_with_status.len() {
+                        ui_write.validator_statuses[validator_idx].nodes_with_status[node_idx].swap_ready = swap_ready;
+                        ui_write.validator_statuses[validator_idx].nodes_with_status[node_idx].swap_issues = swap_issues;
+                    }
+                }
+            }
+        }
+    }
+    
+    // Clear refreshing state
+    {
+        let mut ui_write = ui_state.write().await;
+        if validator_idx < ui_write.field_refresh_states.len() {
+            if node_idx == 0 {
+                ui_write.field_refresh_states[validator_idx].node_0.swap_readiness_refreshing = false;
+            } else {
+                ui_write.field_refresh_states[validator_idx].node_1.swap_readiness_refreshing = false;
+            }
+        }
+    }
+}
+
 pub async fn show_enhanced_status_ui(app_state: &AppState) -> Result<()> {
     // Clear any startup output before starting the TUI
     print!("\x1B[2J\x1B[1;1H"); // Clear screen and move cursor to top

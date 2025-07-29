@@ -24,6 +24,10 @@ mod alert_integration_tests;
 mod status_ui_alert_tests;
 #[cfg(test)]
 mod auto_failover_tests;
+#[cfg(test)]
+mod startup_validation_tests;
+#[cfg(test)]
+mod switch_validation_tests;
 mod commands;
 mod config;
 mod emergency_failover;

@@ -112,6 +112,101 @@ pub async fn switch_command_with_confirmation(
         println_if_not_silent!();
     }
 
+    // Targeted validation: Check only what's needed for this specific switch
+    let mut validation_errors = Vec::new();
+    let mut validation_warnings = Vec::new();
+
+    // Check target (standby) node - this is critical for switch success
+    if standby_node_with_status.status == crate::types::NodeStatus::Unknown {
+        validation_errors.push(format!(
+            "Target node {} is unreachable (SSH connection failed)",
+            standby_node_with_status.node.label
+        ));
+    } else {
+        // Since we skip swap readiness checks at startup, we need to check now
+        // For standby nodes, we check all requirements except tower file
+        println_if_not_silent!("🔍 Checking target node swap readiness...");
+        
+        if let Some(ssh_key) = app_state.detected_ssh_keys.get(&standby_node_with_status.node.host) {
+            let (is_ready, issues) = crate::startup::check_node_swap_readiness(
+                &app_state.ssh_pool,
+                &standby_node_with_status.node,
+                ssh_key,
+                standby_node_with_status.ledger_path.as_ref(),
+                Some(true)  // is_standby = true, skip tower check
+            ).await;
+            
+            if !is_ready {
+                validation_errors.push(format!(
+                    "Target node {} is not swap-ready: {}",
+                    standby_node_with_status.node.label,
+                    issues.join(", ")
+                ));
+            }
+        }
+    }
+
+    // Check if we can get SSH key for target node
+    if !app_state.detected_ssh_keys.contains_key(&standby_node_with_status.node.host) {
+        validation_errors.push(format!(
+            "No SSH key available for target node {}",
+            standby_node_with_status.node.label
+        ));
+    }
+
+    // Check source (active) node - this is preferred but not critical (emergency scenarios)
+    if active_node_with_status.status == crate::types::NodeStatus::Unknown {
+        validation_warnings.push(format!(
+            "Source node {} is unreachable - will skip optional steps (tower copy, graceful shutdown)",
+            active_node_with_status.node.label
+        ));
+    }
+    // Skip detailed swap readiness check for source node - not critical for switch
+
+    // Check if we can get SSH key for source node
+    if !app_state.detected_ssh_keys.contains_key(&active_node_with_status.node.host) {
+        validation_warnings.push(format!(
+            "No SSH key available for source node {} - will skip optional steps",
+            active_node_with_status.node.label
+        ));
+    }
+
+    // Show validation results
+    if !validation_errors.is_empty() {
+        println_if_not_silent!("\n{}", "❌ SWITCH VALIDATION FAILED".red().bold());
+        println_if_not_silent!("\nCritical issues that prevent switching:\n");
+        for error in &validation_errors {
+            println_if_not_silent!("  • {}", error.red());
+        }
+        println_if_not_silent!("\n{}", "Please resolve these issues before attempting to switch.".yellow());
+        return Err(anyhow::anyhow!("Switch validation failed: {} critical issue(s)", validation_errors.len()));
+    }
+
+    if !validation_warnings.is_empty() {
+        println_if_not_silent!("\n{}", "⚠️  SWITCH WARNINGS".yellow().bold());
+        println_if_not_silent!("\nNon-critical issues (switch will continue with limitations):\n");
+        for warning in &validation_warnings {
+            println_if_not_silent!("  • {}", warning.yellow());
+        }
+        
+        if require_confirmation && !dry_run {
+            println_if_not_silent!("\n{}", "Do you want to continue with the switch despite these warnings?".bright_yellow());
+            
+            // Actually wait for ANY key press, not just Enter
+            use crossterm::event::{self, Event};
+            crossterm::terminal::enable_raw_mode().ok();
+            loop {
+                if let Ok(Event::Key(_)) = event::read() {
+                    break;
+                }
+            }
+            crossterm::terminal::disable_raw_mode().ok();
+        }
+        println_if_not_silent!();
+    }
+
+    println_if_not_silent!("✅ Switch validation passed - proceeding with operation\n");
+
     let mut switch_manager = SwitchManager::new(
         active_node_with_status.clone(),
         standby_node_with_status.clone(),

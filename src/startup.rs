@@ -1276,19 +1276,13 @@ async fn detect_node_statuses_with_progress(
 
             progress_bar.suspend(|| {
                 println!(
-                    "    {} {} - {} {}",
+                    "    {} {} - {}",
                     status_emoji,
                     status_text,
                     version
                         .as_ref()
                         .unwrap_or(&"Unknown version".to_string())
-                        .bright_cyan(),
-                    if swap_ready.unwrap_or(false) {
-                        "✅ Swap Ready"
-                    } else {
-                        "❌ Not Ready"
-                    }
-                    .dimmed()
+                        .bright_cyan()
                 );
             });
 

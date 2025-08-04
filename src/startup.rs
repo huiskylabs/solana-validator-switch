@@ -245,12 +245,12 @@ pub async fn run_startup_checklist() -> Result<Option<crate::AppState>> {
                 detected_ssh_keys,
                 selected_validator_index: 0, // Default to first validator
             };
-            
+
             // Auto-failover safety checks are now done per-validator during status detection
 
             // Show "press any key to continue" prompt after all checks pass
             show_ready_prompt().await;
-            
+
             Ok(Some(app_state))
         } else {
             println!("\n{}", "❌ Validator status detection failed.".red().bold());
@@ -1296,29 +1296,45 @@ async fn detect_node_statuses_with_progress(
         if let Some(ref alert_config) = config.alert_config {
             if alert_config.enabled && alert_config.auto_failover_enabled {
                 progress_bar.suspend(|| {
-                    println!("\n  🔍 Checking auto-failover safety requirements for Validator {}...", validator_index + 1);
+                    println!(
+                        "\n  🔍 Checking auto-failover safety requirements for Validator {}...",
+                        validator_index + 1
+                    );
                 });
-                
+
                 // Check all nodes for this validator
                 for node_with_status in &nodes_with_status {
                     if let Some(ssh_key) = detected_ssh_keys.get(&node_with_status.node.host) {
-                        logger.log(&format!("Checking identity configuration for {}", node_with_status.node.label))?;
-                        
+                        logger.log(&format!(
+                            "Checking identity configuration for {}",
+                            node_with_status.node.label
+                        ))?;
+
                         match check_node_startup_identity_for_auto_failover(
                             &node_with_status,
                             ssh_pool,
                             ssh_key,
                             logger,
-                        ).await {
+                        )
+                        .await
+                        {
                             Ok(_) => {
-                                logger.log(&format!("✅ {} passed identity check", node_with_status.node.label))?;
+                                logger.log(&format!(
+                                    "✅ {} passed identity check",
+                                    node_with_status.node.label
+                                ))?;
                                 progress_bar.suspend(|| {
-                                    println!("    ✅ {} configured with safe startup identity", node_with_status.node.label);
+                                    println!(
+                                        "    ✅ {} configured with safe startup identity",
+                                        node_with_status.node.label
+                                    );
                                 });
-                            },
+                            }
                             Err(e) => {
-                                let error_msg = format!("Could not verify identity configuration for {}: {}", 
-                                    node_with_status.node.label, e);
+                                let error_msg = format!(
+                                    "Could not verify identity configuration for {}: {}",
+                                    node_with_status.node.label, e
+                                );
                                 logger.log_error("Identity Check", &error_msg)?;
                                 progress_bar.suspend(|| {
                                     println!("    ⚠️  Warning: {}", error_msg);
@@ -1328,11 +1344,14 @@ async fn detect_node_statuses_with_progress(
                         }
                     } else {
                         progress_bar.suspend(|| {
-                            println!("    ⚠️  Skipping {} - no SSH key available", node_with_status.node.label);
+                            println!(
+                                "    ⚠️  Skipping {} - no SSH key available",
+                                node_with_status.node.label
+                            );
                         });
                     }
                 }
-                
+
                 progress_bar.suspend(|| {
                     println!("    ✅ Auto-failover safety checks completed for this validator");
                 });
@@ -1349,7 +1368,7 @@ async fn detect_node_statuses_with_progress(
     // Check for any issues that should be reported as warnings (but don't block startup)
     let mut warnings = Vec::new();
     let mut has_startup_identity_issues = false;
-    
+
     for (validator_idx, validator_status) in validator_statuses.iter().enumerate() {
         for (node_idx, node_with_status) in validator_status.nodes_with_status.iter().enumerate() {
             let node_label = format!(
@@ -1358,72 +1377,78 @@ async fn detect_node_statuses_with_progress(
                 node_idx + 1,
                 node_with_status.node.label
             );
-            
+
             // Check for SSH connectivity failure
             if node_with_status.status == crate::types::NodeStatus::Unknown {
                 warnings.push(format!(
-                    "{}: SSH connection failed (will limit functionality)", 
+                    "{}: SSH connection failed (will limit functionality)",
                     node_label
                 ));
             }
-            
+
             // Skip swap readiness check during startup - will be done at switch time
-            
+
             // Check for active identity detection failure
-            if node_with_status.current_identity.is_none() 
-                && node_with_status.status != crate::types::NodeStatus::Unknown {
-                warnings.push(format!(
-                    "{}: Failed to detect active identity", 
-                    node_label
-                ));
+            if node_with_status.current_identity.is_none()
+                && node_with_status.status != crate::types::NodeStatus::Unknown
+            {
+                warnings.push(format!("{}: Failed to detect active identity", node_label));
             }
-            
+
             // Check for startup identity configuration issues - these are still critical for auto-failover
             for issue in &node_with_status.swap_issues {
                 if issue.contains("Startup identity issue:") {
-                    warnings.push(format!(
-                        "{}: {}", 
-                        node_label,
-                        issue
-                    ));
+                    warnings.push(format!("{}: {}", node_label, issue));
                     has_startup_identity_issues = true;
                 }
             }
         }
     }
-    
+
     // Show warnings if any were found, but continue startup
     if !warnings.is_empty() {
         progress_bar.finish_and_clear();
         println!("\n{}", "⚠️  SYSTEM WARNINGS DETECTED".yellow().bold());
         println!("\nThe following issues were found (operations may be limited):\n");
-        
+
         for warning in &warnings {
             println!("  • {}", warning.yellow());
         }
-        
+
         if has_startup_identity_issues {
-            println!("\n{}", "Note: Startup identity issues will prevent auto-failover but not manual switches.".dimmed());
+            println!(
+                "\n{}",
+                "Note: Startup identity issues will prevent auto-failover but not manual switches."
+                    .dimmed()
+            );
         }
-        
-        println!("\n{}", "SVS will continue to start - some functionality may be limited.".green());
-        println!("{}", "Use targeted commands to work with available nodes.".dimmed());
-        
+
+        println!(
+            "\n{}",
+            "SVS will continue to start - some functionality may be limited.".green()
+        );
+        println!(
+            "{}",
+            "Use targeted commands to work with available nodes.".dimmed()
+        );
+
         // Brief pause to let user see warnings
         tokio::time::sleep(Duration::from_millis(2000)).await;
-        
+
         // Restart the progress bar for final steps
         let new_progress_bar = ProgressBar::new(100);
         new_progress_bar.set_style(
             ProgressStyle::default_bar()
-                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>3}% {msg}")
+                .template(
+                    "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>3}% {msg}",
+                )
                 .unwrap()
                 .progress_chars("█▉▊▋▌▍▎▏  "),
         );
         new_progress_bar.set_position(95);
         new_progress_bar.set_message("Completing startup...");
         new_progress_bar.enable_steady_tick(Duration::from_millis(100));
-        
+
         tokio::time::sleep(Duration::from_millis(500)).await;
         new_progress_bar.finish_and_clear();
     }
@@ -1629,7 +1654,10 @@ async fn detect_node_status_and_executable(
     if let Ok(output) = ssh_pool.execute_command(node, &ssh_key, ps_cmd).await {
         let lines: Vec<&str> = output.lines().collect();
         for line in lines {
-            if line.contains("bin/fdctl") || line.contains("agave-validator") || line.contains("solana-validator") {
+            if line.contains("bin/fdctl")
+                || line.contains("agave-validator")
+                || line.contains("solana-validator")
+            {
                 command_line = Some(line.to_string());
                 break;
             }
@@ -1650,10 +1678,10 @@ async fn detect_node_status_and_executable(
             if current_identity.is_none() && !identity.is_empty() {
                 current_identity = Some(identity);
             }
-            sync_status = Some(if is_healthy { 
-                "Caught up".to_string() 
-            } else { 
-                "Not healthy".to_string() 
+            sync_status = Some(if is_healthy {
+                "Caught up".to_string()
+            } else {
+                "Not healthy".to_string()
             });
         }
         Err(_) => {
@@ -1675,7 +1703,7 @@ async fn detect_node_status_and_executable(
     }
 
     // Skip swap readiness check during startup - will be done at switch time
-    let swap_ready = None;  // Unknown at startup
+    let swap_ready = None; // Unknown at startup
     let swap_issues = Vec::new();
 
     // Use RPC to get the active identity
@@ -1685,7 +1713,10 @@ async fn detect_node_status_and_executable(
         if let Ok(output) = ssh_pool.execute_command(node, &ssh_key, ps_cmd).await {
             let lines: Vec<&str> = output.lines().collect();
             for line in lines {
-                if line.contains("bin/fdctl") || line.contains("agave-validator") || line.contains("solana-validator") {
+                if line.contains("bin/fdctl")
+                    || line.contains("agave-validator")
+                    || line.contains("solana-validator")
+                {
                     command_line = Some(line.to_string());
                     break;
                 }
@@ -1721,7 +1752,7 @@ async fn detect_node_status_and_executable(
                         sync_status,
                         current_identity,
                         ledger_path,
-                        swap_ready,  // None - unknown at startup
+                        swap_ready, // None - unknown at startup
                         swap_issues,
                     ));
                 } else {
@@ -1779,7 +1810,7 @@ async fn detect_node_status_and_executable(
 }
 
 /// Check if a node is ready for validator switching
-/// 
+///
 /// This function checks:
 /// - Funded identity keypair (readable)
 /// - Unfunded identity keypair (readable)
@@ -2252,7 +2283,10 @@ async fn detect_node_status_and_executable_with_progress(
     if let Ok(output) = ssh_pool.execute_command(node, &ssh_key, ps_cmd).await {
         let lines: Vec<&str> = output.lines().collect();
         for line in lines {
-            if line.contains("bin/fdctl") || line.contains("agave-validator") || line.contains("solana-validator") {
+            if line.contains("bin/fdctl")
+                || line.contains("agave-validator")
+                || line.contains("solana-validator")
+            {
                 command_line = Some(line.to_string());
                 break;
             }
@@ -2273,10 +2307,10 @@ async fn detect_node_status_and_executable_with_progress(
             if current_identity.is_none() && !identity.is_empty() {
                 current_identity = Some(identity);
             }
-            sync_status = Some(if is_healthy { 
-                "Caught up".to_string() 
-            } else { 
-                "Not healthy".to_string() 
+            sync_status = Some(if is_healthy {
+                "Caught up".to_string()
+            } else {
+                "Not healthy".to_string()
             });
         }
         Err(_) => {
@@ -2299,7 +2333,7 @@ async fn detect_node_status_and_executable_with_progress(
 
     // Skip swap readiness check during startup - this will be done at switch time
     // We only need to know if nodes are reachable and what their status is
-    let swap_ready = None;  // Unknown at startup
+    let swap_ready = None; // Unknown at startup
     let mut swap_issues = Vec::new();
 
     // Step 6: Check startup identity configuration
@@ -2307,14 +2341,16 @@ async fn detect_node_status_and_executable_with_progress(
         println!("      🔍 Checking startup identity configuration...");
     });
     logger.log("Checking startup identity configuration...")?;
-    
+
     if validator_type != crate::types::ValidatorType::Unknown {
         if let Err(e) = crate::startup_checks::check_node_startup_identity_inline(
             node,
             validator_type.clone(),
             ssh_pool,
             &ssh_key,
-        ).await {
+        )
+        .await
+        {
             progress_bar.suspend(|| {
                 println!("      ❌ {}", e.to_string().red());
             });
@@ -2339,7 +2375,10 @@ async fn detect_node_status_and_executable_with_progress(
         if let Ok(output) = ssh_pool.execute_command(node, &ssh_key, ps_cmd).await {
             let lines: Vec<&str> = output.lines().collect();
             for line in lines {
-                if line.contains("bin/fdctl") || line.contains("agave-validator") || line.contains("solana-validator") {
+                if line.contains("bin/fdctl")
+                    || line.contains("agave-validator")
+                    || line.contains("solana-validator")
+                {
                     command_line = Some(line.to_string());
                     break;
                 }
@@ -2375,7 +2414,7 @@ async fn detect_node_status_and_executable_with_progress(
                         sync_status,
                         current_identity,
                         ledger_path,
-                        swap_ready,  // None - unknown at startup
+                        swap_ready, // None - unknown at startup
                         swap_issues,
                     ));
                 } else {
@@ -2428,33 +2467,47 @@ async fn check_node_startup_identity_for_auto_failover(
     ssh_key: &str,
     logger: &StartupLogger,
 ) -> Result<()> {
-    logger.log(&format!("Checking identity configuration for {}", node.node.label))?;
-    
+    logger.log(&format!(
+        "Checking identity configuration for {}",
+        node.node.label
+    ))?;
+
     // Check startup identity configuration based on validator type
     match node.validator_type {
         crate::types::ValidatorType::Firedancer => {
-            logger.log(&format!("{} is Firedancer type, checking config", node.node.label))?;
+            logger.log(&format!(
+                "{} is Firedancer type, checking config",
+                node.node.label
+            ))?;
             crate::startup_checks::check_node_startup_identity_inline(
                 &node.node,
                 node.validator_type.clone(),
                 ssh_pool,
                 ssh_key,
-            ).await?
+            )
+            .await?
         }
         crate::types::ValidatorType::Agave | crate::types::ValidatorType::Jito => {
-            logger.log(&format!("{} is Agave/Jito type, checking command line", node.node.label))?;
+            logger.log(&format!(
+                "{} is Agave/Jito type, checking command line",
+                node.node.label
+            ))?;
             crate::startup_checks::check_node_startup_identity_inline(
                 &node.node,
                 node.validator_type.clone(),
                 ssh_pool,
                 ssh_key,
-            ).await?
+            )
+            .await?
         }
         crate::types::ValidatorType::Unknown => {
-            logger.log(&format!("⚠️ {} has unknown validator type - skipping check", node.node.label))?;
+            logger.log(&format!(
+                "⚠️ {} has unknown validator type - skipping check",
+                node.node.label
+            ))?;
             return Ok(());
         }
     };
-    
+
     Ok(())
 }

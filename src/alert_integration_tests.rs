@@ -13,13 +13,12 @@ mod alert_integration_tests {
             rpc_failure_threshold_seconds: 1800, // 30 minutes
             telegram: None,
             auto_failover_enabled: false,
-            
         };
 
         // Simulate the actual check from status_ui_v2.rs
         let seconds_since_vote = 45;
         let threshold = config.delinquency_threshold_seconds;
-        
+
         // Mock validator health states
         let mut validator_health = NodeHealthStatus {
             ssh_status: FailureTracker::new(),
@@ -33,22 +32,35 @@ mod alert_integration_tests {
         let should_alert_case1 = seconds_since_vote >= threshold
             && validator_health.ssh_status.consecutive_failures == 0
             && validator_health.rpc_status.consecutive_failures == 0;
-        assert!(should_alert_case1, "Should alert when SSH/RPC working and not voting");
+        assert!(
+            should_alert_case1,
+            "Should alert when SSH/RPC working and not voting"
+        );
 
         // Case 2: SSH failing - should NOT alert for delinquency
-        validator_health.ssh_status.record_failure("Connection refused".to_string());
+        validator_health
+            .ssh_status
+            .record_failure("Connection refused".to_string());
         let should_alert_case2 = seconds_since_vote >= threshold
             && validator_health.ssh_status.consecutive_failures == 0
             && validator_health.rpc_status.consecutive_failures == 0;
-        assert!(!should_alert_case2, "Should NOT alert delinquency when SSH failing");
+        assert!(
+            !should_alert_case2,
+            "Should NOT alert delinquency when SSH failing"
+        );
 
         // Case 3: RPC failing - should NOT alert for delinquency
         validator_health.ssh_status.record_success(); // Reset SSH
-        validator_health.rpc_status.record_failure("429 Too Many Requests".to_string());
+        validator_health
+            .rpc_status
+            .record_failure("429 Too Many Requests".to_string());
         let should_alert_case3 = seconds_since_vote >= threshold
             && validator_health.ssh_status.consecutive_failures == 0
             && validator_health.rpc_status.consecutive_failures == 0;
-        assert!(!should_alert_case3, "Should NOT alert delinquency when RPC failing");
+        assert!(
+            !should_alert_case3,
+            "Should NOT alert delinquency when RPC failing"
+        );
     }
 
     // Test RPC failure preserving slot times (the critical bug fix)
@@ -56,19 +68,26 @@ mod alert_integration_tests {
     fn test_rpc_failure_preserves_slot_time() {
         // Simulate existing slot time
         let existing_slot_time = Some((298745632u64, Instant::now() - Duration::from_secs(25)));
-        
+
         // RPC fails
         let rpc_result: Result<(), String> = Err("RPC timeout".to_string());
-        
+
         // The fix: preserve existing slot time instead of setting to None
         let new_slot_time = if rpc_result.is_err() {
             existing_slot_time // Preserve it!
         } else {
             None // This was the bug - losing the timestamp
         };
-        
-        assert!(new_slot_time.is_some(), "Slot time should be preserved on RPC failure");
-        assert_eq!(new_slot_time.unwrap().0, 298745632, "Slot number should be preserved");
+
+        assert!(
+            new_slot_time.is_some(),
+            "Slot time should be preserved on RPC failure"
+        );
+        assert_eq!(
+            new_slot_time.unwrap().0,
+            298745632,
+            "Slot number should be preserved"
+        );
     }
 
     // Test SSH failure threshold logic
@@ -81,29 +100,34 @@ mod alert_integration_tests {
             rpc_failure_threshold_seconds: 1800, // 30 minutes
             telegram: None,
             auto_failover_enabled: false,
-            
         };
 
         let mut ssh_tracker = FailureTracker::new();
-        
+
         // Simulate SSH failures over time
         for i in 0..19 {
             ssh_tracker.record_failure(format!("SSH timeout {}", i));
         }
-        
+
         // Check if should alert
         let seconds = ssh_tracker.seconds_since_first_failure().unwrap_or(0);
-        
+
         // Only time-based thresholds now
         let should_alert = seconds >= config.ssh_failure_threshold_seconds;
-        
-        assert!(!should_alert, "Should not alert immediately (need 30 minutes)");
-        
+
+        assert!(
+            !should_alert,
+            "Should not alert immediately (need 30 minutes)"
+        );
+
         // After many failures, still no alert if time hasn't passed
         ssh_tracker.record_failure("SSH timeout 20".to_string());
         let seconds_now = ssh_tracker.seconds_since_first_failure().unwrap_or(0);
         let should_alert_now = seconds_now >= config.ssh_failure_threshold_seconds;
-        assert!(!should_alert_now, "Should not alert until 30 minutes have passed");
+        assert!(
+            !should_alert_now,
+            "Should not alert until 30 minutes have passed"
+        );
     }
 
     // Test complete monitoring flow
@@ -116,7 +140,6 @@ mod alert_integration_tests {
             rpc_failure_threshold_seconds: 1800, // 30 minutes
             telegram: None,
             auto_failover_enabled: false,
-            
         };
 
         // Validator state
@@ -164,11 +187,12 @@ mod alert_integration_tests {
                     health.ssh_status.record_success();
                     health.is_voting = false;
                     health.last_vote_time = Some(Instant::now() - Duration::from_secs(40));
-                    
+
                     // This should trigger delinquency alert
-                    if health.ssh_status.consecutive_failures == 0 
-                        && health.rpc_status.consecutive_failures == 0 
-                        && !health.is_voting {
+                    if health.ssh_status.consecutive_failures == 0
+                        && health.rpc_status.consecutive_failures == 0
+                        && !health.is_voting
+                    {
                         alerts_triggered.push("DELINQUENCY");
                     }
                 }
@@ -176,8 +200,14 @@ mod alert_integration_tests {
             }
         }
 
-        assert!(alerts_triggered.contains(&"RPC_FAILURE"), "Should have RPC failure alert");
-        assert!(alerts_triggered.contains(&"DELINQUENCY"), "Should have delinquency alert");
+        assert!(
+            alerts_triggered.contains(&"RPC_FAILURE"),
+            "Should have RPC failure alert"
+        );
+        assert!(
+            alerts_triggered.contains(&"DELINQUENCY"),
+            "Should have delinquency alert"
+        );
         assert_eq!(alerts_triggered.len(), 2, "Should have exactly 2 alerts");
     }
 

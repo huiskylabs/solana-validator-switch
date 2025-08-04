@@ -47,21 +47,34 @@ mod tests {
         // Test condition 1: SSH and RPC working, should trigger failover
         assert_eq!(health.ssh_status.consecutive_failures, 0);
         assert_eq!(health.rpc_status.consecutive_failures, 0);
-        let should_failover = health.ssh_status.consecutive_failures == 0 
+        let should_failover = health.ssh_status.consecutive_failures == 0
             && health.rpc_status.consecutive_failures == 0;
-        assert!(should_failover, "Should trigger failover when SSH and RPC are working");
+        assert!(
+            should_failover,
+            "Should trigger failover when SSH and RPC are working"
+        );
 
         // Test condition 2: SSH failing, should NOT trigger failover
-        health.ssh_status.record_failure("Connection refused".to_string());
-        let should_failover = health.ssh_status.consecutive_failures == 0 
+        health
+            .ssh_status
+            .record_failure("Connection refused".to_string());
+        let should_failover = health.ssh_status.consecutive_failures == 0
             && health.rpc_status.consecutive_failures == 0;
-        assert!(!should_failover, "Should NOT trigger failover when SSH is failing");
+        assert!(
+            !should_failover,
+            "Should NOT trigger failover when SSH is failing"
+        );
 
         // Test condition 3: RPC failing, should NOT trigger failover
         health.ssh_status.record_success();
-        health.rpc_status.record_failure("429 Too Many Requests".to_string());
-        let should_failover = health.ssh_status.consecutive_failures == 0 
+        health
+            .rpc_status
+            .record_failure("429 Too Many Requests".to_string());
+        let should_failover = health.ssh_status.consecutive_failures == 0
             && health.rpc_status.consecutive_failures == 0;
-        assert!(!should_failover, "Should NOT trigger failover when RPC is failing");
+        assert!(
+            !should_failover,
+            "Should NOT trigger failover when RPC is failing"
+        );
     }
 }

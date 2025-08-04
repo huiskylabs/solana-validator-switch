@@ -2,7 +2,7 @@ use anyhow::Result;
 use serde_json::json;
 use std::time::{Duration, Instant};
 
-use crate::types::{AlertConfig, TelegramConfig, NodeHealthStatus};
+use crate::types::{AlertConfig, NodeHealthStatus, TelegramConfig};
 
 #[derive(Clone)]
 pub struct AlertManager {
@@ -125,8 +125,7 @@ impl AlertManager {
             • Validator Delinquency Alerts\n\
             • Catchup Failure Alerts\n\
             • Switch Result Alerts",
-            validators_text,
-            self.config.delinquency_threshold_seconds
+            validators_text, self.config.delinquency_threshold_seconds
         );
 
         self.send_telegram_message(telegram, &message).await?;
@@ -140,12 +139,16 @@ impl AlertManager {
             *Time Since Last Vote:* {} seconds\n\
             *Threshold:* {} seconds\n\n\
             ⚠️ *This is just an example alert*",
-            validators_info.first().map(|(id, _)| *id).unwrap_or("ExampleValidator"),
+            validators_info
+                .first()
+                .map(|(id, _)| *id)
+                .unwrap_or("ExampleValidator"),
             self.config.delinquency_threshold_seconds,
             self.config.delinquency_threshold_seconds
         );
 
-        self.send_telegram_message(telegram, &delinquency_example).await?;
+        self.send_telegram_message(telegram, &delinquency_example)
+            .await?;
 
         // Send example catchup failure alert
         let catchup_example = format!(
@@ -156,31 +159,35 @@ impl AlertManager {
             The standby node has failed catchup check 3 times in a row.\n\
             This may indicate issues with the standby node's sync status.\n\n\
             ⚠️ *This is just an example alert*",
-            validators_info.first().map(|(id, _)| *id).unwrap_or("ExampleValidator")
+            validators_info
+                .first()
+                .map(|(id, _)| *id)
+                .unwrap_or("ExampleValidator")
         );
 
-        self.send_telegram_message(telegram, &catchup_example).await?;
+        self.send_telegram_message(telegram, &catchup_example)
+            .await?;
 
         // Send example switch success alert
-        let switch_success_example = 
-            "✅ *EXAMPLE: VALIDATOR SWITCH SUCCESSFUL* in 850ms\n\n\
+        let switch_success_example = "✅ *EXAMPLE: VALIDATOR SWITCH SUCCESSFUL* in 850ms\n\n\
             *Previous Active:* Node A\n\
             *New Active:* Node B\n\n\
             Switch completed successfully!\n\n\
             ⚠️ *This is just an example alert*";
 
-        self.send_telegram_message(telegram, &switch_success_example).await?;
+        self.send_telegram_message(telegram, &switch_success_example)
+            .await?;
 
         // Send example switch failure alert
-        let switch_failure_example = 
-            "❌ *EXAMPLE: VALIDATOR SWITCH FAILED*\n\n\
+        let switch_failure_example = "❌ *EXAMPLE: VALIDATOR SWITCH FAILED*\n\n\
             *Active Node:* Node A\n\
             *Standby Node:* Node B\n\
             *Error:* Example error message\n\n\
             ⚠️ *Manual intervention may be required*\n\n\
             ⚠️ *This is just an example alert*";
 
-        self.send_telegram_message(telegram, &switch_failure_example).await?;
+        self.send_telegram_message(telegram, &switch_failure_example)
+            .await?;
 
         Ok("Test messages sent successfully (including examples of all alert types)".to_string())
     }
@@ -337,13 +344,16 @@ impl AlertManager {
 
         if let Some(telegram) = &self.config.telegram {
             let status = if is_active { "Active" } else { "Standby" };
-            
+
             // Build SSH status string
             let ssh_status = if node_health.ssh_status.consecutive_failures > 0 {
                 format!(
                     "❌ Failed ({} failures, {} seconds ago)",
                     node_health.ssh_status.consecutive_failures,
-                    node_health.ssh_status.seconds_since_first_failure().unwrap_or(0)
+                    node_health
+                        .ssh_status
+                        .seconds_since_first_failure()
+                        .unwrap_or(0)
                 )
             } else {
                 "✅ Connected".to_string()
@@ -354,7 +364,10 @@ impl AlertManager {
                 format!(
                     "❌ Failed ({} failures, {} seconds ago)",
                     node_health.rpc_status.consecutive_failures,
-                    node_health.rpc_status.seconds_since_first_failure().unwrap_or(0)
+                    node_health
+                        .rpc_status
+                        .seconds_since_first_failure()
+                        .unwrap_or(0)
                 )
             } else {
                 "✅ Working".to_string()
@@ -405,7 +418,7 @@ impl AlertManager {
         if let Some(telegram) = &self.config.telegram {
             let primary_status = if primary_switch_success { "✅" } else { "❌" };
             let tower_status = if tower_copy_success { "✅" } else { "❌" };
-            
+
             let message = if let Some(error_msg) = error {
                 format!(
                     "❌ *EMERGENCY TAKEOVER FAILED*\n\n\
@@ -442,15 +455,31 @@ impl AlertManager {
                     • Standby → Funded: ✅ Success\n\n\
                     *Takeover completed in:* {}ms\n\n\
                     ⚠️ *VERIFY VALIDATOR STATUS IMMEDIATELY*",
-                    if standby_switch_success { "🚨" } else { "❌" },
-                    if standby_switch_success { "INITIATED" } else { "FAILED" },
+                    if standby_switch_success {
+                        "🚨"
+                    } else {
+                        "❌"
+                    },
+                    if standby_switch_success {
+                        "INITIATED"
+                    } else {
+                        "FAILED"
+                    },
                     validator_identity,
                     active_node,
                     standby_node,
                     primary_status,
-                    if primary_switch_success { "Success" } else { "Failed (continued)" },
+                    if primary_switch_success {
+                        "Success"
+                    } else {
+                        "Failed (continued)"
+                    },
                     tower_status,
-                    if tower_copy_success { "Success" } else { "Failed (continued)" },
+                    if tower_copy_success {
+                        "Success"
+                    } else {
+                        "Failed (continued)"
+                    },
                     total_time.as_millis()
                 )
             };
@@ -479,10 +508,7 @@ impl AlertManager {
                 *Consecutive Failures:* {}\n\n\
                 The standby node has failed catchup check {} times in a row.\n\
                 This may indicate issues with the standby node's sync status.",
-                validator_identity,
-                node_label,
-                consecutive_failures,
-                consecutive_failures
+                validator_identity, node_label, consecutive_failures, consecutive_failures
             );
 
             self.send_telegram_message(telegram, &message).await?;
@@ -502,7 +528,7 @@ impl AlertTracker {
     pub fn new(validator_count: usize) -> Self {
         Self::with_cooldown(validator_count, 1800) // Default 30 minutes
     }
-    
+
     pub fn with_cooldown(validator_count: usize, cooldown_seconds: u64) -> Self {
         Self {
             last_alert_times: vec![None; validator_count],
@@ -552,7 +578,7 @@ impl ComprehensiveAlertTracker {
             // Low severity: 30-minute cooldown for SSH failures
             ssh_trackers.push(AlertTracker::with_cooldown(validator_count, 1800));
         }
-        
+
         Self {
             // High severity: 15-minute cooldown for delinquency
             delinquency_tracker: AlertTracker::with_cooldown(validator_count, 900),

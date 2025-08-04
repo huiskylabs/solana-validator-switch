@@ -47,12 +47,12 @@ impl EmergencyFailover {
 
     pub async fn execute_emergency_takeover(&mut self) -> Result<()> {
         let start_time = Instant::now();
-        
+
         // Log the emergency takeover
         eprintln!("🚨 EMERGENCY TAKEOVER INITIATED");
-        eprintln!("   Active node ({}) not voting, attempting failover to standby ({})",
-            self.active_node.node.label,
-            self.standby_node.node.label
+        eprintln!(
+            "   Active node ({}) not voting, attempting failover to standby ({})",
+            self.active_node.node.label, self.standby_node.node.label
         );
 
         // Create switch manager for the operations
@@ -67,11 +67,13 @@ impl EmergencyFailover {
         // Step 1: Try to switch primary to unfunded (optional, best-effort)
         eprintln!("📤 Switching primary to unfunded...");
         std::env::set_var("SVS_SILENT_MODE", "1");
-        
+
         let primary_result = match timeout(
             Duration::from_secs(10), // Default 10 second timeout
-            switch_manager.switch_primary_to_unfunded(false)
-        ).await {
+            switch_manager.switch_primary_to_unfunded(false),
+        )
+        .await
+        {
             Ok(Ok(_)) => {
                 eprintln!("   ✅ Primary switched to unfunded successfully");
                 Ok(())
@@ -91,8 +93,10 @@ impl EmergencyFailover {
         eprintln!("📤 Copying tower file...");
         let tower_result = match timeout(
             Duration::from_secs(10), // Default 10 second timeout
-            switch_manager.transfer_tower_file(false)
-        ).await {
+            switch_manager.transfer_tower_file(false),
+        )
+        .await
+        {
             Ok(Ok(_)) => {
                 eprintln!("   ✅ Tower file copied successfully");
                 Ok(())
@@ -118,44 +122,67 @@ impl EmergencyFailover {
             Err(e) => {
                 eprintln!("   ❌ CRITICAL: Failed to switch standby to funded: {}", e);
                 self.total_time = Some(start_time.elapsed());
-                
+
                 // Send failure notification
-                let _ = self.alert_manager.send_emergency_takeover_alert(
-                    &self.validator_pair.identity_pubkey,
-                    &self.active_node.node.label,
-                    &self.standby_node.node.label,
-                    self.primary_switch_success,
-                    self.tower_copy_success,
-                    false, // standby switch failed
-                    self.total_time.unwrap(),
-                    Some(&format!("Failed to activate standby: {}", e)),
-                ).await;
-                
-                return Err(anyhow!("Emergency takeover failed: could not activate standby node"));
+                let _ = self
+                    .alert_manager
+                    .send_emergency_takeover_alert(
+                        &self.validator_pair.identity_pubkey,
+                        &self.active_node.node.label,
+                        &self.standby_node.node.label,
+                        self.primary_switch_success,
+                        self.tower_copy_success,
+                        false, // standby switch failed
+                        self.total_time.unwrap(),
+                        Some(&format!("Failed to activate standby: {}", e)),
+                    )
+                    .await;
+
+                return Err(anyhow!(
+                    "Emergency takeover failed: could not activate standby node"
+                ));
             }
         }
 
         self.total_time = Some(start_time.elapsed());
 
         // Send success notification
-        let _ = self.alert_manager.send_emergency_takeover_alert(
-            &self.validator_pair.identity_pubkey,
-            &self.active_node.node.label,
-            &self.standby_node.node.label,
-            self.primary_switch_success,
-            self.tower_copy_success,
-            self.standby_switch_success,
-            self.total_time.unwrap(),
-            None,
-        ).await;
+        let _ = self
+            .alert_manager
+            .send_emergency_takeover_alert(
+                &self.validator_pair.identity_pubkey,
+                &self.active_node.node.label,
+                &self.standby_node.node.label,
+                self.primary_switch_success,
+                self.tower_copy_success,
+                self.standby_switch_success,
+                self.total_time.unwrap(),
+                None,
+            )
+            .await;
 
-        eprintln!("\n✅ Emergency takeover completed in {:?}", self.total_time.unwrap());
-        eprintln!("   Primary → Unfunded: {}", if self.primary_switch_success { "✅" } else { "❌" });
-        eprintln!("   Tower Copy: {}", if self.tower_copy_success { "✅" } else { "❌" });
+        eprintln!(
+            "\n✅ Emergency takeover completed in {:?}",
+            self.total_time.unwrap()
+        );
+        eprintln!(
+            "   Primary → Unfunded: {}",
+            if self.primary_switch_success {
+                "✅"
+            } else {
+                "❌"
+            }
+        );
+        eprintln!(
+            "   Tower Copy: {}",
+            if self.tower_copy_success {
+                "✅"
+            } else {
+                "❌"
+            }
+        );
         eprintln!("   Standby → Funded: ✅");
 
         Ok(())
     }
-
 }
-

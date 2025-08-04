@@ -4,7 +4,12 @@ mod switch_validation_tests {
     use std::collections::HashMap;
 
     // Helper function to create a test node
-    fn create_test_node(label: &str, host: &str, available: bool, is_active: bool) -> NodeWithStatus {
+    fn create_test_node(
+        label: &str,
+        host: &str,
+        available: bool,
+        is_active: bool,
+    ) -> NodeWithStatus {
         NodeWithStatus {
             node: NodeConfig {
                 label: label.to_string(),
@@ -18,12 +23,12 @@ mod switch_validation_tests {
                 },
                 ssh_key_path: Some("/home/user/.ssh/id_rsa".to_string()),
             },
-            status: if !available { 
-                NodeStatus::Unknown 
-            } else if is_active { 
-                NodeStatus::Active 
-            } else { 
-                NodeStatus::Standby 
+            status: if !available {
+                NodeStatus::Unknown
+            } else if is_active {
+                NodeStatus::Active
+            } else {
+                NodeStatus::Standby
             },
             validator_type: ValidatorType::Agave,
             agave_validator_executable: Some("/home/solana/bin/agave-validator".to_string()),
@@ -31,21 +36,48 @@ mod switch_validation_tests {
             solana_cli_executable: Some("/home/solana/bin/solana".to_string()),
             version: Some("Agave 2.0.0".to_string()),
             sync_status: Some("Caught up".to_string()),
-            current_identity: Some(if is_active { "funded123" } else { "unfunded123" }.to_string()),
+            current_identity: Some(
+                if is_active {
+                    "funded123"
+                } else {
+                    "unfunded123"
+                }
+                .to_string(),
+            ),
             ledger_path: Some("/mnt/ledger".to_string()),
-            tower_path: if is_active { Some("/mnt/ledger/tower.bin".to_string()) } else { None },
+            tower_path: if is_active {
+                Some("/mnt/ledger/tower.bin".to_string())
+            } else {
+                None
+            },
             swap_ready: Some(available),
-            swap_issues: if available { vec![] } else { vec!["SSH connection failed".to_string()] },
+            swap_issues: if available {
+                vec![]
+            } else {
+                vec!["SSH connection failed".to_string()]
+            },
             ssh_key_path: Some("/home/user/.ssh/id_rsa".to_string()),
         }
     }
 
     fn create_test_ssh_keys() -> HashMap<String, String> {
         let mut keys = HashMap::new();
-        keys.insert("validator1-1.example.com".to_string(), "/home/user/.ssh/id_rsa".to_string());
-        keys.insert("validator1-2.example.com".to_string(), "/home/user/.ssh/id_rsa".to_string());
-        keys.insert("validator2-1.example.com".to_string(), "/home/user/.ssh/id_rsa".to_string());
-        keys.insert("validator2-2.example.com".to_string(), "/home/user/.ssh/id_rsa".to_string());
+        keys.insert(
+            "validator1-1.example.com".to_string(),
+            "/home/user/.ssh/id_rsa".to_string(),
+        );
+        keys.insert(
+            "validator1-2.example.com".to_string(),
+            "/home/user/.ssh/id_rsa".to_string(),
+        );
+        keys.insert(
+            "validator2-1.example.com".to_string(),
+            "/home/user/.ssh/id_rsa".to_string(),
+        );
+        keys.insert(
+            "validator2-2.example.com".to_string(),
+            "/home/user/.ssh/id_rsa".to_string(),
+        );
         keys
     }
 
@@ -172,15 +204,16 @@ mod switch_validation_tests {
     fn test_switch_validation_target_not_swap_ready_fails() {
         // Target node is reachable but not swap-ready - this should FAIL
         let active_node = create_test_node("node-1-1", "validator1-1.example.com", true, true);
-        let mut standby_node = create_test_node("node-1-2", "validator1-2.example.com", true, false);
-        
+        let mut standby_node =
+            create_test_node("node-1-2", "validator1-2.example.com", true, false);
+
         // Make target not swap-ready
         standby_node.swap_ready = Some(false);
         standby_node.swap_issues = vec![
             "Funded identity keypair missing or not readable".to_string(),
-            "Vote keypair missing or not readable".to_string()
+            "Vote keypair missing or not readable".to_string(),
         ];
-        
+
         let ssh_keys = create_test_ssh_keys();
 
         let mut validation_errors = Vec::new();

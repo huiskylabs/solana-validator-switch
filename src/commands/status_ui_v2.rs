@@ -1,5 +1,5 @@
-use anyhow::Result;
 use crate::startup::check_node_swap_readiness;
+use anyhow::Result;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     execute,
@@ -11,12 +11,12 @@ async fn read_lock_with_timeout<T>(
     lock: &Arc<RwLock<T>>,
     timeout_ms: u64,
 ) -> Result<tokio::sync::RwLockReadGuard<'_, T>> {
-    match tokio::time::timeout(
-        Duration::from_millis(timeout_ms),
-        lock.read()
-    ).await {
+    match tokio::time::timeout(Duration::from_millis(timeout_ms), lock.read()).await {
         Ok(guard) => Ok(guard),
-        Err(_) => Err(anyhow::anyhow!("Failed to acquire read lock within {}ms", timeout_ms)),
+        Err(_) => Err(anyhow::anyhow!(
+            "Failed to acquire read lock within {}ms",
+            timeout_ms
+        )),
     }
 }
 
@@ -25,12 +25,12 @@ async fn write_lock_with_timeout<T>(
     lock: &Arc<RwLock<T>>,
     timeout_ms: u64,
 ) -> Result<tokio::sync::RwLockWriteGuard<'_, T>> {
-    match tokio::time::timeout(
-        Duration::from_millis(timeout_ms),
-        lock.write()
-    ).await {
+    match tokio::time::timeout(Duration::from_millis(timeout_ms), lock.write()).await {
         Ok(guard) => Ok(guard),
-        Err(_) => Err(anyhow::anyhow!("Failed to acquire write lock within {}ms", timeout_ms)),
+        Err(_) => Err(anyhow::anyhow!(
+            "Failed to acquire write lock within {}ms",
+            timeout_ms
+        )),
     }
 }
 use ratatui::{
@@ -145,7 +145,8 @@ async fn refresh_vote_data_for_alerts(
 
                             if seconds_since_vote >= threshold {
                                 // Send delinquency alert
-                                let validator_pair = &app_state.validator_statuses[idx].validator_pair;
+                                let validator_pair =
+                                    &app_state.validator_statuses[idx].validator_pair;
                                 let unknown_label = "Unknown".to_string();
                                 let active_node = app_state.validator_statuses[idx]
                                     .nodes_with_status
@@ -243,9 +244,7 @@ fn key_to_action(key: KeyEvent, current_view: &ViewState) -> Option<UiAction> {
                 Some(UiAction::Quit)
             }
         }
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            Some(UiAction::Quit)
-        }
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => Some(UiAction::Quit),
         KeyCode::Char('s') | KeyCode::Char('S') => {
             if *current_view == ViewState::Status {
                 Some(UiAction::ShowSwitch)
@@ -290,49 +289,39 @@ async fn process_ui_action(
     match action {
         UiAction::Quit => {
             // Use timeout for write lock
-            let quit_write = tokio::time::timeout(
-                Duration::from_millis(50),
-                should_quit.write()
-            ).await;
-            
+            let quit_write =
+                tokio::time::timeout(Duration::from_millis(50), should_quit.write()).await;
+
             if let Ok(mut quit) = quit_write {
                 *quit = true;
             }
         }
         UiAction::CancelSwitch => {
             // Use timeout for write lock
-            let view_write = tokio::time::timeout(
-                Duration::from_millis(50),
-                view_state.write()
-            ).await;
-            
+            let view_write =
+                tokio::time::timeout(Duration::from_millis(50), view_state.write()).await;
+
             if let Ok(mut view) = view_write {
                 *view = ViewState::Status;
             }
         }
         UiAction::ShowSwitch => {
             // Use timeout for write lock
-            let view_write = tokio::time::timeout(
-                Duration::from_millis(50),
-                view_state.write()
-            ).await;
-            
+            let view_write =
+                tokio::time::timeout(Duration::from_millis(50), view_state.write()).await;
+
             if let Ok(mut view) = view_write {
                 *view = ViewState::Switch;
             }
         }
         UiAction::ConfirmSwitch => {
             // Use timeouts for both write locks
-            let switch_write = tokio::time::timeout(
-                Duration::from_millis(50),
-                switch_confirmed.write()
-            ).await;
-            
-            let quit_write = tokio::time::timeout(
-                Duration::from_millis(50),
-                should_quit.write()
-            ).await;
-            
+            let switch_write =
+                tokio::time::timeout(Duration::from_millis(50), switch_confirmed.write()).await;
+
+            let quit_write =
+                tokio::time::timeout(Duration::from_millis(50), should_quit.write()).await;
+
             if let (Ok(mut switch), Ok(mut quit)) = (switch_write, quit_write) {
                 *switch = true;
                 *quit = true;
@@ -347,22 +336,22 @@ async fn process_ui_action(
             handle_validator_switch_with_timeout(ui_state, app_state).await?;
         }
     }
-    
+
     Ok(())
 }
 
 /// Handle refresh with timeout to prevent blocking
-async fn handle_refresh_with_timeout(ui_state: &Arc<RwLock<UiState>>, app_state: &Arc<AppState>) -> Result<()> {
+async fn handle_refresh_with_timeout(
+    ui_state: &Arc<RwLock<UiState>>,
+    app_state: &Arc<AppState>,
+) -> Result<()> {
     // Try to acquire write lock with timeout
-    let ui_write = tokio::time::timeout(
-        Duration::from_millis(50),
-        ui_state.write()
-    ).await;
-    
+    let ui_write = tokio::time::timeout(Duration::from_millis(50), ui_state.write()).await;
+
     if let Ok(mut ui_state_write) = ui_write {
         ui_state_write.last_refresh_time = Instant::now();
         ui_state_write.is_refreshing = true;
-        
+
         // Set all field refresh states to true
         for refresh_state in ui_state_write.field_refresh_states.iter_mut() {
             refresh_state.node_0.status_refreshing = true;
@@ -379,16 +368,16 @@ async fn handle_refresh_with_timeout(ui_state: &Arc<RwLock<UiState>>, app_state:
             refresh_state.node_1.swap_readiness_refreshing = true;
         }
     }
-    
+
     // Clone what we need for the async refresh
     let app_state_clone = app_state.clone();
     let ui_state_clone = ui_state.clone();
-    
+
     // Spawn the refresh operation without blocking
     tokio::spawn(async move {
         refresh_all_fields(app_state_clone, ui_state_clone).await;
     });
-    
+
     Ok(())
 }
 
@@ -401,22 +390,19 @@ async fn handle_validator_switch_with_timeout(
     if app_state.validator_statuses.len() <= 1 {
         return Ok(());
     }
-    
+
     // Try to acquire write lock with timeout
-    let ui_write = tokio::time::timeout(
-        Duration::from_millis(50),
-        ui_state.write()
-    ).await;
-    
+    let ui_write = tokio::time::timeout(Duration::from_millis(50), ui_state.write()).await;
+
     if let Ok(mut ui_state_write) = ui_write {
         // Cycle to next validator
-        ui_state_write.selected_validator_index = 
+        ui_state_write.selected_validator_index =
             (ui_state_write.selected_validator_index + 1) % app_state.validator_statuses.len();
-        
+
         // Mark as refreshing to trigger data update
         ui_state_write.is_refreshing = true;
         ui_state_write.last_refresh_time = Instant::now();
-        
+
         // Set all field refresh states to true for the new validator
         for refresh_state in ui_state_write.field_refresh_states.iter_mut() {
             refresh_state.node_0.status_refreshing = true;
@@ -433,16 +419,16 @@ async fn handle_validator_switch_with_timeout(
             refresh_state.node_1.swap_readiness_refreshing = true;
         }
     }
-    
+
     // Clone what we need for the async refresh
     let app_state_clone = app_state.clone();
     let ui_state_clone = ui_state.clone();
-    
+
     // Spawn the refresh operation without blocking
     tokio::spawn(async move {
         refresh_all_fields(app_state_clone, ui_state_clone).await;
     });
-    
+
     Ok(())
 }
 
@@ -477,20 +463,20 @@ pub struct UiState {
     // Track consecutive catchup failures for standby nodes
     #[allow(dead_code)]
     pub catchup_failure_counts: Vec<(u32, u32)>, // (node_0_failures, node_1_failures)
-    
+
     // Track last alert time for catchup failures
     #[allow(dead_code)]
     pub last_catchup_alert_times: Vec<(Option<Instant>, Option<Instant>)>, // (node_0_last_alert, node_1_last_alert)
 
     // SSH health status for each node
     pub ssh_health_data: Vec<NodePairSshStatus>,
-    
+
     // RPC health status for each node
     pub rpc_health_data: Vec<NodePairRpcStatus>,
 
     // Comprehensive health tracking for each validator
     pub validator_health: Vec<NodeHealthStatus>,
-    
+
     // RPC failure tracking for each validator
     pub rpc_failure_tracker: Vec<FailureTracker>,
 
@@ -498,16 +484,16 @@ pub struct UiState {
     pub last_vote_refresh: Instant,
     pub last_catchup_refresh: Instant,
     pub last_ssh_health_refresh: Instant,
-    
+
     // Field refresh states - tracks which fields are being refreshed for each validator/node
     pub field_refresh_states: Vec<NodeFieldRefreshState>,
-    
+
     // Refreshed validator statuses - stores the latest refreshed data
     pub validator_statuses: Vec<crate::ValidatorStatus>,
-    
+
     #[allow(dead_code)]
     pub is_refreshing: bool,
-    
+
     // Track last refresh time (either manual or auto)
     pub last_refresh_time: Instant,
 }
@@ -623,19 +609,23 @@ impl EnhancedStatusApp {
                 node_0: None,
                 node_1: None,
             };
-            
+
             if validator_status.nodes_with_status.len() >= 2 {
                 // Initialize for standby nodes or Firedancer nodes
-                if validator_status.nodes_with_status[0].status == crate::types::NodeStatus::Standby 
-                    || validator_status.nodes_with_status[0].validator_type == crate::types::ValidatorType::Firedancer {
+                if validator_status.nodes_with_status[0].status == crate::types::NodeStatus::Standby
+                    || validator_status.nodes_with_status[0].validator_type
+                        == crate::types::ValidatorType::Firedancer
+                {
                     node_pair.node_0 = Some(CatchupStatus {
                         status: "⏳ Initializing...".to_string(),
                         last_updated: Instant::now(),
                         is_streaming: false,
                     });
                 }
-                if validator_status.nodes_with_status[1].status == crate::types::NodeStatus::Standby 
-                    || validator_status.nodes_with_status[1].validator_type == crate::types::ValidatorType::Firedancer {
+                if validator_status.nodes_with_status[1].status == crate::types::NodeStatus::Standby
+                    || validator_status.nodes_with_status[1].validator_type
+                        == crate::types::ValidatorType::Firedancer
+                {
                     node_pair.node_1 = Some(CatchupStatus {
                         status: "⏳ Initializing...".to_string(),
                         last_updated: Instant::now(),
@@ -643,7 +633,7 @@ impl EnhancedStatusApp {
                     });
                 }
             }
-            
+
             initial_catchup_data.push(node_pair);
 
             let ssh_pair = NodePairSshStatus {
@@ -660,7 +650,7 @@ impl EnhancedStatusApp {
             };
             initial_ssh_health_data.push(ssh_pair);
         }
-        
+
         // Initialize RPC health data
         let mut initial_rpc_health_data = Vec::new();
         for _ in 0..app_state.validator_statuses.len() {
@@ -736,14 +726,14 @@ impl EnhancedStatusApp {
             last_manual_refresh: Arc::new(RwLock::new(Instant::now() - Duration::from_secs(60))),
         })
     }
-    
+
     /// Spawn continuous catchup streaming tasks for each node
     fn spawn_catchup_streaming_tasks(&self) {
         let ui_state = Arc::clone(&self.ui_state);
         let app_state = Arc::clone(&self.app_state);
         let ssh_pool = Arc::clone(&self.ssh_pool);
         let log_sender = self.log_sender.clone();
-        
+
         // Spawn a streaming task for each node
         for (validator_idx, validator_status) in app_state.validator_statuses.iter().enumerate() {
             for (node_idx, node) in validator_status.nodes_with_status.iter().enumerate() {
@@ -752,7 +742,7 @@ impl EnhancedStatusApp {
                 let ssh_pool = Arc::clone(&ssh_pool);
                 let log_sender = log_sender.clone();
                 let ssh_key = app_state.detected_ssh_keys.get(&node.node.host).cloned();
-                
+
                 if let Some(ssh_key) = ssh_key {
                     tokio::spawn(async move {
                         stream_catchup_for_node(
@@ -763,7 +753,8 @@ impl EnhancedStatusApp {
                             validator_idx,
                             node_idx,
                             log_sender,
-                        ).await;
+                        )
+                        .await;
                     });
                 }
             }
@@ -776,10 +767,10 @@ impl EnhancedStatusApp {
         let ui_state_for_refresh = Arc::clone(&self.ui_state);
         let app_state_for_refresh = Arc::clone(&self.app_state);
         let log_sender = self.log_sender.clone();
-        
+
         tokio::spawn(async move {
             let mut interval = interval(Duration::from_secs(10));
-            
+
             // Initialize alert manager if alerts are configured
             let alert_manager = app_state_for_refresh
                 .config
@@ -787,22 +778,22 @@ impl EnhancedStatusApp {
                 .as_ref()
                 .filter(|config| config.enabled)
                 .map(|config| AlertManager::new(config.clone()));
-            
+
             loop {
                 interval.tick().await;
-                
+
                 // Skip if already refreshing
                 if let Ok(state) = ui_state_for_refresh.try_read() {
                     if state.is_refreshing {
                         continue;
                     }
                 }
-                
+
                 // Mark as refreshing
                 if let Ok(mut state) = ui_state_for_refresh.try_write() {
                     state.last_refresh_time = Instant::now();
                     state.is_refreshing = true;
-                    
+
                     // Only refresh the currently selected validator
                     let selected_idx = state.selected_validator_index;
                     if selected_idx < state.field_refresh_states.len() {
@@ -821,32 +812,33 @@ impl EnhancedStatusApp {
                         refresh_state.node_1.swap_readiness_refreshing = true;
                     }
                 }
-                
+
                 // Fetch vote data for all validators (needed for alerts)
                 let ui_state_vote = ui_state_for_refresh.clone();
                 let app_state_vote = app_state_for_refresh.clone();
                 let log_sender_vote = log_sender.clone();
                 let alert_manager_vote = alert_manager.clone();
-                
+
                 tokio::spawn(async move {
                     refresh_vote_data_for_alerts(
                         app_state_vote,
                         ui_state_vote,
                         log_sender_vote,
                         alert_manager_vote,
-                    ).await;
+                    )
+                    .await;
                 });
-                
+
                 // Do the UI field refresh
                 let ui_state_clone = ui_state_for_refresh.clone();
                 let app_state_clone = app_state_for_refresh.clone();
-                
+
                 tokio::spawn(async move {
                     refresh_all_fields(app_state_clone, ui_state_clone).await;
                 });
             }
         });
-        
+
         // That's it! Just one background refresh task
         // All other tasks (vote data alerts, catchup status, ssh health) are removed
     }
@@ -854,7 +846,7 @@ impl EnhancedStatusApp {
 
 // ORPHANED CODE FROM OLD BACKGROUND TASKS - TO BE REMOVED
 /*
-            
+
             // Initialize alert manager and tracker if alerts are configured
             let alert_manager = app_state
                 .config
@@ -862,13 +854,13 @@ impl EnhancedStatusApp {
                 .as_ref()
                 .filter(|config| config.enabled)
                 .map(|config| AlertManager::new(config.clone()));
-            
+
             let nodes_per_validator = 2; // Assuming 2 nodes per validator
             let mut alert_tracker = ComprehensiveAlertTracker::new(
                 app_state.validator_statuses.len(),
                 nodes_per_validator
             );
-            
+
             loop {
                 interval.tick().await;
 
@@ -905,17 +897,17 @@ impl EnhancedStatusApp {
                             let (should_alert_rpc, consecutive_failures, seconds_since_first) = {
                                 let mut state = ui_state.write().await;
                                 state.rpc_failure_tracker[idx].record_failure(e.to_string());
-                                
+
                                 let tracker = &state.rpc_failure_tracker[idx];
                                 let consecutive = tracker.consecutive_failures;
                                 let seconds = tracker.seconds_since_first_failure().unwrap_or(0);
-                                
+
                                 let config = app_state.config.alert_config.as_ref();
                                 let time_threshold = config.map(|c| c.rpc_failure_threshold_seconds).unwrap_or(1800);
-                                
+
                                 let should_alert = seconds >= time_threshold
                                     && alert_tracker.rpc_failure_tracker.should_send_alert(idx);
-                                
+
                                 (should_alert, consecutive, seconds)
                             };
 
@@ -1011,7 +1003,7 @@ impl EnhancedStatusApp {
 
                                         // Get current health status
                                         let node_health = state.validator_health[idx].clone();
-                                        
+
                                         // Send alert with health status
                                         if let Err(e) = alert_mgr
                                             .send_delinquency_alert_with_health(
@@ -1043,7 +1035,7 @@ impl EnhancedStatusApp {
                                                 level: LogLevel::Warning,
                                             });
                                         }
-                                        
+
                                         // Check if auto-failover is enabled
                                         if let Some(alert_config) = &app_state.config.alert_config {
                                             if alert_config.enabled && alert_config.auto_failover_enabled {
@@ -1051,21 +1043,21 @@ impl EnhancedStatusApp {
                                                 // We need RPC to verify on-chain that the validator is not voting
                                                 // SSH may be down if the node is completely offline
                                                 if node_health.rpc_status.consecutive_failures == 0 {
-                                                    
+
                                                     let _ = log_sender.send(LogMessage {
                                                         host: format!("validator-{}", idx),
                                                         message: "🚨 AUTO-FAILOVER: Initiating emergency takeover".to_string(),
                                                         timestamp: Instant::now(),
                                                         level: LogLevel::Error,
                                                     });
-                                                    
+
                                                     // Spawn emergency failover task
                                                     let validator_status = app_state.validator_statuses[idx].clone();
                                                     let alert_manager = alert_mgr.clone();
                                                     let ssh_pool = app_state.ssh_pool.clone();
                                                     let ssh_keys = app_state.detected_ssh_keys.clone();
                                                     let emergency_flag = emergency_takeover_flag.clone();
-                                                    
+
                                                     tokio::spawn(async move {
                                                         execute_emergency_failover(
                                                             validator_status,
@@ -1224,22 +1216,22 @@ impl EnhancedStatusApp {
                 // Process failure tracking and alerts
                 let mut alerts_to_send = Vec::new();
                 let mut failure_updates = Vec::new();
-                
+
                 for (idx, new_pair) in new_catchup_data.iter().enumerate() {
                     if idx < app_state.validator_statuses.len() {
                         let validator_status = &app_state.validator_statuses[idx];
-                        
+
                         // Check node 0
                         if let Some(node_0) = validator_status.nodes_with_status.get(0) {
                             if node_0.status == crate::types::NodeStatus::Standby {
                                 let is_caught_up = new_pair.node_0.as_ref()
                                     .map(|c| c.status.contains("Caught up"))
                                     .unwrap_or(false);
-                                
+
                                 let has_response = new_pair.node_0.as_ref()
                                     .map(|c| !c.status.contains("Checking"))
                                     .unwrap_or(false);
-                                
+
                                 if is_caught_up {
                                     failure_updates.push((idx, 0, 0)); // Reset counter
                                 } else if has_response {
@@ -1248,10 +1240,10 @@ impl EnhancedStatusApp {
                                         let state = ui_state.read().await;
                                         state.catchup_failure_counts[idx].0
                                     };
-                                    
+
                                     let new_failures = current_failures + 1;
                                     failure_updates.push((idx, 0, new_failures));
-                                    
+
                                     if new_failures >= 3 {
                                         // Check cooldown
                                         let should_alert = {
@@ -1261,7 +1253,7 @@ impl EnhancedStatusApp {
                                                 None => true,
                                             }
                                         };
-                                        
+
                                         if should_alert {
                                             alerts_to_send.push((
                                                 validator_status.validator_pair.identity_pubkey.clone(),
@@ -1275,18 +1267,18 @@ impl EnhancedStatusApp {
                                 }
                             }
                         }
-                        
+
                         // Check node 1
                         if let Some(node_1) = validator_status.nodes_with_status.get(1) {
                             if node_1.status == crate::types::NodeStatus::Standby {
                                 let is_caught_up = new_pair.node_1.as_ref()
                                     .map(|c| c.status.contains("Caught up"))
                                     .unwrap_or(false);
-                                
+
                                 let has_response = new_pair.node_1.as_ref()
                                     .map(|c| !c.status.contains("Checking"))
                                     .unwrap_or(false);
-                                
+
                                 if is_caught_up {
                                     failure_updates.push((idx, 1, 0)); // Reset counter
                                 } else if has_response {
@@ -1295,10 +1287,10 @@ impl EnhancedStatusApp {
                                         let state = ui_state.read().await;
                                         state.catchup_failure_counts[idx].1
                                     };
-                                    
+
                                     let new_failures = current_failures + 1;
                                     failure_updates.push((idx, 1, new_failures));
-                                    
+
                                     if new_failures >= 3 {
                                         // Check cooldown
                                         let should_alert = {
@@ -1308,7 +1300,7 @@ impl EnhancedStatusApp {
                                                 None => true,
                                             }
                                         };
-                                        
+
                                         if should_alert {
                                             alerts_to_send.push((
                                                 validator_status.validator_pair.identity_pubkey.clone(),
@@ -1324,7 +1316,7 @@ impl EnhancedStatusApp {
                         }
                     }
                 }
-                
+
                 // Send alerts
                 for (validator_identity, node_label, consecutive_failures, idx, node_idx) in alerts_to_send {
                     if let Some(alert_mgr) = alert_manager.as_ref() {
@@ -1350,10 +1342,10 @@ impl EnhancedStatusApp {
                         }
                     }
                 }
-                
+
                 // Update UI state
                 let mut state = ui_state.write().await;
-                
+
                 // Apply failure updates
                 for (idx, node_idx, failures) in failure_updates {
                     if node_idx == 0 {
@@ -1362,7 +1354,7 @@ impl EnhancedStatusApp {
                         state.catchup_failure_counts[idx].1 = failures;
                     }
                 }
-                
+
                 state.catchup_data = new_catchup_data;
                 state.last_catchup_refresh = Instant::now();
             }
@@ -1431,13 +1423,13 @@ impl EnhancedStatusApp {
                                     node_pair.node_0.is_healthy = true;
                                     node_pair.node_0.last_success = Some(Instant::now());
                                     node_pair.node_0.failure_start = None;
-                                    
+
                                     // Update health tracking
                                     {
                                         let mut state = ui_state.write().await;
                                         state.validator_health[idx].ssh_status.record_success();
                                     }
-                                    
+
                                     let _ = log_sender.send(LogMessage {
                                         host: node_0.node.label.clone(),
                                         message: "SSH health check: OK".to_string(),
@@ -1459,25 +1451,25 @@ impl EnhancedStatusApp {
                                     } else {
                                         node_pair.node_0.failure_start = Some(Instant::now());
                                     }
-                                    
+
                                     // Update health tracking and check if alert needed
                                     let (should_alert_ssh, consecutive_failures, seconds_since_first) = {
                                         let mut state = ui_state.write().await;
                                         state.validator_health[idx].ssh_status.record_failure(e.to_string());
-                                        
+
                                         let tracker = &state.validator_health[idx].ssh_status;
                                         let consecutive = tracker.consecutive_failures;
                                         let seconds = tracker.seconds_since_first_failure().unwrap_or(0);
-                                        
+
                                         let config = app_state.config.alert_config.as_ref();
                                         let time_threshold = config.map(|c| c.ssh_failure_threshold_seconds).unwrap_or(1800);
-                                        
+
                                         let should_alert = seconds >= time_threshold
                                             && alert_tracker.ssh_failure_tracker[0].should_send_alert(idx);
-                                        
+
                                         (should_alert, consecutive, seconds)
                                     };
-                                    
+
                                     // Send SSH failure alert if needed
                                     if should_alert_ssh {
                                         if let Some(alert_mgr) = alert_manager.as_ref() {
@@ -1490,7 +1482,7 @@ impl EnhancedStatusApp {
                                             ).await;
                                         }
                                     }
-                                    
+
                                     let _ = log_sender.send(LogMessage {
                                         host: node_0.node.label.clone(),
                                         message: format!("SSH health check failed: {}", e),
@@ -1514,7 +1506,7 @@ impl EnhancedStatusApp {
                                     node_pair.node_1.is_healthy = true;
                                     node_pair.node_1.last_success = Some(Instant::now());
                                     node_pair.node_1.failure_start = None;
-                                    
+
                                     let _ = log_sender.send(LogMessage {
                                         host: node_1.node.label.clone(),
                                         message: "SSH health check: OK".to_string(),
@@ -1536,7 +1528,7 @@ impl EnhancedStatusApp {
                                     } else {
                                         node_pair.node_1.failure_start = Some(Instant::now());
                                     }
-                                    
+
                                     let _ = log_sender.send(LogMessage {
                                         host: node_1.node.label.clone(),
                                         message: format!("SSH health check failed: {}", e),
@@ -1805,11 +1797,11 @@ async fn stream_catchup_for_node(
                 tokio::time::sleep(Duration::from_secs(30)).await;
                 continue;
             };
-            
+
             // Need to use bash -c to properly handle the command with its full path
             format!("bash -c '{} catchup --our-localhost 2>&1'", solana_cli)
         };
-        
+
         // Log the command being executed
         let _ = log_sender.send(LogMessage {
             host: node.node.host.clone(),
@@ -1817,36 +1809,32 @@ async fn stream_catchup_for_node(
             timestamp: Instant::now(),
             level: LogLevel::Info,
         });
-        
+
         // Create channel for streaming output
         let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(100);
-        
+
         // Start the streaming command
-        let stream_task = ssh_pool.execute_command_streaming(
-            &node.node,
-            &ssh_key,
-            &catchup_command,
-            tx,
-        );
-        
+        let stream_task =
+            ssh_pool.execute_command_streaming(&node.node, &ssh_key, &catchup_command, tx);
+
         // Process streaming output
         let ui_state_clone = Arc::clone(&ui_state);
         let is_firedancer = node.validator_type == crate::types::ValidatorType::Firedancer;
         let process_task = tokio::spawn(async move {
             while let Some(line) = rx.recv().await {
                 let last_output = line.trim().to_string();
-                
+
                 // Update UI state with the latest output
                 let mut state = ui_state_clone.write().await;
                 if let Some(catchup_data) = state.catchup_data.get_mut(validator_idx) {
                     let status = parse_catchup_output(&last_output, is_firedancer);
-                    
+
                     let catchup_status = CatchupStatus {
                         status,
                         last_updated: Instant::now(),
                         is_streaming: true,
                     };
-                    
+
                     if node_idx == 0 {
                         catchup_data.node_0 = Some(catchup_status);
                     } else {
@@ -1855,7 +1843,7 @@ async fn stream_catchup_for_node(
                 }
             }
         });
-        
+
         // Wait for either task to complete
         tokio::select! {
             result = stream_task => {
@@ -1872,7 +1860,7 @@ async fn stream_catchup_for_node(
                 // Processing task completed
             }
         }
-        
+
         // Mark as not streaming anymore
         {
             let mut state = ui_state.write().await;
@@ -1888,7 +1876,7 @@ async fn stream_catchup_for_node(
                 }
             }
         }
-        
+
         // Wait before retrying
         tokio::time::sleep(Duration::from_secs(5)).await;
     }
@@ -1962,7 +1950,7 @@ pub async fn run_enhanced_ui(app: &mut EnhancedStatusApp) -> Result<bool> {
 
     // Create a channel for keyboard events
     let (key_tx, mut key_rx) = tokio::sync::mpsc::unbounded_channel::<KeyEvent>();
-    
+
     // Spawn dedicated keyboard handling thread that will NEVER block
     std::thread::spawn(move || {
         loop {
@@ -1987,32 +1975,34 @@ pub async fn run_enhanced_ui(app: &mut EnhancedStatusApp) -> Result<bool> {
     let mut last_frame = Instant::now();
     let mut emergency_mode = false;
     let mut _last_action_time = Instant::now();
-    
+
     // Create a channel for UI actions to avoid blocking in key handler
     let (action_tx, mut action_rx) = tokio::sync::mpsc::unbounded_channel::<UiAction>();
-    
+
     loop {
         // Process keyboard events from dedicated thread (non-blocking)
         while let Ok(key) = key_rx.try_recv() {
             // Convert key to action without any async operations
             // Get current view state for key action determination
-            let current_view = app.view_state.try_read()
+            let current_view = app
+                .view_state
+                .try_read()
                 .map(|guard| *guard)
                 .unwrap_or(ViewState::Status);
-            
+
             if let Some(action) = key_to_action(key, &current_view) {
                 // Send action to be processed (non-blocking)
                 action_tx.send(action).ok();
             }
-            
+
             // Force immediate redraw after keypress
             last_frame = Instant::now() - frame_duration;
         }
-        
+
         // Process UI actions (can be async but won't block keyboard)
         while let Ok(action) = action_rx.try_recv() {
             _last_action_time = Instant::now();
-            
+
             process_ui_action(
                 action,
                 &app.ui_state,
@@ -2023,13 +2013,11 @@ pub async fn run_enhanced_ui(app: &mut EnhancedStatusApp) -> Result<bool> {
             )
             .await?;
         }
-        
+
         // Check for quit signal with timeout to prevent blocking
-        let quit_check = tokio::time::timeout(
-            Duration::from_millis(1),
-            app.should_quit.read()
-        ).await;
-        
+        let quit_check =
+            tokio::time::timeout(Duration::from_millis(1), app.should_quit.read()).await;
+
         if let Ok(should_quit) = quit_check {
             if *should_quit {
                 break;
@@ -2039,14 +2027,15 @@ pub async fn run_enhanced_ui(app: &mut EnhancedStatusApp) -> Result<bool> {
         // Check if emergency takeover is in progress with timeout
         let emergency_check = tokio::time::timeout(
             Duration::from_millis(1),
-            app.emergency_takeover_in_progress.read()
-        ).await;
-        
+            app.emergency_takeover_in_progress.read(),
+        )
+        .await;
+
         let emergency_in_progress = match emergency_check {
             Ok(guard) => *guard,
             Err(_) => false, // Assume no emergency if we can't check
         };
-        
+
         if emergency_in_progress && !emergency_mode {
             // Just entering emergency mode - cleanup terminal
             emergency_mode = true;
@@ -2062,7 +2051,7 @@ pub async fn run_enhanced_ui(app: &mut EnhancedStatusApp) -> Result<bool> {
             terminal.clear()?;
             terminal.hide_cursor()?;
         }
-        
+
         if emergency_in_progress {
             // During emergency takeover, just wait without rendering
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -2075,7 +2064,7 @@ pub async fn run_enhanced_ui(app: &mut EnhancedStatusApp) -> Result<bool> {
             // Try to acquire locks with timeout to prevent blocking
             let ui_state_result = read_lock_with_timeout(&app.ui_state, 5).await;
             let view_state_result = read_lock_with_timeout(&app.view_state, 5).await;
-            
+
             if let (Ok(ui_state_read), Ok(view_state_read)) = (ui_state_result, view_state_result) {
                 terminal.draw(|f| match *view_state_read {
                     ViewState::Status => draw_ui(f, &ui_state_read, &app.app_state),
@@ -2084,7 +2073,7 @@ pub async fn run_enhanced_ui(app: &mut EnhancedStatusApp) -> Result<bool> {
 
                 drop(ui_state_read);
                 drop(view_state_read);
-                
+
                 last_frame = now;
             } else {
                 // Failed to acquire locks, skip this frame but update last_frame
@@ -2095,7 +2084,7 @@ pub async fn run_enhanced_ui(app: &mut EnhancedStatusApp) -> Result<bool> {
 
         // Small sleep to prevent busy waiting and give other tasks time
         tokio::time::sleep(Duration::from_millis(5)).await;
-        
+
         // Also check if we haven't rendered in a while (failsafe)
         if last_frame.elapsed() > Duration::from_secs(1) {
             // Force a render if it's been too long
@@ -2107,7 +2096,7 @@ pub async fn run_enhanced_ui(app: &mut EnhancedStatusApp) -> Result<bool> {
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
-    
+
     // Ensure terminal is fully restored before returning
     std::io::stdout().flush()?;
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -2152,10 +2141,10 @@ fn draw_validator_summaries(
 ) {
     // Use validator statuses from UI state
     let validator_statuses = &ui_state.validator_statuses;
-    
+
     // Only show the selected validator
     let idx = ui_state.selected_validator_index;
-    
+
     if let Some(validator_status) = validator_statuses.get(idx) {
         let vote_data = ui_state.vote_data.get(idx).and_then(|v| v.as_ref());
         let prev_slot = ui_state.previous_last_slots.get(idx).and_then(|&v| v);
@@ -2198,10 +2187,7 @@ fn draw_side_by_side_tables(
     // Split area horizontally
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(50),
-            Constraint::Percentage(50),
-        ])
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(area);
 
     // Always show nodes in the same order (node 0 on left, node 1 on right)
@@ -2211,17 +2197,29 @@ fn draw_side_by_side_tables(
     // Draw left table (node 0)
     if let Some(node) = validator_status.nodes_with_status.get(left_node_idx) {
         let ssh_health = ssh_health_data.and_then(|s| {
-            if left_node_idx == 0 { Some(&s.node_0) } else { Some(&s.node_1) }
+            if left_node_idx == 0 {
+                Some(&s.node_0)
+            } else {
+                Some(&s.node_1)
+            }
         });
-        
+
         let rpc_health = rpc_health_data.and_then(|r| {
-            if left_node_idx == 0 { Some(&r.node_0) } else { Some(&r.node_1) }
+            if left_node_idx == 0 {
+                Some(&r.node_0)
+            } else {
+                Some(&r.node_1)
+            }
         });
-        
+
         let node_refresh_state = field_refresh_state.map(|s| {
-            if left_node_idx == 0 { &s.node_0 } else { &s.node_1 }
+            if left_node_idx == 0 {
+                &s.node_0
+            } else {
+                &s.node_1
+            }
         });
-        
+
         draw_single_node_table(
             f,
             chunks[0],
@@ -2243,17 +2241,29 @@ fn draw_side_by_side_tables(
     // Draw right table (node 1)
     if let Some(node) = validator_status.nodes_with_status.get(right_node_idx) {
         let ssh_health = ssh_health_data.and_then(|s| {
-            if right_node_idx == 0 { Some(&s.node_0) } else { Some(&s.node_1) }
+            if right_node_idx == 0 {
+                Some(&s.node_0)
+            } else {
+                Some(&s.node_1)
+            }
         });
-        
+
         let rpc_health = rpc_health_data.and_then(|r| {
-            if right_node_idx == 0 { Some(&r.node_0) } else { Some(&r.node_1) }
+            if right_node_idx == 0 {
+                Some(&r.node_0)
+            } else {
+                Some(&r.node_1)
+            }
         });
-        
+
         let node_refresh_state = field_refresh_state.map(|s| {
-            if right_node_idx == 0 { &s.node_0 } else { &s.node_1 }
+            if right_node_idx == 0 {
+                &s.node_0
+            } else {
+                &s.node_1
+            }
         });
-        
+
         draw_single_node_table(
             f,
             chunks[1],
@@ -2296,7 +2306,7 @@ fn draw_single_node_table(
         width: area.width.saturating_sub(2),
         height: area.height.saturating_sub(2),
     };
-    
+
     let mut rows = vec![];
 
     // Node Status (first row)
@@ -2313,11 +2323,10 @@ fn draw_single_node_table(
             node.node.label
         )
     };
-    
+
     rows.push(Row::new(vec![
         Cell::from("Status"),
-        Cell::from(status_display.clone())
-        .style(Style::default().fg(
+        Cell::from(status_display.clone()).style(Style::default().fg(
             if field_refresh_state.map_or(false, |s| s.status_refreshing) {
                 Color::DarkGray
             } else {
@@ -2326,7 +2335,7 @@ fn draw_single_node_table(
                     crate::types::NodeStatus::Standby => Color::Yellow,
                     crate::types::NodeStatus::Unknown => Color::Red,
                 }
-            }
+            },
         )),
     ]));
 
@@ -2341,7 +2350,10 @@ fn draw_single_node_table(
     let identity_display = if field_refresh_state.map_or(false, |s| s.identity_refreshing) {
         "🔄 Refreshing...".to_string()
     } else {
-        node.current_identity.as_deref().unwrap_or("Unknown").to_string()
+        node.current_identity
+            .as_deref()
+            .unwrap_or("Unknown")
+            .to_string()
     };
     rows.push(Row::new(vec![
         Cell::from("Identity"),
@@ -2374,7 +2386,7 @@ fn draw_single_node_table(
             cleaned_version
         )
     };
-    
+
     rows.push(Row::new(vec![
         Cell::from("Client"),
         Cell::from(client_display),
@@ -2387,22 +2399,24 @@ fn draw_single_node_table(
         match node.swap_ready {
             Some(true) => "✅ Ready",
             Some(false) => "❌ Not Ready",
-            None => "⏳ Checking..."
-        }.to_string()
+            None => "⏳ Checking...",
+        }
+        .to_string()
     };
-    
+
     rows.push(Row::new(vec![
         Cell::from("Swap Ready"),
-        Cell::from(swap_ready_display.clone())
-        .style(Style::default().fg(if field_refresh_state.map_or(false, |s| s.swap_readiness_refreshing) {
-            Color::Cyan
-        } else {
-            match node.swap_ready {
-                Some(true) => Color::Green,
-                Some(false) => Color::Red,
-                None => Color::Yellow
-            }
-        })),
+        Cell::from(swap_ready_display.clone()).style(Style::default().fg(
+            if field_refresh_state.map_or(false, |s| s.swap_readiness_refreshing) {
+                Color::Cyan
+            } else {
+                match node.swap_ready {
+                    Some(true) => Color::Green,
+                    Some(false) => Color::Red,
+                    None => Color::Yellow,
+                }
+            },
+        )),
     ]));
 
     // Sync status if available
@@ -2420,12 +2434,7 @@ fn draw_single_node_table(
     if let Some(ledger_path) = &node.ledger_path {
         rows.push(Row::new(vec![
             Cell::from("Ledger Path"),
-            Cell::from(
-                ledger_path
-                    .split('/')
-                    .last()
-                    .unwrap_or("N/A"),
-            ),
+            Cell::from(ledger_path.split('/').last().unwrap_or("N/A")),
         ]));
     }
 
@@ -2456,23 +2465,23 @@ fn draw_single_node_table(
 
     // Vote status - always show
     let is_active = node.status == crate::types::NodeStatus::Active;
-    
+
     let (vote_display, vote_style) = if !is_active {
         // Non-active nodes always show "-"
         ("-".to_string(), Style::default())
     } else if let Some(vote_data) = vote_data {
         // Active node with vote data
         let last_slot_info = vote_data.recent_votes.last().map(|lv| lv.slot);
-        
+
         let mut display = if vote_data.is_voting {
             "✅ Voting".to_string()
         } else {
             "⚠️ Not Voting".to_string()
         };
-        
+
         if let Some(last_slot) = last_slot_info {
             display.push_str(&format!(" - {}", last_slot));
-            
+
             if let Some(prev) = previous_last_slot {
                 if last_slot > prev {
                     let inc = format!(" (+{})", last_slot - prev);
@@ -2480,22 +2489,26 @@ fn draw_single_node_table(
                 }
             }
         }
-        
+
         let has_recent_increment = if let Some(prev) = previous_last_slot {
             last_slot_info.map(|slot| slot > prev).unwrap_or(false)
-                && increment_time.map(|t| t.elapsed().as_secs() < 3).unwrap_or(false)
+                && increment_time
+                    .map(|t| t.elapsed().as_secs() < 3)
+                    .unwrap_or(false)
         } else {
             false
         };
-        
+
         let style = if has_recent_increment {
-            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD)
         } else if vote_data.is_voting {
             Style::default().fg(Color::Green)
         } else {
             Style::default().fg(Color::Yellow)
         };
-        
+
         (display, style)
     } else {
         // Active node but no vote data yet
@@ -2511,16 +2524,20 @@ fn draw_single_node_table(
     rows.push(create_section_header_with_label("HEALTH"));
 
     // SSH connectivity status
-    let health_display = if field_refresh_state.map(|s| s.ssh_connectivity_refreshing).unwrap_or(false) {
+    let health_display = if field_refresh_state
+        .map(|s| s.ssh_connectivity_refreshing)
+        .unwrap_or(false)
+    {
         "🔄 Refreshing...".to_string()
     } else if let Some(health) = ssh_health {
         if health.is_healthy {
             "✅ SSH connected".to_string()
         } else {
-            let failure_duration = health.failure_start
+            let failure_duration = health
+                .failure_start
                 .map(|start| start.elapsed())
                 .unwrap_or_else(|| Duration::from_secs(0));
-            
+
             let duration_str = if failure_duration.as_secs() < 60 {
                 format!("{}s", failure_duration.as_secs())
             } else if failure_duration.as_secs() < 3600 {
@@ -2528,28 +2545,29 @@ fn draw_single_node_table(
             } else {
                 format!("{}h", failure_duration.as_secs() / 3600)
             };
-            
+
             format!("❌ SSH failed (for {})", duration_str)
         }
     } else {
         "⏳ Checking...".to_string()
     };
-    
+
     rows.push(Row::new(vec![
         Cell::from("SSH Connectivity"),
-        Cell::from(health_display.clone()).style(
-            if health_display.contains("SSH connected") {
-                Style::default().fg(Color::Green)
-            } else if health_display.contains("SSH failed") {
-                Style::default().fg(Color::Red)
-            } else {
-                Style::default().fg(Color::Yellow)
-            }
-        ),
+        Cell::from(health_display.clone()).style(if health_display.contains("SSH connected") {
+            Style::default().fg(Color::Green)
+        } else if health_display.contains("SSH failed") {
+            Style::default().fg(Color::Red)
+        } else {
+            Style::default().fg(Color::Yellow)
+        }),
     ]));
-    
+
     // Node Health (RPC getHealth check)
-    let rpc_health_display = if field_refresh_state.map(|s| s.rpc_health_refreshing).unwrap_or(false) {
+    let rpc_health_display = if field_refresh_state
+        .map(|s| s.rpc_health_refreshing)
+        .unwrap_or(false)
+    {
         "🔄 Refreshing...".to_string()
     } else if let Some(health) = rpc_health {
         if health.is_healthy {
@@ -2563,18 +2581,16 @@ fn draw_single_node_table(
     } else {
         "⏳ Checking...".to_string()
     };
-    
+
     rows.push(Row::new(vec![
         Cell::from("Node Health"),
-        Cell::from(rpc_health_display.clone()).style(
-            if rpc_health_display.contains("Healthy") {
-                Style::default().fg(Color::Green)
-            } else if rpc_health_display.contains("Error") || rpc_health_display.contains("Unhealthy") {
-                Style::default().fg(Color::Red)
-            } else {
-                Style::default().fg(Color::Yellow)
-            }
-        ),
+        Cell::from(rpc_health_display.clone()).style(if rpc_health_display.contains("Healthy") {
+            Style::default().fg(Color::Green)
+        } else if rpc_health_display.contains("Error") || rpc_health_display.contains("Unhealthy") {
+            Style::default().fg(Color::Red)
+        } else {
+            Style::default().fg(Color::Yellow)
+        }),
     ]));
 
     // Section separator before Alert Configuration
@@ -2592,41 +2608,58 @@ fn draw_single_node_table(
             rows.push(Row::new(vec![
                 Cell::from("Alert Status"),
                 Cell::from(alert_method).style(Style::default().fg(
-                    if alert_config.telegram.is_some() { Color::Green } else { Color::Yellow }
+                    if alert_config.telegram.is_some() {
+                        Color::Green
+                    } else {
+                        Color::Yellow
+                    },
                 )),
             ]));
 
             // Delinquency threshold
             rows.push(Row::new(vec![
                 Cell::from("Delinquency"),
-                Cell::from(format!("{}s threshold", alert_config.delinquency_threshold_seconds))
-                    .style(Style::default().fg(Color::Red)),
+                Cell::from(format!(
+                    "{}s threshold",
+                    alert_config.delinquency_threshold_seconds
+                ))
+                .style(Style::default().fg(Color::Red)),
             ]));
 
             // SSH failure threshold
             rows.push(Row::new(vec![
                 Cell::from("SSH Failure"),
-                Cell::from(format!("{}m threshold", alert_config.ssh_failure_threshold_seconds / 60))
-                    .style(Style::default().fg(Color::Yellow)),
+                Cell::from(format!(
+                    "{}m threshold",
+                    alert_config.ssh_failure_threshold_seconds / 60
+                ))
+                .style(Style::default().fg(Color::Yellow)),
             ]));
 
             // RPC failure threshold
             rows.push(Row::new(vec![
                 Cell::from("RPC Failure"),
-                Cell::from(format!("{}m threshold", alert_config.rpc_failure_threshold_seconds / 60))
-                    .style(Style::default().fg(Color::Yellow)),
+                Cell::from(format!(
+                    "{}m threshold",
+                    alert_config.rpc_failure_threshold_seconds / 60
+                ))
+                .style(Style::default().fg(Color::Yellow)),
             ]));
-            
+
             // Auto-failover status
             rows.push(Row::new(vec![
                 Cell::from("Auto-Failover"),
-                Cell::from(if alert_config.auto_failover_enabled { 
-                    "✅ Enabled" 
-                } else { 
-                    "❌ Disabled" 
+                Cell::from(if alert_config.auto_failover_enabled {
+                    "✅ Enabled"
+                } else {
+                    "❌ Disabled"
                 })
                 .style(Style::default().fg(
-                    if alert_config.auto_failover_enabled { Color::Green } else { Color::Red }
+                    if alert_config.auto_failover_enabled {
+                        Color::Green
+                    } else {
+                        Color::Red
+                    },
                 )),
             ]));
         }
@@ -2640,17 +2673,16 @@ fn draw_single_node_table(
 
     // Highlight border based on node status, not position
     let border_style = if node.status == crate::types::NodeStatus::Active {
-        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
 
     let table = Table::new(
         rows,
-        vec![
-            Constraint::Length(20),
-            Constraint::Percentage(80),
-        ],
+        vec![Constraint::Length(20), Constraint::Percentage(80)],
     )
     .block(
         Block::default()
@@ -2665,19 +2697,16 @@ fn draw_single_node_table(
 fn create_section_header_with_label(label: &'static str) -> Row<'static> {
     if label.is_empty() {
         // Empty row for spacing
-        Row::new(vec![
-            Cell::from(""),
-            Cell::from(""),
-        ])
-        .height(1)
+        Row::new(vec![Cell::from(""), Cell::from("")]).height(1)
     } else {
         // Section label
-        Row::new(vec![
-            Cell::from(label),
-            Cell::from(""),
-        ])
-        .style(Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM))
-        .height(1)
+        Row::new(vec![Cell::from(label), Cell::from("")])
+            .style(
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM),
+            )
+            .height(1)
     }
 }
 
@@ -2700,7 +2729,7 @@ fn draw_validator_table(
         width: area.width.saturating_sub(2),
         height: area.height.saturating_sub(2),
     };
-    
+
     let vote_key = &validator_status.validator_pair.vote_pubkey;
     let vote_formatted = format!(
         "{}…{}",
@@ -2868,22 +2897,22 @@ fn draw_validator_table(
             Cell::from(match node_0.swap_ready {
                 Some(true) => "✅ Ready",
                 Some(false) => "❌ Not Ready",
-                None => "⏳ Checking..."
+                None => "⏳ Checking...",
             })
             .style(Style::default().fg(match node_0.swap_ready {
                 Some(true) => Color::Green,
                 Some(false) => Color::Red,
-                None => Color::Yellow
+                None => Color::Yellow,
             })),
             Cell::from(match node_1.swap_ready {
                 Some(true) => "✅ Ready",
                 Some(false) => "❌ Not Ready",
-                None => "⏳ Checking..."
+                None => "⏳ Checking...",
             })
             .style(Style::default().fg(match node_1.swap_ready {
                 Some(true) => Color::Green,
                 Some(false) => Color::Red,
-                None => Color::Yellow
+                None => Color::Yellow,
             })),
         ]));
 
@@ -2975,23 +3004,23 @@ fn draw_validator_table(
         // Vote status row with slot info - moved to bottom
         if let Some(vote_data) = vote_data {
             let last_slot_info = vote_data.recent_votes.last().map(|lv| lv.slot);
-            
+
             // Build vote status with slot info
             let build_vote_display = |is_active: bool| -> (String, Style) {
                 if !is_active {
                     return ("-".to_string(), Style::default());
                 }
-                
+
                 let mut display = if vote_data.is_voting {
                     "✅ Voting".to_string()
                 } else {
                     "⚠️ Not Voting".to_string()
                 };
-                
+
                 // Add slot info if available
                 if let Some(last_slot) = last_slot_info {
                     display.push_str(&format!(" - {}", last_slot));
-                    
+
                     // Add increment if applicable
                     if let Some(prev) = previous_last_slot {
                         if last_slot > prev {
@@ -3000,28 +3029,34 @@ fn draw_validator_table(
                         }
                     }
                 }
-                
+
                 // Determine style
                 let has_recent_increment = if let Some(prev) = previous_last_slot {
                     last_slot_info.map(|slot| slot > prev).unwrap_or(false)
-                        && increment_time.map(|t| t.elapsed().as_secs() < 3).unwrap_or(false)
+                        && increment_time
+                            .map(|t| t.elapsed().as_secs() < 3)
+                            .unwrap_or(false)
                 } else {
                     false
                 };
-                
+
                 let style = if has_recent_increment {
-                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD)
                 } else if vote_data.is_voting {
                     Style::default().fg(Color::Green)
                 } else {
                     Style::default().fg(Color::Yellow)
                 };
-                
+
                 (display, style)
             };
-            
-            let (node_0_display, node_0_style) = build_vote_display(node_0.status == crate::types::NodeStatus::Active);
-            let (node_1_display, node_1_style) = build_vote_display(node_1.status == crate::types::NodeStatus::Active);
+
+            let (node_0_display, node_0_style) =
+                build_vote_display(node_0.status == crate::types::NodeStatus::Active);
+            let (node_1_display, node_1_style) =
+                build_vote_display(node_1.status == crate::types::NodeStatus::Active);
 
             rows.push(Row::new(vec![
                 Cell::from("Vote Status"),
@@ -3105,18 +3140,12 @@ fn draw_footer(f: &mut ratatui::Frame, area: Rect, ui_state: &UiState, app_state
     } else {
         "(R)efresh".to_string()
     };
-    
+
     // Add Tab option if multiple validators
     let help_text = if app_state.validator_statuses.len() > 1 {
-        format!(
-            "(Q)uit | {} | (S)witch | Tab: Next validator",
-            refresh_text
-        )
+        format!("(Q)uit | {} | (S)witch | Tab: Next validator", refresh_text)
     } else {
-        format!(
-            "(Q)uit | {} | (S)witch",
-            refresh_text
-        )
+        format!("(Q)uit | {} | (S)witch", refresh_text)
     };
 
     let footer = Paragraph::new(help_text)
@@ -3136,9 +3165,13 @@ async fn execute_emergency_failover(
 ) {
     // Find active and standby nodes
     let (active_node, standby_node) = match (
-        validator_status.nodes_with_status.iter()
+        validator_status
+            .nodes_with_status
+            .iter()
             .find(|n| n.status == crate::types::NodeStatus::Active),
-        validator_status.nodes_with_status.iter()
+        validator_status
+            .nodes_with_status
+            .iter()
             .find(|n| n.status == crate::types::NodeStatus::Standby),
     ) {
         (Some(active), Some(standby)) => (active.clone(), standby.clone()),
@@ -3150,10 +3183,10 @@ async fn execute_emergency_failover(
 
     // Set the emergency takeover flag to suspend UI rendering
     *emergency_takeover_flag.write().await = true;
-    
+
     // Wait a moment for the UI to stop rendering and cleanup terminal
     tokio::time::sleep(Duration::from_millis(300)).await;
-    
+
     let mut emergency_failover = crate::emergency_failover::EmergencyFailover::new(
         active_node,
         standby_node,
@@ -3166,10 +3199,10 @@ async fn execute_emergency_failover(
     if let Err(e) = emergency_failover.execute_emergency_takeover().await {
         eprintln!("❌ Emergency failover error: {}", e);
     }
-    
+
     // Wait a moment for the user to see the results
     tokio::time::sleep(Duration::from_secs(3)).await;
-    
+
     // Clear the emergency takeover flag to resume UI
     *emergency_takeover_flag.write().await = false;
 }
@@ -3269,11 +3302,8 @@ fn draw_switch_ui(f: &mut ratatui::Frame, app_state: &AppState, ui_state: &UiSta
             Line::from("  2. Transfer tower file to standby node"),
             Line::from("  3. Switch standby node to funded identity"),
             Line::from(""),
-            Line::from("[!] Press 'y' to confirm switch or 'q' to cancel").style(
-                Style::default()
-                    .fg(Color::Red)
-                    .add_modifier(Modifier::BOLD),
-            ),
+            Line::from("[!] Press 'y' to confirm switch or 'q' to cancel")
+                .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
         ];
 
         let actions_widget = Paragraph::new(actions_text).block(
@@ -3286,10 +3316,9 @@ fn draw_switch_ui(f: &mut ratatui::Frame, app_state: &AppState, ui_state: &UiSta
     }
 
     // Footer
-    let footer =
-        Paragraph::new("Press 'y' to confirm switch | Press 'q' to cancel")
-            .style(Style::default().fg(Color::DarkGray))
-            .alignment(Alignment::Center);
+    let footer = Paragraph::new("Press 'y' to confirm switch | Press 'q' to cancel")
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
     f.render_widget(footer, chunks[2]);
 }
 
@@ -3368,24 +3397,24 @@ async fn refresh_all_fields(app_state: Arc<AppState>, ui_state: Arc<RwLock<UiSta
         let ui_state_read = ui_state.read().await;
         ui_state_read.validator_statuses.len()
     };
-    
+
     // Spawn refresh tasks for each validator
     let mut refresh_handles = Vec::new();
     for validator_idx in 0..validator_count {
         let app_state_clone = app_state.clone();
         let ui_state_clone = ui_state.clone();
-        
+
         let handle = tokio::spawn(async move {
             refresh_validator_fields(validator_idx, app_state_clone, ui_state_clone).await;
         });
         refresh_handles.push(handle);
     }
-    
+
     // Wait for all refreshes to complete
     for handle in refresh_handles {
         let _ = handle.await;
     }
-    
+
     // Clear the global refreshing flag
     {
         let mut ui_state_write = ui_state.write().await;
@@ -3407,30 +3436,31 @@ async fn refresh_validator_fields(
             None => return,
         }
     };
-    
+
     // Refresh each node
     for (node_idx, node_with_status) in nodes.iter().enumerate() {
         let node = node_with_status.clone();
         let validator_pair_clone = validator_pair.clone();
         let ssh_pool = app_state.ssh_pool.clone();
-        let ssh_key = app_state.detected_ssh_keys
+        let ssh_key = app_state
+            .detected_ssh_keys
             .get(&node.node.host)
             .cloned()
             .unwrap_or_default();
-        
+
         // Refresh flags are already set in the key handler
-        
+
         // Spawn refresh tasks for this node
         let ui_state_clone = ui_state.clone();
         let node_clone = node.clone();
         let ssh_pool_clone = ssh_pool.clone();
         let ssh_key_clone = ssh_key.clone();
-        
+
         // Refresh status and identity
         tokio::spawn(async move {
             // Small delay to ensure UI shows loading state
             tokio::time::sleep(Duration::from_millis(50)).await;
-            
+
             refresh_node_status_and_identity(
                 validator_idx,
                 node_idx,
@@ -3439,21 +3469,22 @@ async fn refresh_validator_fields(
                 ssh_pool_clone,
                 ssh_key_clone,
                 ui_state_clone,
-            ).await;
+            )
+            .await;
         });
-        
+
         // Version refresh flag is already set in the key handler
-        
+
         // Refresh version
         let ui_state_clone = ui_state.clone();
         let node_clone = node.clone();
         let ssh_pool_clone = ssh_pool.clone();
         let ssh_key_clone = ssh_key.clone();
-        
+
         tokio::spawn(async move {
             // Small delay to ensure UI shows loading state
             tokio::time::sleep(Duration::from_millis(50)).await;
-            
+
             refresh_node_version(
                 validator_idx,
                 node_idx,
@@ -3461,15 +3492,16 @@ async fn refresh_validator_fields(
                 ssh_pool_clone,
                 ssh_key_clone,
                 ui_state_clone,
-            ).await;
+            )
+            .await;
         });
-        
+
         // Refresh SSH connectivity
         let ui_state_clone = ui_state.clone();
         let node_clone = node.clone();
         let ssh_pool_clone = ssh_pool.clone();
         let ssh_key_clone = ssh_key.clone();
-        
+
         tokio::spawn(async move {
             refresh_ssh_connectivity(
                 validator_idx,
@@ -3478,15 +3510,16 @@ async fn refresh_validator_fields(
                 ssh_pool_clone,
                 ssh_key_clone,
                 ui_state_clone,
-            ).await;
+            )
+            .await;
         });
-        
+
         // Refresh RPC health
         let ui_state_clone = ui_state.clone();
         let node_clone = node.clone();
         let ssh_pool_clone = ssh_pool.clone();
         let ssh_key_clone = ssh_key.clone();
-        
+
         tokio::spawn(async move {
             refresh_rpc_health(
                 validator_idx,
@@ -3495,23 +3528,19 @@ async fn refresh_validator_fields(
                 ssh_pool_clone,
                 ssh_key_clone,
                 ui_state_clone,
-            ).await;
+            )
+            .await;
         });
-        
+
         // Refresh swap readiness
         let app_state_clone = app_state.clone();
         let ui_state_clone = ui_state.clone();
-        
+
         tokio::spawn(async move {
             // Small delay to ensure UI shows loading state
             tokio::time::sleep(Duration::from_millis(50)).await;
-            
-            refresh_swap_readiness(
-                app_state_clone,
-                ui_state_clone,
-                validator_idx,
-                node_idx,
-            ).await;
+
+            refresh_swap_readiness(app_state_clone, ui_state_clone, validator_idx, node_idx).await;
         });
     }
 }
@@ -3530,7 +3559,7 @@ async fn refresh_ssh_connectivity(
         Ok(_) => true,
         Err(_) => false,
     };
-    
+
     // Update UI state
     let mut state = ui_state.write().await;
     if let Some(ssh_data) = state.ssh_health_data.get_mut(validator_idx) {
@@ -3539,7 +3568,7 @@ async fn refresh_ssh_connectivity(
         } else {
             &mut ssh_data.node_1
         };
-        
+
         ssh_status.is_healthy = is_healthy;
         if is_healthy {
             ssh_status.last_success = Some(Instant::now());
@@ -3549,7 +3578,7 @@ async fn refresh_ssh_connectivity(
             ssh_status.failure_start = Some(Instant::now());
         }
     }
-    
+
     // Clear the refresh flag
     if let Some(refresh_state) = state.field_refresh_states.get_mut(validator_idx) {
         if node_idx == 0 {
@@ -3558,7 +3587,7 @@ async fn refresh_ssh_connectivity(
             refresh_state.node_1.ssh_connectivity_refreshing = false;
         }
     }
-    
+
     // Update refresh timestamp
     state.last_ssh_health_refresh = Instant::now();
 }
@@ -3572,18 +3601,19 @@ async fn refresh_rpc_health(
     ssh_key: String,
     ui_state: Arc<RwLock<UiState>>,
 ) {
-    use crate::validator_rpc::{get_rpc_port, get_health};
-    
+    use crate::validator_rpc::{get_health, get_rpc_port};
+
     // Get RPC port based on validator type
     // TODO: Extract command line from ps output to detect custom RPC ports
     let rpc_port = get_rpc_port(node.validator_type, None);
-    
+
     // Check RPC health
-    let (is_healthy, error_msg) = match get_health(&ssh_pool, &node.node, &ssh_key, rpc_port).await {
+    let (is_healthy, error_msg) = match get_health(&ssh_pool, &node.node, &ssh_key, rpc_port).await
+    {
         Ok(healthy) => (healthy, None),
         Err(e) => (false, Some(e.to_string())),
     };
-    
+
     // Update UI state
     let mut state = ui_state.write().await;
     if let Some(rpc_data) = state.rpc_health_data.get_mut(validator_idx) {
@@ -3592,12 +3622,12 @@ async fn refresh_rpc_health(
         } else {
             &mut rpc_data.node_1
         };
-        
+
         rpc_status.is_healthy = is_healthy;
         rpc_status.last_check = Some(Instant::now());
         rpc_status.error_message = error_msg;
     }
-    
+
     // Clear the refresh flag
     if let Some(refresh_state) = state.field_refresh_states.get_mut(validator_idx) {
         if node_idx == 0 {
@@ -3638,7 +3668,10 @@ async fn refresh_node_status_and_identity(
     } else {
         // Try to find solana in common locations
         let check_cmd = "which solana || ls /home/solana/.local/share/solana/install/active_release/bin/solana 2>/dev/null || echo 'solana'";
-        match ssh_pool.execute_command(&node.node, &ssh_key, check_cmd).await {
+        match ssh_pool
+            .execute_command(&node.node, &ssh_key, check_cmd)
+            .await
+        {
             Ok(output) => {
                 let path = output.trim();
                 if !path.is_empty() && path != "solana" {
@@ -3648,16 +3681,16 @@ async fn refresh_node_status_and_identity(
                     "solana".to_string()
                 }
             }
-            Err(_) => "solana".to_string()
+            Err(_) => "solana".to_string(),
         }
     };
-    
+
     // Detect RPC port based on validator type
     let rpc_port = match node.validator_type {
         crate::types::ValidatorType::Firedancer => {
             // For Firedancer, get the config file and extract RPC port from TOML
             let mut port = 8899; // default
-            
+
             // First, find the running fdctl process to get config path
             let ps_cmd = "ps aux | grep -E 'bin/fdctl' | grep -v grep";
             if let Ok(ps_output) = ssh_pool.execute_command(&node.node, &ssh_key, ps_cmd).await {
@@ -3669,7 +3702,10 @@ async fn refresh_node_status_and_identity(
                             let config_path = parts[i + 1];
                             // Read RPC port from config
                             let grep_cmd = format!("cat {} | grep -A 5 '\\[rpc\\]' | grep 'port' | grep -o '[0-9]\\+' | head -1", config_path);
-                            if let Ok(port_output) = ssh_pool.execute_command(&node.node, &ssh_key, &grep_cmd).await {
+                            if let Ok(port_output) = ssh_pool
+                                .execute_command(&node.node, &ssh_key, &grep_cmd)
+                                .await
+                            {
                                 if let Ok(parsed_port) = port_output.trim().parse::<u16>() {
                                     port = parsed_port;
                                 }
@@ -3684,7 +3720,7 @@ async fn refresh_node_status_and_identity(
         crate::types::ValidatorType::Agave | crate::types::ValidatorType::Jito => {
             // For Agave/Jito, extract --rpc-port from command line
             let mut port = 8899; // default
-            
+
             let ps_cmd = "ps aux | grep -E 'agave-validator|solana-validator' | grep -v grep";
             if let Ok(ps_output) = ssh_pool.execute_command(&node.node, &ssh_key, ps_cmd).await {
                 if let Some(line) = ps_output.lines().next() {
@@ -3704,7 +3740,7 @@ async fn refresh_node_status_and_identity(
         }
         _ => 8899, // default for unknown types
     };
-    
+
     // All validator types use RPC to get identity
     let rpc_command = format!(
         r#"curl -s http://localhost:{} -X POST -H "Content-Type: application/json" -d '{{"jsonrpc":"2.0","id":1,"method":"getIdentity"}}' 2>&1"#,
@@ -3712,33 +3748,31 @@ async fn refresh_node_status_and_identity(
     );
     let command = rpc_command;
     let use_rpc = true;
-    
-    
+
     let command_result = ssh_pool
         .execute_command(&node.node, &ssh_key, &command)
         .await;
-    
+
     let (current_identity, _status, sync_status) = match command_result {
         Ok(output) => {
-            
             let mut extracted_identity = None;
             let mut extracted_status = crate::types::NodeStatus::Unknown;
             let mut extracted_sync_status = None;
-            
+
             if use_rpc {
                 // Parse RPC response for Agave/Jito
                 match serde_json::from_str::<serde_json::Value>(&output) {
                     Ok(json) => {
                         if let Some(identity) = json["result"]["identity"].as_str() {
                             extracted_identity = Some(identity.to_string());
-                            
+
                             // Determine status based on identity match
                             if identity == validator_pair.identity_pubkey {
                                 extracted_status = crate::types::NodeStatus::Active;
                             } else {
                                 extracted_status = crate::types::NodeStatus::Standby;
                             }
-                            
+
                             // For RPC, we need to run catchup separately to get sync status
                             // We'll do this after getting identity
                         }
@@ -3751,70 +3785,77 @@ async fn refresh_node_status_and_identity(
                 // Parse catchup output to extract identity and sync status
                 for line in output.lines() {
                     if line.contains(" has caught up") || line.contains("0 slot(s) behind") {
-                    if let Some(caught_up_pos) = line.find(" has caught up") {
-                        let identity = line[..caught_up_pos].trim();
-                        if !identity.is_empty() {
-                            extracted_identity = Some(identity.to_string());
-                            
-                            // Determine status based on identity match
-                            if identity == validator_pair.identity_pubkey {
-                                extracted_status = crate::types::NodeStatus::Active;
-                            } else {
-                                extracted_status = crate::types::NodeStatus::Standby;
+                        if let Some(caught_up_pos) = line.find(" has caught up") {
+                            let identity = line[..caught_up_pos].trim();
+                            if !identity.is_empty() {
+                                extracted_identity = Some(identity.to_string());
+
+                                // Determine status based on identity match
+                                if identity == validator_pair.identity_pubkey {
+                                    extracted_status = crate::types::NodeStatus::Active;
+                                } else {
+                                    extracted_status = crate::types::NodeStatus::Standby;
+                                }
                             }
-                        }
-                        
-                        // Extract slot information
-                        if let Some(us_start) = line.find("us:") {
-                            let us_end = line[us_start + 3..]
-                                .find(' ')
-                                .unwrap_or(line.len() - us_start - 3)
-                                + us_start
-                                + 3;
-                            let us_slot = &line[us_start + 3..us_end];
-                            extracted_sync_status = Some(format!("Caught up (slot: {})", us_slot));
-                        } else {
-                            extracted_sync_status = Some("Caught up".to_string());
-                        }
-                        break;
-                    } else if line.contains("0 slot(s) behind") {
-                        // Extract slot information from Firedancer format
-                        if let Some(us_start) = line.find("us:") {
-                            let us_end = line[us_start + 3..]
-                                .find(' ')
-                                .unwrap_or(line.len() - us_start - 3)
-                                + us_start
-                                + 3;
-                            let us_slot = &line[us_start + 3..us_end];
-                            extracted_sync_status = Some(format!("Caught up (slot: {})", us_slot));
-                        } else {
-                            extracted_sync_status = Some("Caught up".to_string());
+
+                            // Extract slot information
+                            if let Some(us_start) = line.find("us:") {
+                                let us_end = line[us_start + 3..]
+                                    .find(' ')
+                                    .unwrap_or(line.len() - us_start - 3)
+                                    + us_start
+                                    + 3;
+                                let us_slot = &line[us_start + 3..us_end];
+                                extracted_sync_status =
+                                    Some(format!("Caught up (slot: {})", us_slot));
+                            } else {
+                                extracted_sync_status = Some("Caught up".to_string());
+                            }
+                            break;
+                        } else if line.contains("0 slot(s) behind") {
+                            // Extract slot information from Firedancer format
+                            if let Some(us_start) = line.find("us:") {
+                                let us_end = line[us_start + 3..]
+                                    .find(' ')
+                                    .unwrap_or(line.len() - us_start - 3)
+                                    + us_start
+                                    + 3;
+                                let us_slot = &line[us_start + 3..us_end];
+                                extracted_sync_status =
+                                    Some(format!("Caught up (slot: {})", us_slot));
+                            } else {
+                                extracted_sync_status = Some("Caught up".to_string());
+                            }
                         }
                     }
                 }
-                }
             }
-            
+
             // If no sync status found, set to Unknown
             if extracted_sync_status.is_none() {
                 extracted_sync_status = Some("Unknown".to_string());
             }
-            
+
             (extracted_identity, extracted_status, extracted_sync_status)
         }
-        Err(_e) => {
-            (None, crate::types::NodeStatus::Unknown, Some("Unknown".to_string()))
-        },
+        Err(_e) => (
+            None,
+            crate::types::NodeStatus::Unknown,
+            Some("Unknown".to_string()),
+        ),
     };
-    
+
     // If we got identity via RPC, now run catchup to get sync status
     let sync_status = if use_rpc && current_identity.is_some() {
         let catchup_command = format!("timeout 10 {} catchup --our-localhost 2>&1", solana_cli);
-        
-        match ssh_pool.execute_command(&node.node, &ssh_key, &catchup_command).await {
+
+        match ssh_pool
+            .execute_command(&node.node, &ssh_key, &catchup_command)
+            .await
+        {
             Ok(output) => {
                 let mut sync_status = None;
-                
+
                 for line in output.lines() {
                     if line.contains(" has caught up") || line.contains("0 slot(s) behind") {
                         // Extract slot information
@@ -3832,38 +3873,40 @@ async fn refresh_node_status_and_identity(
                         break;
                     }
                 }
-                
+
                 sync_status.or(Some("Unknown".to_string()))
             }
-            Err(_e) => {
-                Some("Unknown".to_string())
-            }
+            Err(_e) => Some("Unknown".to_string()),
         }
     } else {
         sync_status
     };
-    
+
     // Update UI state with the new status and identity
     {
         let mut ui_state_write = ui_state.write().await;
-        
+
         // Update the validator status in UI state
         if let Some(validator_status) = ui_state_write.validator_statuses.get_mut(validator_idx) {
             if let Some(node_with_status) = validator_status.nodes_with_status.get_mut(node_idx) {
                 // Update status
                 node_with_status.status = _status;
-                
+
                 // Update identity
                 node_with_status.current_identity = current_identity;
-                
+
                 // Update sync status
                 node_with_status.sync_status = sync_status;
             }
         }
-        
+
         // Clear refreshing flags
         if let Some(refresh_state) = ui_state_write.field_refresh_states.get_mut(validator_idx) {
-            let field_state = if node_idx == 0 { &mut refresh_state.node_0 } else { &mut refresh_state.node_1 };
+            let field_state = if node_idx == 0 {
+                &mut refresh_state.node_0
+            } else {
+                &mut refresh_state.node_1
+            };
             field_state.status_refreshing = false;
             field_state.identity_refreshing = false;
         }
@@ -3888,7 +3931,7 @@ async fn refresh_node_version(
                     .execute_command(&node.node, &ssh_key, &version_cmd)
                     .await
                     .unwrap_or_else(|_| "Unknown".to_string());
-                
+
                 // Parse fdctl version output - first part is version
                 let version = if let Some(line) = version_output.lines().next() {
                     if let Some(version_match) = line.split_whitespace().next() {
@@ -3899,10 +3942,13 @@ async fn refresh_node_version(
                 } else {
                     Some("Firedancer Unknown".to_string())
                 };
-                
+
                 (crate::types::ValidatorType::Firedancer, version)
             } else {
-                (crate::types::ValidatorType::Firedancer, Some("Firedancer Unknown".to_string()))
+                (
+                    crate::types::ValidatorType::Firedancer,
+                    Some("Firedancer Unknown".to_string()),
+                )
             }
         }
         crate::types::ValidatorType::Agave | crate::types::ValidatorType::Jito => {
@@ -3912,14 +3958,12 @@ async fn refresh_node_version(
                     .execute_command(&node.node, &ssh_key, &version_cmd)
                     .await
                     .unwrap_or_else(|_| "Unknown".to_string());
-                
+
                 // Parse version output
                 let version = if let Some(line) = version_output.lines().next() {
                     if line.starts_with("agave-validator ") || line.starts_with("solana-cli ") {
                         // Extract version after the executable name
-                        line.split_whitespace()
-                            .nth(1)
-                            .map(|v| v.to_string())
+                        line.split_whitespace().nth(1).map(|v| v.to_string())
                     } else if line.contains("jito-") {
                         // Jito validator format
                         Some(line.trim().to_string())
@@ -3929,14 +3973,14 @@ async fn refresh_node_version(
                 } else {
                     None
                 };
-                
+
                 // Determine if it's Jito based on version output
                 let validator_type = if version.as_ref().map_or(false, |v| v.contains("jito")) {
                     crate::types::ValidatorType::Jito
                 } else {
                     crate::types::ValidatorType::Agave
                 };
-                
+
                 (validator_type, version)
             } else {
                 (node.validator_type.clone(), None)
@@ -3947,11 +3991,11 @@ async fn refresh_node_version(
             (crate::types::ValidatorType::Unknown, None)
         }
     };
-    
+
     // Update UI state with the new version info
     {
         let mut ui_state_write = ui_state.write().await;
-        
+
         // Update the validator status in UI state
         if let Some(validator_status) = ui_state_write.validator_statuses.get_mut(validator_idx) {
             if let Some(node_with_status) = validator_status.nodes_with_status.get_mut(node_idx) {
@@ -3960,10 +4004,14 @@ async fn refresh_node_version(
                 node_with_status.version = _version;
             }
         }
-        
+
         // Clear refreshing flag
         if let Some(refresh_state) = ui_state_write.field_refresh_states.get_mut(validator_idx) {
-            let field_state = if node_idx == 0 { &mut refresh_state.node_0 } else { &mut refresh_state.node_1 };
+            let field_state = if node_idx == 0 {
+                &mut refresh_state.node_0
+            } else {
+                &mut refresh_state.node_1
+            };
             field_state.version_refreshing = false;
         }
     }
@@ -3981,20 +4029,24 @@ async fn refresh_swap_readiness(
         let mut ui_write = ui_state.write().await;
         if validator_idx < ui_write.field_refresh_states.len() {
             if node_idx == 0 {
-                ui_write.field_refresh_states[validator_idx].node_0.swap_readiness_refreshing = true;
+                ui_write.field_refresh_states[validator_idx]
+                    .node_0
+                    .swap_readiness_refreshing = true;
             } else {
-                ui_write.field_refresh_states[validator_idx].node_1.swap_readiness_refreshing = true;
+                ui_write.field_refresh_states[validator_idx]
+                    .node_1
+                    .swap_readiness_refreshing = true;
             }
         }
     }
-    
+
     // Perform the swap readiness check
     if validator_idx < app_state.validator_statuses.len() {
         let validator_status = &app_state.validator_statuses[validator_idx];
         if node_idx < validator_status.nodes_with_status.len() {
             let node = &validator_status.nodes_with_status[node_idx];
             let ssh_key = app_state.detected_ssh_keys.get(&node.node.host);
-            
+
             if let Some(ssh_key) = ssh_key {
                 // Check swap readiness for the node
                 let (ready, issues) = check_node_swap_readiness(
@@ -4003,30 +4055,41 @@ async fn refresh_swap_readiness(
                     ssh_key,
                     node.ledger_path.as_ref(),
                     Some(node.status == crate::types::NodeStatus::Standby),
-                ).await;
+                )
+                .await;
                 let (swap_ready, swap_issues) = (Some(ready), issues);
-                
+
                 // Update the node's swap readiness in UI state
                 {
                     let mut ui_write = ui_state.write().await;
-                    if validator_idx < ui_write.validator_statuses.len() && 
-                       node_idx < ui_write.validator_statuses[validator_idx].nodes_with_status.len() {
-                        ui_write.validator_statuses[validator_idx].nodes_with_status[node_idx].swap_ready = swap_ready;
-                        ui_write.validator_statuses[validator_idx].nodes_with_status[node_idx].swap_issues = swap_issues;
+                    if validator_idx < ui_write.validator_statuses.len()
+                        && node_idx
+                            < ui_write.validator_statuses[validator_idx]
+                                .nodes_with_status
+                                .len()
+                    {
+                        ui_write.validator_statuses[validator_idx].nodes_with_status[node_idx]
+                            .swap_ready = swap_ready;
+                        ui_write.validator_statuses[validator_idx].nodes_with_status[node_idx]
+                            .swap_issues = swap_issues;
                     }
                 }
             }
         }
     }
-    
+
     // Clear refreshing state
     {
         let mut ui_write = ui_state.write().await;
         if validator_idx < ui_write.field_refresh_states.len() {
             if node_idx == 0 {
-                ui_write.field_refresh_states[validator_idx].node_0.swap_readiness_refreshing = false;
+                ui_write.field_refresh_states[validator_idx]
+                    .node_0
+                    .swap_readiness_refreshing = false;
             } else {
-                ui_write.field_refresh_states[validator_idx].node_1.swap_readiness_refreshing = false;
+                ui_write.field_refresh_states[validator_idx]
+                    .node_1
+                    .swap_readiness_refreshing = false;
             }
         }
     }
@@ -4043,28 +4106,29 @@ pub async fn show_enhanced_status_ui(app_state: &AppState) -> Result<()> {
     let app_state_arc = Arc::new(app_state.clone());
     let mut app = EnhancedStatusApp::new(app_state_arc.clone()).await?;
     let switch_confirmed = run_enhanced_ui(&mut app).await?;
-    
+
     if switch_confirmed {
         // Execute the switch
         // Use the switch command with confirmation already provided
         let mut app_state_mut = app_state.clone();
         let result = crate::commands::switch::switch_command_with_confirmation(
-            false,  // not a dry run
+            false, // not a dry run
             &mut app_state_mut,
-            false,  // don't require confirmation again
-        ).await?;
-        
+            false, // don't require confirmation again
+        )
+        .await?;
+
         if result {
             println!("\n✅ Switch completed successfully!");
             println!("📊 Returning to validator status view...\n");
-            
+
             // Wait a moment for the switch to take effect
             tokio::time::sleep(Duration::from_secs(2)).await;
-            
+
             // Restart the UI and trigger refresh in background
             let app_state_arc = Arc::new(app_state.clone());
             let mut app = EnhancedStatusApp::new(app_state_arc.clone()).await?;
-            
+
             // Spawn a background refresh after the UI starts
             let app_state_for_refresh = app_state_arc.clone();
             let ui_state_for_refresh = app.ui_state.clone();
@@ -4074,12 +4138,12 @@ pub async fn show_enhanced_status_ui(app_state: &AppState) -> Result<()> {
                 // Trigger refresh of all fields
                 refresh_all_fields(app_state_for_refresh, ui_state_for_refresh).await;
             });
-            
+
             run_enhanced_ui(&mut app).await?;
         } else {
             println!("\n❌ Switch was not completed");
         }
     }
-    
+
     Ok(())
 }

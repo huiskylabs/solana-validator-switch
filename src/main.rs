@@ -15,19 +15,13 @@ use std::sync::Arc;
 
 mod alert;
 #[cfg(test)]
-mod alert_tests;
+mod alert_integration_tests;
 #[cfg(test)]
 mod alert_logic_tests;
 #[cfg(test)]
-mod alert_integration_tests;
-#[cfg(test)]
-mod status_ui_alert_tests;
+mod alert_tests;
 #[cfg(test)]
 mod auto_failover_tests;
-#[cfg(test)]
-mod startup_validation_tests;
-#[cfg(test)]
-mod switch_validation_tests;
 mod commands;
 mod config;
 mod emergency_failover;
@@ -37,6 +31,12 @@ mod ssh_key_detector;
 mod startup;
 mod startup_checks;
 mod startup_logger;
+#[cfg(test)]
+mod startup_validation_tests;
+#[cfg(test)]
+mod status_ui_alert_tests;
+#[cfg(test)]
+mod switch_validation_tests;
 mod types;
 mod validator_metadata;
 mod validator_rpc;
@@ -97,7 +97,7 @@ impl AppState {
         // Use the comprehensive startup checklist
         startup::run_startup_checklist().await
     }
-    
+
     /// Parse validator selection from CLI argument
     fn select_validator_from_arg(&mut self, validator_arg: &str) -> Result<()> {
         // Try parsing as index first
@@ -106,25 +106,35 @@ impl AppState {
                 self.selected_validator_index = index;
                 return Ok(());
             } else {
-                return Err(anyhow::anyhow!("Validator index {} out of range (max: {})", 
-                    index, self.validator_statuses.len() - 1));
+                return Err(anyhow::anyhow!(
+                    "Validator index {} out of range (max: {})",
+                    index,
+                    self.validator_statuses.len() - 1
+                ));
             }
         }
-        
+
         // Try matching by identity prefix
-        let matches: Vec<(usize, &ValidatorStatus)> = self.validator_statuses
+        let matches: Vec<(usize, &ValidatorStatus)> = self
+            .validator_statuses
             .iter()
             .enumerate()
             .filter(|(_, v)| v.validator_pair.identity_pubkey.starts_with(validator_arg))
             .collect();
-        
+
         match matches.len() {
-            0 => Err(anyhow::anyhow!("No validator found matching '{}'", validator_arg)),
+            0 => Err(anyhow::anyhow!(
+                "No validator found matching '{}'",
+                validator_arg
+            )),
             1 => {
                 self.selected_validator_index = matches[0].0;
                 Ok(())
             }
-            _ => Err(anyhow::anyhow!("Multiple validators match '{}'. Please be more specific.", validator_arg)),
+            _ => Err(anyhow::anyhow!(
+                "Multiple validators match '{}'. Please be more specific.",
+                validator_arg
+            )),
         }
     }
 }
@@ -209,19 +219,32 @@ async fn show_interactive_menu(mut app_state: AppState) -> Result<()> {
 
     // Show current validator info if multiple validators
     if app_state.validator_statuses.len() > 1 {
-        println!("{}", format!("Currently managing {} validator pairs:", app_state.validator_statuses.len()).bright_yellow());
+        println!(
+            "{}",
+            format!(
+                "Currently managing {} validator pairs:",
+                app_state.validator_statuses.len()
+            )
+            .bright_yellow()
+        );
         for (idx, validator_status) in app_state.validator_statuses.iter().enumerate() {
             let identity = &validator_status.validator_pair.identity_pubkey;
-            let label = validator_status.nodes_with_status.first()
+            let label = validator_status
+                .nodes_with_status
+                .first()
                 .map(|n| n.node.label.clone())
                 .unwrap_or_else(|| format!("Validator {}", idx + 1));
             let short_identity = if identity.len() > 8 {
-                format!("{}...{}", &identity[..4], &identity[identity.len()-4..])
+                format!("{}...{}", &identity[..4], &identity[identity.len() - 4..])
             } else {
                 identity.clone()
             };
-            
-            let marker = if idx == app_state.selected_validator_index { "▶" } else { " " };
+
+            let marker = if idx == app_state.selected_validator_index {
+                "▶"
+            } else {
+                " "
+            };
             println!("{} {}. {} ({})", marker, idx + 1, label, short_identity);
         }
         println!();
@@ -229,12 +252,12 @@ async fn show_interactive_menu(mut app_state: AppState) -> Result<()> {
 
     loop {
         let mut options = vec![];
-        
+
         // Add validator selection option if multiple validators
         if app_state.validator_statuses.len() > 1 {
             options.push("🎯 Select Validator - Choose which validator to manage");
         }
-        
+
         options.extend_from_slice(&[
             "📋 Status - Check current validator status",
             "🔄 Switch - Switch between primary and backup validators",
@@ -245,8 +268,10 @@ async fn show_interactive_menu(mut app_state: AppState) -> Result<()> {
         let selection = Select::new("What would you like to do?", options.clone()).prompt()?;
 
         let selected_option = selection;
-        
-        if app_state.validator_statuses.len() > 1 && selected_option == "🎯 Select Validator - Choose which validator to manage" {
+
+        if app_state.validator_statuses.len() > 1
+            && selected_option == "🎯 Select Validator - Choose which validator to manage"
+        {
             select_validator(&mut app_state).await?;
         } else if selected_option == "📋 Status - Check current validator status" {
             status_command(&app_state).await?;
@@ -266,33 +291,35 @@ async fn show_interactive_menu(mut app_state: AppState) -> Result<()> {
 async fn select_validator(app_state: &mut AppState) -> Result<()> {
     use colored::*;
     use inquire::Select;
-    
+
     println!("\n{}", "🎯 Select Validator".bright_cyan().bold());
-    
+
     let mut options = Vec::new();
     for (idx, validator_status) in app_state.validator_statuses.iter().enumerate() {
         let identity = &validator_status.validator_pair.identity_pubkey;
-        let label = validator_status.nodes_with_status.first()
+        let label = validator_status
+            .nodes_with_status
+            .first()
             .map(|n| n.node.label.clone())
             .unwrap_or_else(|| format!("Validator {}", idx + 1));
         let short_identity = if identity.len() > 8 {
-            format!("{}...{}", &identity[..4], &identity[identity.len()-4..])
+            format!("{}...{}", &identity[..4], &identity[identity.len() - 4..])
         } else {
             identity.clone()
         };
-        
+
         let option = format!("{}. {} ({})", idx + 1, label, short_identity);
         options.push(option);
     }
-    
+
     let selection = Select::new("Choose a validator to manage:", options.clone()).prompt()?;
-    
+
     let index = options.iter().position(|x| x == &selection).unwrap();
     app_state.selected_validator_index = index;
-    
+
     println!("{}", format!("✅ Selected: {}", selection).bright_green());
     println!();
-    
+
     Ok(())
 }
 

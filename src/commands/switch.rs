@@ -126,16 +126,20 @@ pub async fn switch_command_with_confirmation(
         // Since we skip swap readiness checks at startup, we need to check now
         // For standby nodes, we check all requirements except tower file
         println_if_not_silent!("🔍 Checking target node swap readiness...");
-        
-        if let Some(ssh_key) = app_state.detected_ssh_keys.get(&standby_node_with_status.node.host) {
+
+        if let Some(ssh_key) = app_state
+            .detected_ssh_keys
+            .get(&standby_node_with_status.node.host)
+        {
             let (is_ready, issues) = crate::startup::check_node_swap_readiness(
                 &app_state.ssh_pool,
                 &standby_node_with_status.node,
                 ssh_key,
                 standby_node_with_status.ledger_path.as_ref(),
-                Some(true)  // is_standby = true, skip tower check
-            ).await;
-            
+                Some(true), // is_standby = true, skip tower check
+            )
+            .await;
+
             if !is_ready {
                 validation_errors.push(format!(
                     "Target node {} is not swap-ready: {}",
@@ -147,7 +151,10 @@ pub async fn switch_command_with_confirmation(
     }
 
     // Check if we can get SSH key for target node
-    if !app_state.detected_ssh_keys.contains_key(&standby_node_with_status.node.host) {
+    if !app_state
+        .detected_ssh_keys
+        .contains_key(&standby_node_with_status.node.host)
+    {
         validation_errors.push(format!(
             "No SSH key available for target node {}",
             standby_node_with_status.node.label
@@ -164,7 +171,10 @@ pub async fn switch_command_with_confirmation(
     // Skip detailed swap readiness check for source node - not critical for switch
 
     // Check if we can get SSH key for source node
-    if !app_state.detected_ssh_keys.contains_key(&active_node_with_status.node.host) {
+    if !app_state
+        .detected_ssh_keys
+        .contains_key(&active_node_with_status.node.host)
+    {
         validation_warnings.push(format!(
             "No SSH key available for source node {} - will skip optional steps",
             active_node_with_status.node.label
@@ -178,8 +188,14 @@ pub async fn switch_command_with_confirmation(
         for error in &validation_errors {
             println_if_not_silent!("  • {}", error.red());
         }
-        println_if_not_silent!("\n{}", "Please resolve these issues before attempting to switch.".yellow());
-        return Err(anyhow::anyhow!("Switch validation failed: {} critical issue(s)", validation_errors.len()));
+        println_if_not_silent!(
+            "\n{}",
+            "Please resolve these issues before attempting to switch.".yellow()
+        );
+        return Err(anyhow::anyhow!(
+            "Switch validation failed: {} critical issue(s)",
+            validation_errors.len()
+        ));
     }
 
     if !validation_warnings.is_empty() {
@@ -188,10 +204,13 @@ pub async fn switch_command_with_confirmation(
         for warning in &validation_warnings {
             println_if_not_silent!("  • {}", warning.yellow());
         }
-        
+
         if require_confirmation && !dry_run {
-            println_if_not_silent!("\n{}", "Do you want to continue with the switch despite these warnings?".bright_yellow());
-            
+            println_if_not_silent!(
+                "\n{}",
+                "Do you want to continue with the switch despite these warnings?".bright_yellow()
+            );
+
             // Actually wait for ANY key press, not just Enter
             use crossterm::event::{self, Event};
             crossterm::terminal::enable_raw_mode().ok();
@@ -328,28 +347,37 @@ pub async fn switch_command_with_confirmation(
                     .bold()
             );
         }
-        
+
         // Update the node statuses in app_state to reflect the switch
         if !dry_run && show_status && app_state.validator_statuses.len() > 0 {
             // Find the indices of active and standby nodes
             let mut active_idx = None;
             let mut standby_idx = None;
-            
-            for (idx, node_with_status) in app_state.validator_statuses[app_state.selected_validator_index].nodes_with_status.iter().enumerate() {
+
+            for (idx, node_with_status) in app_state.validator_statuses
+                [app_state.selected_validator_index]
+                .nodes_with_status
+                .iter()
+                .enumerate()
+            {
                 match node_with_status.status {
                     crate::types::NodeStatus::Active => active_idx = Some(idx),
                     crate::types::NodeStatus::Standby => standby_idx = Some(idx),
                     _ => {}
                 }
             }
-            
+
             // Swap the statuses
             if let (Some(active), Some(standby)) = (active_idx, standby_idx) {
-                app_state.validator_statuses[app_state.selected_validator_index].nodes_with_status[active].status = crate::types::NodeStatus::Standby;
-                app_state.validator_statuses[app_state.selected_validator_index].nodes_with_status[standby].status = crate::types::NodeStatus::Active;
+                app_state.validator_statuses[app_state.selected_validator_index]
+                    .nodes_with_status[active]
+                    .status = crate::types::NodeStatus::Standby;
+                app_state.validator_statuses[app_state.selected_validator_index]
+                    .nodes_with_status[standby]
+                    .status = crate::types::NodeStatus::Active;
             }
         }
-        
+
         println_if_not_silent!();
         println_if_not_silent!("{}", "Press any key to view status...".dimmed());
         if !is_silent_mode() {
@@ -557,12 +585,21 @@ impl SwitchManager {
         let (subtitle, switch_command) = if process_info.contains("fdctl")
             || process_info.contains("firedancer")
         {
-            // Use detected fdctl executable path
-            let fdctl_path = self
-                .active_node_with_status
-                .fdctl_executable
-                .as_ref()
-                .ok_or_else(|| anyhow!("Firedancer fdctl executable path not found"))?;
+            // Use detected fdctl executable path, or extract from running process as fallback
+            let fdctl_path = if let Some(ref path) = self.active_node_with_status.fdctl_executable {
+                path.clone()
+            } else {
+                // Fallback: extract fdctl path from running process
+                process_info
+                    .lines()
+                    .find(|line| line.contains("fdctl"))
+                    .and_then(|line| {
+                        line.split_whitespace()
+                            .find(|part| part.contains("bin/fdctl"))
+                            .map(|s| s.to_string())
+                    })
+                    .ok_or_else(|| anyhow!("Firedancer fdctl executable path not found in node status or running process"))?
+            };
 
             // Extract config path from the process info (e.g., "fdctl run --config /path/to/config.toml")
             let config_path = if let Some(config_match) = process_info
@@ -649,11 +686,22 @@ impl SwitchManager {
                 // Execute the switch command based on validator type
                 if process_info.contains("fdctl") || process_info.contains("firedancer") {
                     // Firedancer: fdctl set-identity --config <config> <identity>
-                    let fdctl_path = self
-                        .active_node_with_status
-                        .fdctl_executable
-                        .as_ref()
-                        .unwrap();
+                    let fdctl_path = if let Some(ref path) =
+                        self.active_node_with_status.fdctl_executable
+                    {
+                        path.clone()
+                    } else {
+                        // Fallback: extract fdctl path from running process
+                        process_info
+                            .lines()
+                            .find(|line| line.contains("fdctl"))
+                            .and_then(|line| {
+                                line.split_whitespace()
+                                    .find(|part| part.contains("bin/fdctl"))
+                                    .map(|s| s.to_string())
+                            })
+                            .unwrap_or_else(|| panic!("Firedancer fdctl executable path not found"))
+                    };
                     let config_path = process_info
                         .lines()
                         .find(|line| line.contains("fdctl") && line.contains("--config"))
@@ -673,7 +721,7 @@ impl SwitchManager {
                     pool.execute_command_with_args(
                         &self.active_node_with_status.node,
                         &ssh_key,
-                        fdctl_path,
+                        &fdctl_path,
                         &args,
                     )
                     .await?;
@@ -869,12 +917,22 @@ impl SwitchManager {
         let (subtitle, switch_command) = if process_info.contains("fdctl")
             || process_info.contains("firedancer")
         {
-            // Use detected fdctl executable path
-            let fdctl_path = self
-                .standby_node_with_status
-                .fdctl_executable
-                .as_ref()
-                .ok_or_else(|| anyhow!("Firedancer fdctl executable path not found"))?;
+            // Use detected fdctl executable path, or extract from running process as fallback
+            let fdctl_path = if let Some(ref path) = self.standby_node_with_status.fdctl_executable
+            {
+                path.clone()
+            } else {
+                // Fallback: extract fdctl path from running process
+                process_info
+                    .lines()
+                    .find(|line| line.contains("fdctl"))
+                    .and_then(|line| {
+                        line.split_whitespace()
+                            .find(|part| part.contains("bin/fdctl"))
+                            .map(|s| s.to_string())
+                    })
+                    .ok_or_else(|| anyhow!("Firedancer fdctl executable path not found in node status or running process"))?
+            };
 
             // Extract config path from the process info (e.g., "fdctl run --config /path/to/config.toml")
             let config_path = if let Some(config_match) = process_info
@@ -962,11 +1020,22 @@ impl SwitchManager {
                 // Execute the switch command based on validator type
                 if process_info.contains("fdctl") || process_info.contains("firedancer") {
                     // Firedancer: fdctl set-identity --config <config> <identity>
-                    let fdctl_path = self
-                        .standby_node_with_status
-                        .fdctl_executable
-                        .as_ref()
-                        .unwrap();
+                    let fdctl_path = if let Some(ref path) =
+                        self.standby_node_with_status.fdctl_executable
+                    {
+                        path.clone()
+                    } else {
+                        // Fallback: extract fdctl path from running process
+                        process_info
+                            .lines()
+                            .find(|line| line.contains("fdctl"))
+                            .and_then(|line| {
+                                line.split_whitespace()
+                                    .find(|part| part.contains("bin/fdctl"))
+                                    .map(|s| s.to_string())
+                            })
+                            .unwrap_or_else(|| panic!("Firedancer fdctl executable path not found"))
+                    };
                     let config_path = process_info
                         .lines()
                         .find(|line| line.contains("fdctl") && line.contains("--config"))
@@ -986,7 +1055,7 @@ impl SwitchManager {
                     pool.execute_command_with_args(
                         &self.standby_node_with_status.node,
                         &ssh_key,
-                        fdctl_path,
+                        &fdctl_path,
                         &args,
                     )
                     .await?;
@@ -1026,9 +1095,7 @@ impl SwitchManager {
     }
 
     async fn verify_backup_catchup(&mut self, dry_run: bool) -> Result<()> {
-        println_if_not_silent!(
-            "Verifying health status of new active validator..."
-        );
+        println_if_not_silent!("Verifying health status of new active validator...");
 
         if !dry_run {
             // No sleep - verify immediately!
@@ -1041,12 +1108,12 @@ impl SwitchManager {
                 self.standby_node_with_status.validator_type.clone(),
                 None,
             );
-            
+
             let health_result = {
                 let ssh_key =
                     self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
                 let pool = self.ssh_pool.clone();
-                
+
                 crate::validator_rpc::get_health(
                     &pool,
                     &self.standby_node_with_status.node,
@@ -1068,9 +1135,7 @@ impl SwitchManager {
                     );
                 }
                 Err(e) => {
-                    spinner.stop_with_message(
-                        &format!("⚠️  Health check error: {}", e),
-                    );
+                    spinner.stop_with_message(&format!("⚠️  Health check error: {}", e));
                 }
             }
         }

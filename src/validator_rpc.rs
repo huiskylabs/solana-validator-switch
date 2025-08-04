@@ -30,7 +30,7 @@ pub fn get_rpc_port(validator_type: ValidatorType, command_line: Option<&str>) -
             port
         }
         ValidatorType::Firedancer => 8899, // Firedancer always uses 8899
-        ValidatorType::Unknown => 8899, // Default to 8899
+        ValidatorType::Unknown => 8899,    // Default to 8899
     }
 }
 
@@ -49,22 +49,22 @@ pub async fn execute_rpc_call(
         "method": method,
         "params": params.unwrap_or(json!([]))
     });
-    
+
     let curl_command = format!(
         r#"curl -s http://localhost:{} -X POST -H "Content-Type: application/json" -d '{}' 2>&1"#,
         rpc_port,
         request.to_string()
     );
-    
+
     let output = ssh_pool
         .execute_command(node, ssh_key, &curl_command)
         .await
         .map_err(|e| anyhow!("Failed to execute RPC call: {}", e))?;
-    
+
     // Parse JSON response
     let json_response: Value = serde_json::from_str(&output)
         .map_err(|e| anyhow!("Failed to parse RPC response: {}. Output: {}", e, output))?;
-    
+
     Ok(RpcResponse {
         result: json_response.get("result").cloned().unwrap_or(json!(null)),
         error: json_response.get("error").cloned(),
@@ -79,12 +79,13 @@ pub async fn get_identity(
     rpc_port: u16,
 ) -> Result<String> {
     let response = execute_rpc_call(ssh_pool, node, ssh_key, "getIdentity", None, rpc_port).await?;
-    
+
     if let Some(error) = response.error {
         return Err(anyhow!("RPC error: {:?}", error));
     }
-    
-    response.result
+
+    response
+        .result
         .get("identity")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
@@ -99,11 +100,11 @@ pub async fn get_health(
     rpc_port: u16,
 ) -> Result<bool> {
     let response = execute_rpc_call(ssh_pool, node, ssh_key, "getHealth", None, rpc_port).await?;
-    
+
     if let Some(error) = response.error {
         return Err(anyhow!("RPC error: {:?}", error));
     }
-    
+
     // Check if result is "ok"
     match response.result.as_str() {
         Some("ok") => Ok(true),
@@ -120,7 +121,7 @@ pub async fn is_validator_caught_up(
     command_line: Option<&str>,
 ) -> Result<(bool, String)> {
     let rpc_port = get_rpc_port(validator_type, command_line);
-    
+
     match get_health(ssh_pool, node, ssh_key, rpc_port).await {
         Ok(true) => Ok((true, "Caught up".to_string())),
         Ok(false) => Ok((false, "Not healthy".to_string())),
@@ -137,12 +138,14 @@ pub async fn get_identity_and_health(
     command_line: Option<&str>,
 ) -> Result<(String, bool)> {
     let rpc_port = get_rpc_port(validator_type, command_line);
-    
+
     // Get identity
     let identity = get_identity(ssh_pool, node, ssh_key, rpc_port).await?;
-    
+
     // Get health
-    let is_healthy = get_health(ssh_pool, node, ssh_key, rpc_port).await.unwrap_or(false);
-    
+    let is_healthy = get_health(ssh_pool, node, ssh_key, rpc_port)
+        .await
+        .unwrap_or(false);
+
     Ok((identity, is_healthy))
 }

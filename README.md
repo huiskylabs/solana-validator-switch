@@ -1,13 +1,38 @@
 # Solana Validator Switch CLI
 
-Professional-grade CLI tool for ultra-fast Solana validator switching with runtime node status detection, built in Rust.
+<div align="center">
+
+![Build Status](https://github.com/huiskylabs/solana-validator-switch/workflows/CI/badge.svg)
+![Version](https://img.shields.io/github/v/release/huiskylabs/solana-validator-switch)
+![License](https://img.shields.io/github/license/huiskylabs/solana-validator-switch)
+![Rust](https://img.shields.io/badge/rust-%23000000.svg?style=flat&logo=rust&logoColor=white)
+![Solana](https://img.shields.io/badge/Solana-00FFF0?style=flat&logo=solana&logoColor=black)
+![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)
+![Downloads](https://img.shields.io/github/downloads/huiskylabs/solana-validator-switch/total)
+![Last Commit](https://img.shields.io/github/last-commit/huiskylabs/solana-validator-switch)
+
+**Professional-grade CLI tool for ultra-fast Solana validator switching with runtime node status detection, built in Rust**
+
+[Features](#key-features) • [Installation](#installation) • [Usage](#usage) • [Configuration](#configuration) • [Performance](#performance-characteristics) • [FAQ](#faq)
+
+</div>
 
 > **Built by validators, for validators** - Stop losing sleep over manual switches. Get the fastest switch possible.
 
 ## 🎥 Demo
 
-![Solana Validator Switch Demo](assets/demo.gif)
+![Solana Validator Switch Demo - Ultra-fast validator switching in action](assets/demo.gif)
 
+## 🚀 Why Solana Validator Switch?
+
+**SVS** is the industry-leading Solana validator switching solution, trusted by professional validators to maintain 99.9%+ uptime. Whether you're running Firedancer, Agave, Solana, or Jito validators, SVS provides the fastest, most reliable switching with:
+
+- **⚡ Lightning-fast switches**: 1-3 seconds total switch time
+- **🔄 Zero-downtime operations**: Seamless active/standby transitions
+- **📊 Real-time monitoring**: Live dashboard with health metrics
+- **🔔 Instant alerts**: Telegram notifications for delinquency detection
+- **🛡️ Production-ready**: Battle-tested by Huisky Labs validators
+- **🔧 Universal compatibility**: Works with all major Solana validator clients
 
 ## Installation
 
@@ -25,6 +50,7 @@ svs
 <summary>Alternative installation methods (requires Rust and Cargo)</summary>
 
 #### Clone and Run
+
 ```bash
 git clone https://github.com/huiskylabs/solana-validator-switch
 cd solana-validator-switch
@@ -32,6 +58,7 @@ cargo run --release
 ```
 
 #### Install with Cargo
+
 ```bash
 cargo install --git https://github.com/huiskylabs/solana-validator-switch
 
@@ -39,16 +66,19 @@ cargo install --git https://github.com/huiskylabs/solana-validator-switch
 export PATH="$HOME/.cargo/bin:$PATH"
 svs
 ```
+
 </details>
 
 ## Usage
 
 ### Interactive Mode (Recommended)
+
 ```bash
 svs           # Opens interactive menu
 ```
 
 ### Command Line Mode
+
 ```bash
 svs status                    # Check validator status
 svs status --validator 0      # Check specific validator by index
@@ -59,7 +89,6 @@ svs test-alert                # Test Telegram alert configuration
 svs --version                 # Show version
 svs --help                    # Show help
 ```
-
 
 ## Configuration
 
@@ -76,21 +105,24 @@ See [config.example.yaml](config.example.yaml) for the full configuration templa
 To enable Telegram notifications:
 
 1. **Create a Telegram Bot**:
+
    - Message [@BotFather](https://t.me/botfather) on Telegram
    - Send `/newbot` and follow the prompts
    - Save the bot token (looks like `123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11`)
 
 2. **Get Your Chat ID**:
+
    - Add the bot to a group or start a private chat with it
    - Send a message to the bot
    - Visit `https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates`
    - Find your chat ID in the response (negative for groups, positive for private chats)
 
 3. **Configure in config.yaml**:
+
    ```yaml
    alert_config:
      enabled: true
-     delinquency_threshold_seconds: 30  # Alert after 30 seconds without voting
+     delinquency_threshold_seconds: 30 # Alert after 30 seconds without voting
      telegram:
        bot_token: "YOUR_BOT_TOKEN"
        chat_id: "YOUR_CHAT_ID"
@@ -102,6 +134,7 @@ To enable Telegram notifications:
    ```
 
 You'll receive notifications for:
+
 - **Validator Delinquency** (CRITICAL): When your validator stops voting for more than 30 seconds
   - Only triggers when SSH and RPC are both working (no false alarms)
   - Includes SSH and RPC connection status in the alert
@@ -157,16 +190,18 @@ Built by [Huisky Labs](https://huisky.xyz/) validator team who needed reliable s
 ### Support Development
 
 If SVS saves you time and SOL, consider:
+
 - ⭐ Starring this repo to help other validators find it
-- 🗳️ Delegating to [Huisky Labs validators](https://huisky.xyz/) 
+- 🗳️ Delegating to [Huisky Labs validators](https://huisky.xyz/)
 - 🐛 Reporting issues or contributing improvements
 
 ## Roadmap
 
 ### ✅ Completed
+
 - [x] **Ultra-fast switching** - Sub-second identity switches with optimized streaming operations
 - [x] **Universal validator support** - Works with Firedancer, Agave, Solana, and Jito
-- [x] **Interactive CLI** - User-friendly menu system with guided workflows  
+- [x] **Interactive CLI** - User-friendly menu system with guided workflows
 - [x] **Dry-run mode** - Test switches without executing for safety
 - [x] **SSH connection pooling** - Persistent connections with multiplexing for instant commands
 - [x] **Auto-detect active/standby** - Runtime detection of validator states

@@ -21,9 +21,7 @@
 
 ## 🎥 Demo
 
-<video src="assets/demo.mp4" width="100%" autoplay loop muted>
-  <a href="assets/demo.mp4">View Solana Validator Switch Demo</a>
-</video>
+![Solana Validator Switch Demo - Ultra-fast validator switching in action](assets/demo.gif)
 
 ## 🚀 Why Solana Validator Switch?
 

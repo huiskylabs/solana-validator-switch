@@ -1,4 +1,6 @@
-# Solana Validator Switch CLI
+# Solana Validator Switch (SVS) - Ultra-Fast Validator Switching Tool
+
+**Solana Validator Switch (SVS)** is a professional CLI tool that enables ultra-fast validator switching in 1-2 seconds. Built in Rust for maximum performance, SVS automatically detects active/standby nodes, handles tower transfers, and works seamlessly with Firedancer, Agave, Solana, and Jito validators. Trusted by production validators to maintain 99.9%+ uptime with real-time monitoring and Telegram alerts.
 
 <div align="center">
 
@@ -11,9 +13,7 @@
 ![Downloads](https://img.shields.io/github/downloads/huiskylabs/solana-validator-switch/total)
 ![Last Commit](https://img.shields.io/github/last-commit/huiskylabs/solana-validator-switch)
 
-**Professional-grade CLI tool for ultra-fast Solana validator switching with runtime node status detection, built in Rust**
-
-[Features](#key-features) • [Installation](#installation) • [Usage](#usage) • [Configuration](#configuration) • [Performance](#performance-characteristics) • [FAQ](#faq)
+[Features](#key-features) • [Installation](#installation) • [Usage](#usage) • [Configuration](#configuration) • [Performance](#-performance--benchmarks) • [FAQ](#-frequently-asked-questions)
 
 </div>
 
@@ -27,7 +27,7 @@
 
 **SVS** is the industry-leading Solana validator switching solution, trusted by professional validators to maintain 99.9%+ uptime. Whether you're running Firedancer, Agave, Solana, or Jito validators, SVS provides the fastest, most reliable switching with:
 
-- **⚡ Lightning-fast switches**: 1-3 seconds total switch time
+- **⚡ Lightning-fast switches**: 1-2 seconds total switch time
 - **🔄 Zero-downtime operations**: Seamless active/standby transitions
 - **📊 Real-time monitoring**: Live dashboard with health metrics
 - **🔔 Instant alerts**: Telegram notifications for delinquency detection

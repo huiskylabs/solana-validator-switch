@@ -2,7 +2,7 @@
 name = "solana-validator-switch"
 version = "1.2.8"
 edition = "2021"
-description = "Professional-grade CLI tool for ultra-fast Solana validator switching"
+description = "Ultra-fast Solana validator switching CLI tool - 1-2 second switches with real-time monitoring"
 authors = ["huisky <huiskylabs@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/huiskylabs/solana-validator-switch"

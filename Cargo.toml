@@ -2,7 +2,7 @@
 name = "solana-validator-switch"
 version = "1.2.8"
 edition = "2021"
-description = "Solana validator hot swap and failover CLI - 1-2 second hot swaps with automatic failover"
+description = "Solana validator hot swap and failover CLI - 1-3 second hot swaps with automatic failover"
 authors = ["huisky <huiskylabs@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/huiskylabs/solana-validator-switch"

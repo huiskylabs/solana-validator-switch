@@ -1,6 +1,6 @@
 # Solana Validator Switch (SVS) - Ultra-Fast Hot Swap & Failover Tool
 
-**Solana Validator Switch (SVS)** is a professional CLI tool for instant hot swap and failover operations, enabling validator switching in just 1-2 seconds. Built in Rust for maximum performance, SVS provides automated failover capabilities, seamless hot swapping between active/standby nodes, and works with Firedancer, Agave, Solana, and Jito validators. Trusted by production validators for zero-downtime hot swaps and emergency failover scenarios to maintain 99.9%+ uptime.
+**Solana Validator Switch (SVS)** is a professional CLI tool for instant hot swap and failover operations, enabling validator switching in just 1-3 seconds. Built in Rust for maximum performance, SVS provides automated failover capabilities, seamless hot swapping between active/standby nodes, and works with Firedancer, Agave, Solana, and Jito validators. Trusted by production validators for zero-downtime hot swaps and emergency failover scenarios to maintain 99.9%+ uptime.
 
 <div align="center">
 
@@ -27,7 +27,7 @@
 
 **SVS** is the industry-leading Solana validator hot swap and failover solution, trusted by professional validators to maintain 99.9%+ uptime. Whether you're running Firedancer, Agave, Solana, or Jito validators, SVS provides the fastest, most reliable hot swapping and failover capabilities:
 
-- **⚡ Lightning-fast hot swap**: 1-2 seconds total switch time
+- **⚡ Lightning-fast hot swap**: 1-3 seconds total switch time
 - **🔄 Automated failover**: Zero-downtime automatic failover on validator failure
 - **🔥 Instant hot swapping**: Seamless hot swap between active/standby validators
 - **📊 Real-time monitoring**: Live dashboard tracks both nodes for failover readiness
@@ -149,7 +149,7 @@ You'll receive notifications for:
 
 ## Key Features
 
-- **Ultra-Fast Hot Swap**: Instant 1-2 second hot swap operations with optimized streaming
+- **Ultra-Fast Hot Swap**: Instant 1-3 second hot swap operations with optimized streaming
 - **Automated Failover**: Automatic failover when primary validator goes down
 - **Runtime Status Detection**: Continuous monitoring for failover readiness
 - **SSH Connection Pooling**: Persistent connections enable instant hot swap execution

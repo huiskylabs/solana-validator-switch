@@ -1,6 +1,6 @@
-# Solana Validator Switch (SVS) - Ultra-Fast Validator Switching Tool
+# Solana Validator Switch (SVS) - Ultra-Fast Hot Swap & Failover Tool
 
-**Solana Validator Switch (SVS)** is a professional CLI tool that enables ultra-fast validator switching in 1-2 seconds. Built in Rust for maximum performance, SVS automatically detects active/standby nodes, handles tower transfers, and works seamlessly with Firedancer, Agave, Solana, and Jito validators. Trusted by production validators to maintain 99.9%+ uptime with real-time monitoring and Telegram alerts.
+**Solana Validator Switch (SVS)** is a professional CLI tool for instant hot swap and failover operations, enabling validator switching in just 1-2 seconds. Built in Rust for maximum performance, SVS provides automated failover capabilities, seamless hot swapping between active/standby nodes, and works with Firedancer, Agave, Solana, and Jito validators. Trusted by production validators for zero-downtime hot swaps and emergency failover scenarios to maintain 99.9%+ uptime.
 
 <div align="center">
 
@@ -25,14 +25,15 @@
 
 ## 🚀 Why Solana Validator Switch?
 
-**SVS** is the industry-leading Solana validator switching solution, trusted by professional validators to maintain 99.9%+ uptime. Whether you're running Firedancer, Agave, Solana, or Jito validators, SVS provides the fastest, most reliable switching with:
+**SVS** is the industry-leading Solana validator hot swap and failover solution, trusted by professional validators to maintain 99.9%+ uptime. Whether you're running Firedancer, Agave, Solana, or Jito validators, SVS provides the fastest, most reliable hot swapping and failover capabilities:
 
-- **⚡ Lightning-fast switches**: 1-2 seconds total switch time
-- **🔄 Zero-downtime operations**: Seamless active/standby transitions
-- **📊 Real-time monitoring**: Live dashboard with health metrics
-- **🔔 Instant alerts**: Telegram notifications for delinquency detection
-- **🛡️ Production-ready**: Battle-tested by Huisky Labs validators
-- **🔧 Universal compatibility**: Works with all major Solana validator clients
+- **⚡ Lightning-fast hot swap**: 1-2 seconds total switch time
+- **🔄 Automated failover**: Zero-downtime automatic failover on validator failure
+- **🔥 Instant hot swapping**: Seamless hot swap between active/standby validators
+- **📊 Real-time monitoring**: Live dashboard tracks both nodes for failover readiness
+- **🔔 Failover alerts**: Telegram notifications for automatic failover events
+- **🛡️ Production-ready**: Battle-tested hot swap operations by Huisky Labs
+- **🔧 Universal compatibility**: Hot swap support for all major Solana clients
 
 ## Installation
 
@@ -148,29 +149,30 @@ You'll receive notifications for:
 
 ## Key Features
 
-- **Ultra-Fast Switching**: Get the fastest switch possible with optimized streaming operations
-- **Runtime Status Detection**: Automatic active/standby node detection using RPC calls
-- **SSH Connection Pooling**: Persistent connections with multiplexing for ultra-fast operations
-- **Optimized Tower Transfer**: Streaming base64 decode + dd for minimal latency
-- **Universal Support**: Works with Firedancer, Agave, Solana, and Jito validators
-- **Interactive Dashboard**: Real-time monitoring with Ratatui-based terminal UI
-  - **Ultra-responsive keyboard controls** - Dedicated thread ensures instant response
-  - **Multi-validator support** - Tab key to switch between validator pairs
-  - Auto-refresh countdown timer shows time until next refresh
-  - Manual refresh (R key) with no cooldown
-  - SSH connectivity status monitoring
-  - RPC node health status via getHealth checks
-  - Responsive keyboard shortcuts (Q)uit, (R)efresh, (S)witch, (Tab) cycle validators
-- **Telegram Alerts**: Real-time notifications for validator health and switch events
-  - Delinquency alerts when validator stops voting
-  - Switch success/failure notifications
-  - SSH connection failure alerts (after 30 minutes)
-  - RPC connection failure alerts (after 30 minutes)
-- **Enhanced Status Display**: Streamlined UI with real-time updates
-  - Shows active/standby status based on identity
-  - Current validator identity display
-  - Version information for all validator types
-  - SSH connectivity and RPC health indicators
+- **Ultra-Fast Hot Swap**: Instant 1-2 second hot swap operations with optimized streaming
+- **Automated Failover**: Automatic failover when primary validator goes down
+- **Runtime Status Detection**: Continuous monitoring for failover readiness
+- **SSH Connection Pooling**: Persistent connections enable instant hot swap execution
+- **Optimized Tower Transfer**: Lightning-fast tower hot swap via streaming operations
+- **Universal Hot Swap Support**: Works with Firedancer, Agave, Solana, and Jito validators
+- **Interactive Dashboard**: Real-time monitoring for hot swap and failover operations
+  - **Hot swap controls** - (S)witch for manual hot swap, auto-failover on detection
+  - **Multi-validator support** - Tab key to monitor multiple hot swap pairs
+  - Failover readiness indicators for both nodes
+  - Manual hot swap trigger with (S) key
+  - SSH connectivity monitoring for failover reliability
+  - RPC health checks ensure safe hot swapping
+  - Real-time hot swap status and countdown timers
+- **Failover Alerts**: Telegram notifications for critical events
+  - Automatic failover trigger notifications
+  - Hot swap completion confirmations
+  - Validator delinquency alerts (triggers failover)
+  - Failover failure alerts for manual intervention
+- **Hot Swap Status Display**: Live monitoring during operations
+  - Active/standby validator status for hot swap readiness
+  - Current validator identity for hot swap verification
+  - Version compatibility checks for safe hot swapping
+  - SSH and RPC health for reliable failover
 
 ## Security
 

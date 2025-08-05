@@ -2,13 +2,13 @@
 name = "solana-validator-switch"
 version = "1.2.8"
 edition = "2021"
-description = "Ultra-fast Solana validator switching CLI tool - 1-2 second switches with real-time monitoring"
+description = "Solana validator hot swap and failover CLI - 1-2 second hot swaps with automatic failover"
 authors = ["huisky <huiskylabs@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/huiskylabs/solana-validator-switch"
 homepage = "https://github.com/huiskylabs/solana-validator-switch"
 readme = "README.md"
-keywords = ["solana", "validator", "cli", "blockchain", "devops"]
+keywords = ["solana", "validator", "hot-swap", "failover", "blockchain"]
 categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]

@@ -41,6 +41,11 @@ fn get_ssh_key_for_host(
 
 /// Comprehensive startup checklist and validation with enhanced UX
 pub async fn run_startup_checklist() -> Result<Option<crate::AppState>> {
+    run_startup_checklist_with_config(None).await
+}
+
+/// Comprehensive startup checklist and validation with enhanced UX and custom config path
+pub async fn run_startup_checklist_with_config(config_path: Option<String>) -> Result<Option<crate::AppState>> {
     // Create logger first
     let logger = StartupLogger::new()?;
     logger.create_latest_symlink()?;
@@ -83,7 +88,7 @@ pub async fn run_startup_checklist() -> Result<Option<crate::AppState>> {
     progress_bar.set_message("Validating configuration...");
 
     let mut config =
-        validate_configuration_with_progress(&mut validation, &progress_bar, &logger).await?;
+        validate_configuration_with_progress(&mut validation, &progress_bar, &logger, config_path.clone()).await?;
 
     // Only continue with SSH and other validation if config is valid
     let ssh_pool_and_keys = if validation.config_valid {
@@ -117,7 +122,7 @@ pub async fn run_startup_checklist() -> Result<Option<crate::AppState>> {
 
                 if config_updated {
                     // Save the updated config
-                    let config_manager = ConfigManager::new()?;
+                    let config_manager = ConfigManager::with_path(config_path.clone())?;
                     if let Err(e) = config_manager.save(&config_mut) {
                         progress_bar.suspend(|| {
                             println!("    ⚠️  Failed to save SSH keys to config: {}", e);
@@ -352,8 +357,9 @@ async fn validate_configuration_with_progress(
     validation: &mut StartupValidation,
     progress_bar: &ProgressBar,
     logger: &StartupLogger,
+    config_path: Option<String>,
 ) -> Result<Option<Config>> {
-    let config_manager = ConfigManager::new()?;
+    let config_manager = ConfigManager::with_path(config_path)?;
 
     logger.log_section("Configuration Validation")?;
 
@@ -470,6 +476,11 @@ async fn validate_configuration_with_progress(
 
 #[allow(dead_code)]
 async fn validate_configuration(validation: &mut StartupValidation) -> Result<Option<Config>> {
+    validate_configuration_with_config(validation, None).await
+}
+
+#[allow(dead_code)]
+async fn validate_configuration_with_config(validation: &mut StartupValidation, config_path: Option<String>) -> Result<Option<Config>> {
     let spinner = ProgressBar::new_spinner();
     spinner.set_style(
         ProgressStyle::default_spinner()
@@ -479,7 +490,7 @@ async fn validate_configuration(validation: &mut StartupValidation) -> Result<Op
     spinner.set_message("Checking configuration file...");
     spinner.enable_steady_tick(Duration::from_millis(100));
 
-    let config_manager = ConfigManager::new()?;
+    let config_manager = ConfigManager::with_path(config_path)?;
 
     // Check if configuration exists
     if !config_manager.exists() {

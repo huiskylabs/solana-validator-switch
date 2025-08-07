@@ -49,6 +49,10 @@ use ssh::AsyncSshPool;
 #[command(about = "Solana Validator Switch - Interactive CLI for validator management")]
 #[command(version = env!("CARGO_PKG_VERSION"))]
 struct Cli {
+    /// Path to custom configuration file (default: ~/.solana-validator-switch/config.yaml)
+    #[arg(short, long, global = true)]
+    config: Option<String>,
+    
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -98,6 +102,11 @@ impl AppState {
         startup::run_startup_checklist().await
     }
 
+    async fn new_with_config(config_path: Option<String>) -> Result<Option<Self>> {
+        // Use the comprehensive startup checklist with custom config
+        startup::run_startup_checklist_with_config(config_path).await
+    }
+
     /// Parse validator selection from CLI argument
     fn select_validator_from_arg(&mut self, validator_arg: &str) -> Result<()> {
         // Try parsing as index first
@@ -144,7 +153,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Initialize app state with persistent SSH connections
-    let app_state = AppState::new().await?;
+    let app_state = AppState::new_with_config(cli.config).await?;
 
     match cli.command {
         Some(Commands::Status { validator }) => {

@@ -10,16 +10,24 @@ pub struct ConfigManager {
 
 impl ConfigManager {
     pub fn new() -> Result<Self> {
-        let config_dir = dirs::home_dir()
-            .ok_or_else(|| anyhow!("Could not find home directory"))?
-            .join(".solana-validator-switch");
+        Self::with_path(None)
+    }
 
-        // Create config directory if it doesn't exist
-        if !config_dir.exists() {
-            fs::create_dir_all(&config_dir)?;
-        }
+    pub fn with_path(custom_path: Option<String>) -> Result<Self> {
+        let config_path = if let Some(path) = custom_path {
+            PathBuf::from(path)
+        } else {
+            let config_dir = dirs::home_dir()
+                .ok_or_else(|| anyhow!("Could not find home directory"))?
+                .join(".solana-validator-switch");
 
-        let config_path = config_dir.join("config.yaml");
+            // Create config directory if it doesn't exist
+            if !config_dir.exists() {
+                fs::create_dir_all(&config_dir)?;
+            }
+
+            config_dir.join("config.yaml")
+        };
 
         Ok(ConfigManager { config_path })
     }

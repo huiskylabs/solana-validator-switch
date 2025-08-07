@@ -76,6 +76,7 @@ svs
 
 ```bash
 svs           # Opens interactive menu
+svs -c /path/to/custom/config.yaml  # Use custom config file
 ```
 
 ### Command Line Mode
@@ -87,17 +88,37 @@ svs switch                    # Perform validator switch
 svs switch --dry-run          # Preview switch without executing
 svs switch --validator 1      # Switch specific validator by index
 svs test-alert                # Test Telegram alert configuration
+svs --config /path/to/config  # Use custom config file for any command
 svs --version                 # Show version
 svs --help                    # Show help
 ```
 
 ## Configuration
 
+### Default Configuration
 ```bash
 mkdir -p ~/.solana-validator-switch
 cp config.example.yaml ~/.solana-validator-switch/config.yaml
 nano ~/.solana-validator-switch/config.yaml
 ```
+
+### Multiple Configurations
+You can manage multiple validator setups using custom config files:
+
+```bash
+# Create different configs for different validator pairs
+cp config.example.yaml ~/configs/mainnet-validators.yaml
+cp config.example.yaml ~/configs/testnet-validators.yaml
+
+# Use specific config
+svs --config ~/configs/mainnet-validators.yaml status
+svs -c ~/configs/testnet-validators.yaml switch
+```
+
+This is useful for:
+- Managing multiple validator pairs
+- Separating mainnet/testnet configurations
+- Testing configurations before deployment
 
 See [config.example.yaml](config.example.yaml) for the full configuration template.
 

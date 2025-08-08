@@ -1710,9 +1710,31 @@ async fn detect_node_status_and_executable(
         }
     }
 
-    // Skip swap readiness check during startup - will be done at switch time
-    let swap_ready = None; // Unknown at startup
-    let swap_issues = Vec::new();
+    // Basic swap readiness check during startup
+    let mut swap_ready = None; // Will be determined based on basic checks
+    let mut swap_issues = Vec::new();
+    
+    // Basic checks for swap readiness
+    if validator_type == crate::types::ValidatorType::Unknown {
+        swap_ready = Some(false);
+        swap_issues.push("Validator type could not be determined".to_string());
+    }
+    
+    if agave_validator_executable.is_none() && fdctl_executable.is_none() {
+        swap_ready = Some(false);
+        swap_issues.push("No validator executable found".to_string());
+    }
+    
+    if ledger_path.is_none() {
+        swap_ready = Some(false);
+        swap_issues.push("Ledger path not detected".to_string());
+    }
+    
+    // If no issues found so far, we can tentatively mark as ready
+    // Full validation will still happen at switch time
+    if swap_issues.is_empty() && validator_type != crate::types::ValidatorType::Unknown {
+        swap_ready = Some(true);
+    }
 
     // Use RPC to get the active identity
     // Get the full command line from the ps output to extract RPC port (if we need it again)
@@ -2339,10 +2361,31 @@ async fn detect_node_status_and_executable_with_progress(
         }
     }
 
-    // Skip swap readiness check during startup - this will be done at switch time
-    // We only need to know if nodes are reachable and what their status is
-    let swap_ready = None; // Unknown at startup
+    // Basic swap readiness check during startup
+    let mut swap_ready = None; // Will be determined based on basic checks
     let mut swap_issues = Vec::new();
+    
+    // Basic checks for swap readiness
+    if validator_type == crate::types::ValidatorType::Unknown {
+        swap_ready = Some(false);
+        swap_issues.push("Validator type could not be determined".to_string());
+    }
+    
+    if agave_validator_executable.is_none() && fdctl_executable.is_none() {
+        swap_ready = Some(false);
+        swap_issues.push("No validator executable found".to_string());
+    }
+    
+    if ledger_path.is_none() {
+        swap_ready = Some(false);
+        swap_issues.push("Ledger path not detected".to_string());
+    }
+    
+    // If no issues found so far, we can tentatively mark as ready
+    // Full validation will still happen at switch time
+    if swap_issues.is_empty() && validator_type != crate::types::ValidatorType::Unknown {
+        swap_ready = Some(true);
+    }
 
     // Step 6: Check startup identity configuration
     progress_bar.suspend(|| {

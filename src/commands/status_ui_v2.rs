@@ -2398,7 +2398,13 @@ fn draw_single_node_table(
     } else {
         match node.swap_ready {
             Some(true) => "✅ Ready",
-            Some(false) => "❌ Not Ready",
+            Some(false) => {
+                if node.swap_issues.is_empty() {
+                    "❌ Not Ready"
+                } else {
+                    "❌ Not Ready"
+                }
+            },
             None => "⏳ Checking...",
         }
         .to_string()
@@ -2418,6 +2424,17 @@ fn draw_single_node_table(
             },
         )),
     ]));
+    
+    // Display swap issues if any
+    if matches!(node.swap_ready, Some(false)) && !node.swap_issues.is_empty() {
+        for issue in &node.swap_issues {
+            rows.push(Row::new(vec![
+                Cell::from("  └─ Issue"),
+                Cell::from(format!("⚠️  {}", issue))
+                    .style(Style::default().fg(Color::Yellow)),
+            ]));
+        }
+    }
 
     // Sync status if available
     if let Some(sync_status) = &node.sync_status {
@@ -2915,6 +2932,32 @@ fn draw_validator_table(
                 None => Color::Yellow,
             })),
         ]));
+
+        // Display swap issues if any
+        let node_0_has_issues = matches!(node_0.swap_ready, Some(false)) && !node_0.swap_issues.is_empty();
+        let node_1_has_issues = matches!(node_1.swap_ready, Some(false)) && !node_1.swap_issues.is_empty();
+        
+        if node_0_has_issues || node_1_has_issues {
+            let max_issues = node_0.swap_issues.len().max(node_1.swap_issues.len());
+            for i in 0..max_issues {
+                let issue_0 = if i < node_0.swap_issues.len() && node_0_has_issues {
+                    format!("⚠️  {}", node_0.swap_issues[i])
+                } else {
+                    String::new()
+                };
+                let issue_1 = if i < node_1.swap_issues.len() && node_1_has_issues {
+                    format!("⚠️  {}", node_1.swap_issues[i])
+                } else {
+                    String::new()
+                };
+                
+                rows.push(Row::new(vec![
+                    Cell::from(if i == 0 { "  └─ Issues" } else { "" }),
+                    Cell::from(issue_0).style(Style::default().fg(Color::Yellow)),
+                    Cell::from(issue_1).style(Style::default().fg(Color::Yellow)),
+                ]));
+            }
+        }
 
         // Sync status row if available
         if node_0.sync_status.is_some() || node_1.sync_status.is_some() {

@@ -2459,21 +2459,21 @@ fn draw_single_node_table(
     if let Some(solana_cli) = &node.solana_cli_executable {
         rows.push(Row::new(vec![
             Cell::from("Solana CLI"),
-            Cell::from(shorten_path(solana_cli, 30)),
+            Cell::from(solana_cli.clone()),
         ]));
     }
 
     if let Some(fdctl) = &node.fdctl_executable {
         rows.push(Row::new(vec![
             Cell::from("Fdctl Path"),
-            Cell::from(shorten_path(fdctl, 30)),
+            Cell::from(fdctl.clone()),
         ]));
     }
 
     if let Some(agave) = &node.agave_validator_executable {
         rows.push(Row::new(vec![
             Cell::from("Agave Path"),
-            Cell::from(shorten_path(agave, 30)),
+            Cell::from(agave.clone()),
         ]));
     }
 
@@ -2997,28 +2997,16 @@ fn draw_validator_table(
         if node_0.solana_cli_executable.is_some() || node_1.solana_cli_executable.is_some() {
             rows.push(Row::new(vec![
                 Cell::from("Solana CLI"),
-                Cell::from(shorten_path(
-                    node_0.solana_cli_executable.as_deref().unwrap_or("N/A"),
-                    30,
-                )),
-                Cell::from(shorten_path(
-                    node_1.solana_cli_executable.as_deref().unwrap_or("N/A"),
-                    30,
-                )),
+                Cell::from(node_0.solana_cli_executable.as_deref().unwrap_or("N/A")),
+                Cell::from(node_1.solana_cli_executable.as_deref().unwrap_or("N/A")),
             ]));
         }
 
         if node_0.fdctl_executable.is_some() || node_1.fdctl_executable.is_some() {
             rows.push(Row::new(vec![
                 Cell::from("Fdctl Path"),
-                Cell::from(shorten_path(
-                    node_0.fdctl_executable.as_deref().unwrap_or("N/A"),
-                    30,
-                )),
-                Cell::from(shorten_path(
-                    node_1.fdctl_executable.as_deref().unwrap_or("N/A"),
-                    30,
-                )),
+                Cell::from(node_0.fdctl_executable.as_deref().unwrap_or("N/A")),
+                Cell::from(node_1.fdctl_executable.as_deref().unwrap_or("N/A")),
             ]));
         }
 
@@ -3027,20 +3015,8 @@ fn draw_validator_table(
         {
             rows.push(Row::new(vec![
                 Cell::from("Agave Path"),
-                Cell::from(shorten_path(
-                    node_0
-                        .agave_validator_executable
-                        .as_deref()
-                        .unwrap_or("N/A"),
-                    30,
-                )),
-                Cell::from(shorten_path(
-                    node_1
-                        .agave_validator_executable
-                        .as_deref()
-                        .unwrap_or("N/A"),
-                    30,
-                )),
+                Cell::from(node_0.agave_validator_executable.as_deref().unwrap_or("N/A")),
+                Cell::from(node_1.agave_validator_executable.as_deref().unwrap_or("N/A")),
             ]));
         }
 

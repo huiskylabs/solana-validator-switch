@@ -595,7 +595,7 @@ impl SwitchManager {
                     .find(|line| line.contains("fdctl"))
                     .and_then(|line| {
                         line.split_whitespace()
-                            .find(|part| part.contains("bin/fdctl"))
+                            .find(|part| part.contains("fdctl") && (part.ends_with("fdctl") || part.contains("/fdctl")))
                             .map(|s| s.to_string())
                     })
                     .ok_or_else(|| anyhow!("Firedancer fdctl executable path not found in node status or running process"))?
@@ -928,7 +928,7 @@ impl SwitchManager {
                     .find(|line| line.contains("fdctl"))
                     .and_then(|line| {
                         line.split_whitespace()
-                            .find(|part| part.contains("bin/fdctl"))
+                            .find(|part| part.contains("fdctl") && (part.ends_with("fdctl") || part.contains("/fdctl")))
                             .map(|s| s.to_string())
                     })
                     .ok_or_else(|| anyhow!("Firedancer fdctl executable path not found in node status or running process"))?

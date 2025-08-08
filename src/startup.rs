@@ -1555,10 +1555,7 @@ async fn detect_node_status_and_executable(
 
                 // Extract agave executable and ledger path
                 for (i, part) in parts.iter().enumerate() {
-                    if part.contains("agave-validator")
-                        && (part.contains("bin/agave-validator")
-                            || part.contains("release/agave-validator"))
-                    {
+                    if part.contains("agave-validator") && (part.ends_with("agave-validator") || part.contains("/agave-validator")) {
                         if agave_validator_executable.is_none() {
                             agave_validator_executable = Some(part.to_string());
                             _main_validator_executable = Some(part.to_string());
@@ -2049,10 +2046,10 @@ async fn detect_node_status_and_executable_with_progress(
                 // Extract validator executable and ledger path
                 for (i, part) in parts.iter().enumerate() {
                     if (part.contains("agave-validator") || part.contains("solana-validator"))
-                        && (part.contains("bin/agave-validator")
-                            || part.contains("release/agave-validator")
-                            || part.contains("bin/solana-validator")
-                            || part.contains("release/solana-validator"))
+                        && (part.ends_with("agave-validator")
+                            || part.ends_with("solana-validator")
+                            || part.contains("/agave-validator")
+                            || part.contains("/solana-validator"))
                     {
                         if agave_validator_executable.is_none() {
                             agave_validator_executable = Some(part.to_string());

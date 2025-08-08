@@ -882,9 +882,11 @@ fn validate_config_completeness(config: &Config) -> Vec<String> {
             issues.push(format!("{} RPC endpoint is empty", validator_name));
         }
 
-        // Check nodes
-        if validator_pair.nodes.len() != 2 {
-            issues.push(format!("{} should have exactly 2 nodes", validator_name));
+        // Check nodes - allow 1 or 2 nodes
+        if validator_pair.nodes.is_empty() {
+            issues.push(format!("{} must have at least 1 node configured", validator_name));
+        } else if validator_pair.nodes.len() > 2 {
+            issues.push(format!("{} cannot have more than 2 nodes", validator_name));
         }
 
         for (node_index, node) in validator_pair.nodes.iter().enumerate() {

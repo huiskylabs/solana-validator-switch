@@ -64,6 +64,18 @@ pub async fn switch_command_with_confirmation(
     let validator_status = &app_state.validator_statuses[app_state.selected_validator_index];
     let validator_pair = &validator_status.validator_pair;
 
+    // Handle single node configuration
+    if validator_status.nodes_with_status.len() == 1 {
+        println_if_not_silent!(
+            "\n{}",
+            "ℹ️  Single node configuration - switching not available".yellow()
+        );
+        println_if_not_silent!(
+            "This validator is configured with only one node for monitoring purposes."
+        );
+        return Ok(false);
+    }
+
     // Find active and standby nodes with full status information
     let active_node_with_status = validator_status
         .nodes_with_status
@@ -78,14 +90,38 @@ pub async fn switch_command_with_confirmation(
         match (active_node_with_status, standby_node_with_status) {
             (Some(active), Some(standby)) => (active, standby),
             _ => {
-                // If we can't determine status, use the first two nodes
-                if validator_status.nodes_with_status.len() < 2 {
-                    return Err(anyhow!("Validator must have at least 2 nodes configured"));
+                // Handle special case: both nodes are standby
+                let standby_nodes: Vec<_> = validator_status
+                    .nodes_with_status
+                    .iter()
+                    .filter(|n| n.status == crate::types::NodeStatus::Standby)
+                    .collect();
+                
+                if standby_nodes.len() == 2 {
+                    println_if_not_silent!(
+                        "\n{}",
+                        "⚠️  Both nodes are in STANDBY state - Recovery Mode".yellow().bold()
+                    );
+                    println_if_not_silent!(
+                        "Will activate {} and keep {} as standby",
+                        validator_status.nodes_with_status[1].node.label,
+                        validator_status.nodes_with_status[0].node.label
+                    );
+                    // Switch second node to active, keep first as standby
+                    (
+                        &validator_status.nodes_with_status[0], // Will remain standby
+                        &validator_status.nodes_with_status[1], // Will become active
+                    )
+                } else {
+                    // Fallback: use first two nodes if we can't determine status
+                    if validator_status.nodes_with_status.len() < 2 {
+                        return Err(anyhow!("Validator must have at least 2 nodes configured for switching"));
+                    }
+                    (
+                        &validator_status.nodes_with_status[0],
+                        &validator_status.nodes_with_status[1],
+                    )
                 }
-                (
-                    &validator_status.nodes_with_status[0],
-                    &validator_status.nodes_with_status[1],
-                )
             }
         };
 

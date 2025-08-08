@@ -2184,7 +2184,35 @@ fn draw_side_by_side_tables(
     _last_ssh_health_refresh: Instant,
     field_refresh_state: Option<&NodeFieldRefreshState>,
 ) {
-    // Split area horizontally
+    // Handle single node configuration
+    if validator_status.nodes_with_status.len() == 1 {
+        // Use the full area for single node
+        if let Some(node) = validator_status.nodes_with_status.get(0) {
+            let ssh_health = ssh_health_data.and_then(|s| Some(&s.node_0));
+            let rpc_health = rpc_health_data.and_then(|r| Some(&r.node_0));
+            let node_refresh_state = field_refresh_state.map(|s| &s.node_0);
+            
+            draw_single_node_table(
+                f,
+                area,
+                validator_status,
+                node,
+                vote_data,
+                previous_last_slot,
+                increment_time,
+                app_state,
+                _last_catchup_refresh,
+                ssh_health,
+                rpc_health,
+                _last_ssh_health_refresh,
+                node_refresh_state,
+                false, // not a left table in split view
+            );
+        }
+        return;
+    }
+
+    // Split area horizontally for two nodes
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])

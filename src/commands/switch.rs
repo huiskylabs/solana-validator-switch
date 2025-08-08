@@ -586,36 +586,10 @@ impl SwitchManager {
             || process_info.contains("firedancer")
         {
             // Use detected fdctl executable path, or extract from running process as fallback
-            let fdctl_path = if let Some(ref path) = self.active_node_with_status.fdctl_executable {
-                path.clone()
-            } else {
-                // Fallback: extract fdctl path from running process
-                process_info
-                    .lines()
-                    .find(|line| line.contains("fdctl"))
-                    .and_then(|line| {
-                        line.split_whitespace()
-                            .find(|part| part.contains("fdctl") && (part.ends_with("fdctl") || part.contains("/fdctl")))
-                            .map(|s| s.to_string())
-                    })
-                    .ok_or_else(|| anyhow!("Firedancer fdctl executable path not found in node status or running process"))?
-            };
+            let fdctl_path = crate::executable_utils::extract_and_save_fdctl_path(&mut self.active_node_with_status, &process_info)?;
 
-            // Extract config path from the process info (e.g., "fdctl run --config /path/to/config.toml")
-            let config_path = if let Some(config_match) = process_info
-                .lines()
-                .find(|line| line.contains("fdctl") && line.contains("--config"))
-                .and_then(|line| {
-                    let parts: Vec<&str> = line.split_whitespace().collect();
-                    parts
-                        .windows(2)
-                        .find(|w| w[0] == "--config")
-                        .map(|w| w[1].to_string())
-                }) {
-                config_match
-            } else {
-                return Err(anyhow!("Firedancer config path not found in running process. Please ensure fdctl is running with --config parameter"));
-            };
+            // Extract config path from the process info
+            let config_path = crate::executable_utils::extract_firedancer_config_path(&process_info)?;
 
             (
                 "Using Firedancer fdctl set-identity",
@@ -686,35 +660,16 @@ impl SwitchManager {
                 // Execute the switch command based on validator type
                 if process_info.contains("fdctl") || process_info.contains("firedancer") {
                     // Firedancer: fdctl set-identity --config <config> <identity>
-                    let fdctl_path = if let Some(ref path) =
-                        self.active_node_with_status.fdctl_executable
-                    {
-                        path.clone()
-                    } else {
-                        // Fallback: extract fdctl path from running process
-                        process_info
-                            .lines()
-                            .find(|line| line.contains("fdctl"))
-                            .and_then(|line| {
-                                line.split_whitespace()
-                                    .find(|part| part.contains("bin/fdctl"))
-                                    .map(|s| s.to_string())
-                            })
-                            .unwrap_or_else(|| panic!("Firedancer fdctl executable path not found"))
-                    };
-                    let config_path = process_info
-                        .lines()
-                        .find(|line| line.contains("fdctl") && line.contains("--config"))
-                        .and_then(|line| {
-                            let parts: Vec<&str> = line.split_whitespace().collect();
-                            parts.windows(2).find(|w| w[0] == "--config").map(|w| w[1])
-                        })
-                        .unwrap();
+                    let fdctl_path = crate::executable_utils::extract_and_save_fdctl_path(
+                        &mut self.active_node_with_status,
+                        &process_info,
+                    )?;
+                    let config_path = crate::executable_utils::extract_firedancer_config_path(&process_info)?;
 
                     let args = vec![
                         "set-identity",
                         "--config",
-                        config_path,
+                        &config_path,
                         &self.active_node_with_status.node.paths.unfunded_identity,
                     ];
 
@@ -918,37 +873,10 @@ impl SwitchManager {
             || process_info.contains("firedancer")
         {
             // Use detected fdctl executable path, or extract from running process as fallback
-            let fdctl_path = if let Some(ref path) = self.standby_node_with_status.fdctl_executable
-            {
-                path.clone()
-            } else {
-                // Fallback: extract fdctl path from running process
-                process_info
-                    .lines()
-                    .find(|line| line.contains("fdctl"))
-                    .and_then(|line| {
-                        line.split_whitespace()
-                            .find(|part| part.contains("fdctl") && (part.ends_with("fdctl") || part.contains("/fdctl")))
-                            .map(|s| s.to_string())
-                    })
-                    .ok_or_else(|| anyhow!("Firedancer fdctl executable path not found in node status or running process"))?
-            };
+            let fdctl_path = crate::executable_utils::extract_and_save_fdctl_path(&mut self.standby_node_with_status, &process_info)?;
 
-            // Extract config path from the process info (e.g., "fdctl run --config /path/to/config.toml")
-            let config_path = if let Some(config_match) = process_info
-                .lines()
-                .find(|line| line.contains("fdctl") && line.contains("--config"))
-                .and_then(|line| {
-                    let parts: Vec<&str> = line.split_whitespace().collect();
-                    parts
-                        .windows(2)
-                        .find(|w| w[0] == "--config")
-                        .map(|w| w[1].to_string())
-                }) {
-                config_match
-            } else {
-                return Err(anyhow!("Firedancer config path not found in running process. Please ensure fdctl is running with --config parameter"));
-            };
+            // Extract config path from the process info
+            let config_path = crate::executable_utils::extract_firedancer_config_path(&process_info)?;
 
             (
                 "Using Firedancer fdctl set-identity",
@@ -1020,35 +948,16 @@ impl SwitchManager {
                 // Execute the switch command based on validator type
                 if process_info.contains("fdctl") || process_info.contains("firedancer") {
                     // Firedancer: fdctl set-identity --config <config> <identity>
-                    let fdctl_path = if let Some(ref path) =
-                        self.standby_node_with_status.fdctl_executable
-                    {
-                        path.clone()
-                    } else {
-                        // Fallback: extract fdctl path from running process
-                        process_info
-                            .lines()
-                            .find(|line| line.contains("fdctl"))
-                            .and_then(|line| {
-                                line.split_whitespace()
-                                    .find(|part| part.contains("bin/fdctl"))
-                                    .map(|s| s.to_string())
-                            })
-                            .unwrap_or_else(|| panic!("Firedancer fdctl executable path not found"))
-                    };
-                    let config_path = process_info
-                        .lines()
-                        .find(|line| line.contains("fdctl") && line.contains("--config"))
-                        .and_then(|line| {
-                            let parts: Vec<&str> = line.split_whitespace().collect();
-                            parts.windows(2).find(|w| w[0] == "--config").map(|w| w[1])
-                        })
-                        .unwrap();
+                    let fdctl_path = crate::executable_utils::extract_and_save_fdctl_path(
+                        &mut self.standby_node_with_status,
+                        &process_info,
+                    )?;
+                    let config_path = crate::executable_utils::extract_firedancer_config_path(&process_info)?;
 
                     let args = vec![
                         "set-identity",
                         "--config",
-                        config_path,
+                        &config_path,
                         &self.standby_node_with_status.node.paths.funded_identity,
                     ];
 

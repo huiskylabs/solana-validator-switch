@@ -25,6 +25,7 @@ mod auto_failover_tests;
 mod commands;
 mod config;
 mod emergency_failover;
+mod executable_utils;
 mod solana_rpc;
 mod ssh;
 mod ssh_key_detector;

@@ -7,15 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.3.3] - 2025-01-27
+## [1.4.0] - 2025-01-27
 
 ### Fixed
 - **CRITICAL**: Fixed auto-failover not triggering on validator delinquency
   - Auto-failover was incorrectly checking validator's internal RPC health instead of vote data RPC health
   - Now correctly checks if vote data can be fetched from Solana RPC to verify on-chain data availability
   - This prevented failover even when delinquency was successfully detected
+- Removed duplicate unthrottled delinquency alerts that were bypassing the 15-minute cooldown
+  - Delinquency alerts now properly respect the configured throttling period
+  - Eliminated alert spam when validator becomes delinquent
 - Removed `--require-tower` flag from standby validator identity switch for better reliability
-- Added debug logging to help diagnose auto-failover trigger conditions
+- Improved debug logging - auto-failover conditions only log when actually triggering
+
+### Changed
+- Consolidated delinquency checking to single location with proper alert throttling
+- Cleaned up redundant code in refresh_vote_data_for_alerts function
+
 
 ## [1.2.4] - 2025-01-23
 

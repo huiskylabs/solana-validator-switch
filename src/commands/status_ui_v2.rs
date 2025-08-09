@@ -1038,23 +1038,26 @@ impl EnhancedStatusApp {
 
                                         // Check if auto-failover is enabled
                                         if let Some(alert_config) = &app_state.config.alert_config {
+                                            // Get the vote data RPC health status
+                                            let vote_rpc_failures = state.rpc_failure_tracker[idx].consecutive_failures;
+                                            
                                             let _ = log_sender.send(LogMessage {
                                                 host: format!("validator-{}", idx),
                                                 message: format!(
-                                                    "Auto-failover check: enabled={}, auto_failover={}, rpc_failures={}",
+                                                    "Auto-failover check: enabled={}, auto_failover={}, vote_rpc_failures={}",
                                                     alert_config.enabled,
                                                     alert_config.auto_failover_enabled,
-                                                    node_health.rpc_status.consecutive_failures
+                                                    vote_rpc_failures
                                                 ),
                                                 timestamp: Instant::now(),
                                                 level: LogLevel::Info,
                                             });
 
                                             if alert_config.enabled && alert_config.auto_failover_enabled {
-                                                // CRITICAL: Only trigger auto-failover if RPC is working
-                                                // We need RPC to verify on-chain that the validator is not voting
-                                                // SSH may be down if the node is completely offline
-                                                if node_health.rpc_status.consecutive_failures == 0 {
+                                                // CRITICAL: Only trigger auto-failover if we can fetch vote data
+                                                // If we detected delinquency, it means vote data RPC is working
+                                                // We check vote_rpc_failures == 0 to ensure we have reliable on-chain data
+                                                if vote_rpc_failures == 0 {
 
                                                     let _ = log_sender.send(LogMessage {
                                                         host: format!("validator-{}", idx),
@@ -1083,9 +1086,8 @@ impl EnhancedStatusApp {
                                                     let _ = log_sender.send(LogMessage {
                                                         host: format!("validator-{}", idx),
                                                         message: format!(
-                                                            "Auto-failover suppressed: SSH failures={}, RPC failures={}",
-                                                            node_health.ssh_status.consecutive_failures,
-                                                            node_health.rpc_status.consecutive_failures
+                                                            "Auto-failover suppressed: vote_rpc_failures={} (need 0 for reliable on-chain data)",
+                                                            vote_rpc_failures
                                                         ),
                                                         timestamp: Instant::now(),
                                                         level: LogLevel::Warning,

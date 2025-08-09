@@ -58,7 +58,7 @@ async fn refresh_vote_data_for_alerts(
     app_state: Arc<AppState>,
     ui_state: Arc<RwLock<UiState>>,
     log_sender: tokio::sync::mpsc::UnboundedSender<LogMessage>,
-    alert_manager: Option<AlertManager>,
+    _alert_manager: Option<AlertManager>,
 ) {
     let mut new_vote_data = Vec::new();
 
@@ -130,58 +130,8 @@ async fn refresh_vote_data_for_alerts(
                         // Slot hasn't changed, keep existing time
                         new_slot_times.push(state.last_vote_slot_times.get(idx).and_then(|&v| v));
 
-                        // Check for delinquency
-                        if let (Some(alert_mgr), Some((_, last_change_time))) = (
-                            alert_manager.as_ref(),
-                            state.last_vote_slot_times.get(idx).and_then(|&v| v),
-                        ) {
-                            let seconds_since_vote = last_change_time.elapsed().as_secs();
-                            let threshold = app_state
-                                .config
-                                .alert_config
-                                .as_ref()
-                                .map(|c| c.delinquency_threshold_seconds)
-                                .unwrap_or(30);
-
-                            if seconds_since_vote >= threshold {
-                                // Send delinquency alert
-                                let validator_pair =
-                                    &app_state.validator_statuses[idx].validator_pair;
-                                let unknown_label = "Unknown".to_string();
-                                let active_node = app_state.validator_statuses[idx]
-                                    .nodes_with_status
-                                    .iter()
-                                    .find(|n| n.status == crate::types::NodeStatus::Active)
-                                    .map(|n| &n.node.label)
-                                    .unwrap_or(&unknown_label);
-
-                                let is_active = app_state.validator_statuses[idx]
-                                    .nodes_with_status
-                                    .iter()
-                                    .any(|n| n.status == crate::types::NodeStatus::Active);
-
-                                let node_health = state.validator_health[idx].clone();
-
-                                if let Err(e) = alert_mgr
-                                    .send_delinquency_alert_with_health(
-                                        &validator_pair.identity_pubkey,
-                                        active_node,
-                                        is_active,
-                                        new_slot,
-                                        seconds_since_vote,
-                                        &node_health,
-                                    )
-                                    .await
-                                {
-                                    let _ = log_sender.send(LogMessage {
-                                        host: format!("validator-{}", idx),
-                                        message: format!("Failed to send delinquency alert: {}", e),
-                                        timestamp: Instant::now(),
-                                        level: LogLevel::Error,
-                                    });
-                                }
-                            }
-                        }
+                        // NOTE: Delinquency checking is handled in the main monitoring loop
+                        // with proper alert throttling via alert_tracker.delinquency_tracker
                     }
 
                     // Handle increment display
@@ -1038,26 +988,23 @@ impl EnhancedStatusApp {
 
                                         // Check if auto-failover is enabled
                                         if let Some(alert_config) = &app_state.config.alert_config {
-                                            // Get the vote data RPC health status
-                                            let vote_rpc_failures = state.rpc_failure_tracker[idx].consecutive_failures;
-                                            
-                                            let _ = log_sender.send(LogMessage {
-                                                host: format!("validator-{}", idx),
-                                                message: format!(
-                                                    "Auto-failover check: enabled={}, auto_failover={}, vote_rpc_failures={}",
-                                                    alert_config.enabled,
-                                                    alert_config.auto_failover_enabled,
-                                                    vote_rpc_failures
-                                                ),
-                                                timestamp: Instant::now(),
-                                                level: LogLevel::Info,
-                                            });
-
                                             if alert_config.enabled && alert_config.auto_failover_enabled {
+                                                // Get the vote data RPC health status
+                                                let vote_rpc_failures = state.rpc_failure_tracker[idx].consecutive_failures;
                                                 // CRITICAL: Only trigger auto-failover if we can fetch vote data
                                                 // If we detected delinquency, it means vote data RPC is working
                                                 // We check vote_rpc_failures == 0 to ensure we have reliable on-chain data
                                                 if vote_rpc_failures == 0 {
+                                                    let _ = log_sender.send(LogMessage {
+                                                        host: format!("validator-{}", idx),
+                                                        message: format!(
+                                                            "Auto-failover conditions met: vote_rpc_failures={}, delinquent for {} seconds",
+                                                            vote_rpc_failures,
+                                                            seconds_since_vote
+                                                        ),
+                                                        timestamp: Instant::now(),
+                                                        level: LogLevel::Info,
+                                                    });
 
                                                     let _ = log_sender.send(LogMessage {
                                                         host: format!("validator-{}", idx),

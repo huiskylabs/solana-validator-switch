@@ -217,7 +217,7 @@ async fn show_interactive_menu(mut app_state: AppState) -> Result<()> {
     println!("\x1B[2J\x1B[1;1H"); // Clear screen
     println!(
         "{}",
-        "🚀 Welcome to Solana Validator Switch CLI v1.0.0"
+        "🚀 Welcome to Solana Validator Switch CLI v1.3.3"
             .bright_cyan()
             .bold()
     );

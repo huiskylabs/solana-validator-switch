@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.3] - 2025-01-27
+
+### Fixed
+- **CRITICAL**: Fixed auto-failover not triggering on validator delinquency
+  - Auto-failover was incorrectly checking validator's internal RPC health instead of vote data RPC health
+  - Now correctly checks if vote data can be fetched from Solana RPC to verify on-chain data availability
+  - This prevented failover even when delinquency was successfully detected
+- Removed `--require-tower` flag from standby validator identity switch for better reliability
+- Added debug logging to help diagnose auto-failover trigger conditions
+
 ## [1.2.4] - 2025-01-23
 
 ### Changed

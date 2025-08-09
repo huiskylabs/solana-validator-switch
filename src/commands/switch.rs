@@ -941,7 +941,7 @@ impl SwitchManager {
             (
                 "Using Agave validator set-identity",
                 format!(
-                    "{} -l \"{}\" set-identity --require-tower \"{}\"",
+                    "{} -l \"{}\" set-identity \"{}\"",
                     agave_path,
                     ledger_path,
                     self.standby_node_with_status.node.paths.funded_identity
@@ -1017,7 +1017,6 @@ impl SwitchManager {
                         "-l",
                         ledger_path,
                         "set-identity",
-                        "--require-tower",
                         &self.standby_node_with_status.node.paths.funded_identity,
                     ];
 

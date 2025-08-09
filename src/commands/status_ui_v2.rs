@@ -1038,6 +1038,18 @@ impl EnhancedStatusApp {
 
                                         // Check if auto-failover is enabled
                                         if let Some(alert_config) = &app_state.config.alert_config {
+                                            let _ = log_sender.send(LogMessage {
+                                                host: format!("validator-{}", idx),
+                                                message: format!(
+                                                    "Auto-failover check: enabled={}, auto_failover={}, rpc_failures={}",
+                                                    alert_config.enabled,
+                                                    alert_config.auto_failover_enabled,
+                                                    node_health.rpc_status.consecutive_failures
+                                                ),
+                                                timestamp: Instant::now(),
+                                                level: LogLevel::Info,
+                                            });
+
                                             if alert_config.enabled && alert_config.auto_failover_enabled {
                                                 // CRITICAL: Only trigger auto-failover if RPC is working
                                                 // We need RPC to verify on-chain that the validator is not voting
@@ -3203,6 +3215,7 @@ fn draw_footer(f: &mut ratatui::Frame, area: Rect, ui_state: &UiState, app_state
 }
 
 /// Execute emergency failover for a validator
+#[allow(dead_code)] // This is called from tokio::spawn
 async fn execute_emergency_failover(
     validator_status: crate::ValidatorStatus,
     alert_manager: AlertManager,

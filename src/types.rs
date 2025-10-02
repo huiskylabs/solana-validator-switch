@@ -77,6 +77,12 @@ pub struct NodePaths {
     pub unfunded_identity: String,
     #[serde(rename = "voteKeypair")]
     pub vote_keypair: String,
+    #[serde(rename = "solanaCliPath")]
+    pub solana_cli: String,
+    #[serde(rename = "agaveValidatorPath", skip_serializing_if = "Option::is_none")]
+    pub agave_validator: Option<String>,
+    #[serde(rename = "fdctlPath", skip_serializing_if = "Option::is_none")]
+    pub fdctl: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

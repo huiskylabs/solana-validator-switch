@@ -621,8 +621,8 @@ impl SwitchManager {
         let (subtitle, switch_command) = if process_info.contains("fdctl")
             || process_info.contains("firedancer")
         {
-            // Use detected fdctl executable path, or extract from running process as fallback
-            let fdctl_path = crate::executable_utils::extract_and_save_fdctl_path(&mut self.active_node_with_status, &process_info)?;
+            // Get fdctl executable path from config
+            let fdctl_path = crate::executable_utils::get_fdctl_path(&self.active_node_with_status)?;
 
             // Extract config path from the process info
             let config_path = crate::executable_utils::extract_firedancer_config_path(&process_info)?;
@@ -696,10 +696,7 @@ impl SwitchManager {
                 // Execute the switch command based on validator type
                 if process_info.contains("fdctl") || process_info.contains("firedancer") {
                     // Firedancer: fdctl set-identity --config <config> <identity>
-                    let fdctl_path = crate::executable_utils::extract_and_save_fdctl_path(
-                        &mut self.active_node_with_status,
-                        &process_info,
-                    )?;
+                    let fdctl_path = crate::executable_utils::get_fdctl_path(&self.active_node_with_status)?;
                     let config_path = crate::executable_utils::extract_firedancer_config_path(&process_info)?;
 
                     let args = vec![
@@ -908,8 +905,8 @@ impl SwitchManager {
         let (subtitle, switch_command) = if process_info.contains("fdctl")
             || process_info.contains("firedancer")
         {
-            // Use detected fdctl executable path, or extract from running process as fallback
-            let fdctl_path = crate::executable_utils::extract_and_save_fdctl_path(&mut self.standby_node_with_status, &process_info)?;
+            // Get fdctl executable path from config
+            let fdctl_path = crate::executable_utils::get_fdctl_path(&self.standby_node_with_status)?;
 
             // Extract config path from the process info
             let config_path = crate::executable_utils::extract_firedancer_config_path(&process_info)?;
@@ -984,10 +981,7 @@ impl SwitchManager {
                 // Execute the switch command based on validator type
                 if process_info.contains("fdctl") || process_info.contains("firedancer") {
                     // Firedancer: fdctl set-identity --config <config> <identity>
-                    let fdctl_path = crate::executable_utils::extract_and_save_fdctl_path(
-                        &mut self.standby_node_with_status,
-                        &process_info,
-                    )?;
+                    let fdctl_path = crate::executable_utils::get_fdctl_path(&self.standby_node_with_status)?;
                     let config_path = crate::executable_utils::extract_firedancer_config_path(&process_info)?;
 
                     let args = vec![

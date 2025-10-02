@@ -43,10 +43,18 @@ validators:
           # Path to vote account keypair
           voteKeypair: /home/solana/keypairs/vote-account-keypair.json
 
+          # REQUIRED: Path to Solana CLI executable
+          solanaCliPath: /home/solana/solana/bin/solana
+
+          # OPTIONAL: Path to Agave validator executable (set this if using Agave/Jito)
+          # agaveValidatorPath: /home/solana/solana/bin/agave-validator
+
+          # OPTIONAL: Path to fdctl executable (set this if using Firedancer)
+          # fdctlPath: /home/solana/firedancer/bin/fdctl
+
           # Note: The following paths are automatically detected from running processes:
           # - ledger path
           # - tower file location
-          # - solana CLI path
 
       # Second node configuration
       - label: validator-node-2
@@ -58,6 +66,9 @@ validators:
           fundedIdentity: /home/solana/keypairs/funded-validator-keypair.json
           unfundedIdentity: /home/solana/keypairs/unfunded-validator-keypair.json
           voteKeypair: /home/solana/keypairs/vote-account-keypair.json
+          solanaCliPath: /home/solana/solana/bin/solana
+          # agaveValidatorPath: /home/solana/solana/bin/agave-validator
+          # fdctlPath: /home/solana/firedancer/bin/fdctl
 # Alert configuration (optional)
 # Sends alerts when validators stop voting for a specified time
 alert_config:

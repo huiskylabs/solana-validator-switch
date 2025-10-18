@@ -20,6 +20,9 @@ mod switch_validation_tests {
                     funded_identity: "/home/solana/funded.json".to_string(),
                     unfunded_identity: "/home/solana/unfunded.json".to_string(),
                     vote_keypair: "/home/solana/vote.json".to_string(),
+                    solana_cli: "/home/solana/bin/solana".to_string(),
+                    agave_validator: Some("/home/solana/bin/agave-validator".to_string()),
+                    fdctl: None,
                 },
                 ssh_key_path: Some("/home/user/.ssh/id_rsa".to_string()),
             },
@@ -84,12 +87,12 @@ mod switch_validation_tests {
     #[test]
     fn test_switch_validation_target_node_down_fails() {
         // Target (standby) node is down - this should FAIL validation
-        let active_node = create_test_node("node-1-1", "validator1-1.example.com", true, true);
+        let _active_node = create_test_node("node-1-1", "validator1-1.example.com", true, true);
         let standby_node = create_test_node("node-1-2", "validator1-2.example.com", false, false); // DOWN
         let ssh_keys = create_test_ssh_keys();
 
         let mut validation_errors = Vec::new();
-        let mut validation_warnings: Vec<String> = Vec::new();
+        let validation_warnings: Vec<String> = Vec::new();
 
         // Check target (standby) node - this is critical for switch success
         if standby_node.status == NodeStatus::Unknown {
@@ -118,7 +121,7 @@ mod switch_validation_tests {
         // Source (active) node is down - this should SUCCEED with warnings
         let active_node = create_test_node("node-1-1", "validator1-1.example.com", false, true); // DOWN
         let standby_node = create_test_node("node-1-2", "validator1-2.example.com", true, false);
-        let ssh_keys = create_test_ssh_keys();
+        let _ssh_keys = create_test_ssh_keys();
 
         let mut validation_errors = Vec::new();
         let mut validation_warnings: Vec<String> = Vec::new();
@@ -151,7 +154,7 @@ mod switch_validation_tests {
         // Both nodes are up - this should SUCCEED with no warnings
         let active_node = create_test_node("node-1-1", "validator1-1.example.com", true, true);
         let standby_node = create_test_node("node-1-2", "validator1-2.example.com", true, false);
-        let ssh_keys = create_test_ssh_keys();
+        let _ssh_keys = create_test_ssh_keys();
 
         let mut validation_errors = Vec::new();
         let mut validation_warnings: Vec<String> = Vec::new();
@@ -180,7 +183,7 @@ mod switch_validation_tests {
     #[test]
     fn test_switch_validation_no_ssh_key_for_target_fails() {
         // No SSH key for target node - this should FAIL
-        let active_node = create_test_node("node-1-1", "validator1-1.example.com", true, true);
+        let _active_node = create_test_node("node-1-1", "validator1-1.example.com", true, true);
         let standby_node = create_test_node("node-1-2", "validator1-2.example.com", true, false);
         let mut ssh_keys = create_test_ssh_keys();
         ssh_keys.remove(&standby_node.node.host); // Remove SSH key for target
@@ -203,7 +206,7 @@ mod switch_validation_tests {
     #[test]
     fn test_switch_validation_target_not_swap_ready_fails() {
         // Target node is reachable but not swap-ready - this should FAIL
-        let active_node = create_test_node("node-1-1", "validator1-1.example.com", true, true);
+        let _active_node = create_test_node("node-1-1", "validator1-1.example.com", true, true);
         let mut standby_node =
             create_test_node("node-1-2", "validator1-2.example.com", true, false);
 
@@ -214,7 +217,7 @@ mod switch_validation_tests {
             "Vote keypair missing or not readable".to_string(),
         ];
 
-        let ssh_keys = create_test_ssh_keys();
+        let _ssh_keys = create_test_ssh_keys();
 
         let mut validation_errors = Vec::new();
 

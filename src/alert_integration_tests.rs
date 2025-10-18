@@ -133,7 +133,7 @@ mod alert_integration_tests {
     // Test complete monitoring flow
     #[test]
     fn test_complete_monitoring_flow() {
-        let config = AlertConfig {
+        let _config = AlertConfig {
             enabled: true,
             delinquency_threshold_seconds: 30,
             ssh_failure_threshold_seconds: 1800, // 30 minutes

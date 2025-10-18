@@ -96,7 +96,7 @@ mod status_ui_alert_tests {
     fn test_auto_failover_with_ssh_down() {
         // This is the key difference: auto-failover only needs RPC working
         let mut ssh_tracker = FailureTracker::new();
-        let mut rpc_tracker = FailureTracker::new();
+        let rpc_tracker = FailureTracker::new();
 
         // SSH is down (primary node may be completely offline)
         ssh_tracker.record_failure("Connection refused".to_string());

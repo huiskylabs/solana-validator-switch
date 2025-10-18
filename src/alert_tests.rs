@@ -179,7 +179,7 @@ mod tests {
         // Test scenario: SSH is down, RPC is working, validator is voting
         let mut ssh_tracker = FailureTracker::new();
         let mut rpc_tracker = FailureTracker::new();
-        let config = create_test_alert_config();
+        let _config = create_test_alert_config();
 
         // SSH failures
         for i in 0..5 {

@@ -1965,7 +1965,7 @@ async fn detect_node_status_and_executable_with_progress(
     validator_pair: &crate::types::ValidatorPair,
     ssh_pool: &AsyncSshPool,
     ssh_key_path: Option<String>,
-    solana_cli_executable: &Option<String>,
+    _solana_cli_executable: &Option<String>,
     agave_validator_executable: &Option<String>,
     fdctl_executable: &Option<String>,
     progress_bar: &ProgressBar,

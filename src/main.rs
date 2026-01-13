@@ -53,7 +53,7 @@ struct Cli {
     /// Path to custom configuration file (default: ~/.solana-validator-switch/config.yaml)
     #[arg(short, long, global = true)]
     config: Option<String>,
-    
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -98,6 +98,7 @@ pub struct ValidatorStatus {
 }
 
 impl AppState {
+    #[allow(dead_code)]
     async fn new() -> Result<Option<Self>> {
         // Use the comprehensive startup checklist
         startup::run_startup_checklist().await
@@ -324,7 +325,10 @@ async fn select_validator(app_state: &mut AppState) -> Result<()> {
 
     let selection = Select::new("Choose a validator to manage:", options.clone()).prompt()?;
 
-    let index = options.iter().position(|x| x == &selection).unwrap();
+    let index = options
+        .iter()
+        .position(|x| x == &selection)
+        .expect("Selected option must exist in options list");
     app_state.selected_validator_index = index;
 
     println!("{}", format!("✅ Selected: {}", selection).bright_green());
@@ -350,7 +354,10 @@ async fn show_switch_menu(app_state: &mut AppState) -> Result<()> {
 
         let selection = Select::new("Select switching action:", options.clone()).prompt()?;
 
-        let index = options.iter().position(|x| x == &selection).unwrap();
+        let index = options
+            .iter()
+            .position(|x| x == &selection)
+            .expect("Selected option must exist in options list");
 
         match index {
             0 => {

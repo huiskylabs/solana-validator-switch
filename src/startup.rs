@@ -40,12 +40,15 @@ fn get_ssh_key_for_host(
 }
 
 /// Comprehensive startup checklist and validation with enhanced UX
+#[allow(dead_code)]
 pub async fn run_startup_checklist() -> Result<Option<crate::AppState>> {
     run_startup_checklist_with_config(None).await
 }
 
 /// Comprehensive startup checklist and validation with enhanced UX and custom config path
-pub async fn run_startup_checklist_with_config(config_path: Option<String>) -> Result<Option<crate::AppState>> {
+pub async fn run_startup_checklist_with_config(
+    config_path: Option<String>,
+) -> Result<Option<crate::AppState>> {
     // Create logger first
     let logger = StartupLogger::new()?;
     logger.create_latest_symlink()?;
@@ -87,8 +90,13 @@ pub async fn run_startup_checklist_with_config(config_path: Option<String>) -> R
     progress_bar.set_position(10);
     progress_bar.set_message("Validating configuration...");
 
-    let mut config =
-        validate_configuration_with_progress(&mut validation, &progress_bar, &logger, config_path.clone()).await?;
+    let mut config = validate_configuration_with_progress(
+        &mut validation,
+        &progress_bar,
+        &logger,
+        config_path.clone(),
+    )
+    .await?;
 
     // Only continue with SSH and other validation if config is valid
     let ssh_pool_and_keys = if validation.config_valid {
@@ -480,7 +488,10 @@ async fn validate_configuration(validation: &mut StartupValidation) -> Result<Op
 }
 
 #[allow(dead_code)]
-async fn validate_configuration_with_config(validation: &mut StartupValidation, config_path: Option<String>) -> Result<Option<Config>> {
+async fn validate_configuration_with_config(
+    validation: &mut StartupValidation,
+    config_path: Option<String>,
+) -> Result<Option<Config>> {
     let spinner = ProgressBar::new_spinner();
     spinner.set_style(
         ProgressStyle::default_spinner()
@@ -884,7 +895,10 @@ fn validate_config_completeness(config: &Config) -> Vec<String> {
 
         // Check nodes - allow 1 or 2 nodes
         if validator_pair.nodes.is_empty() {
-            issues.push(format!("{} must have at least 1 node configured", validator_name));
+            issues.push(format!(
+                "{} must have at least 1 node configured",
+                validator_name
+            ));
         } else if validator_pair.nodes.len() > 2 {
             issues.push(format!("{} cannot have more than 2 nodes", validator_name));
         }
@@ -924,12 +938,25 @@ fn validate_node_config(
     }
 
     if node.paths.solana_cli.is_empty() {
-        issues.push(format!("{} Solana CLI path is empty (solanaCliPath is required)", node_name));
+        issues.push(format!(
+            "{} Solana CLI path is empty (solanaCliPath is required)",
+            node_name
+        ));
     }
 
     // At least one validator executable must be configured
-    let has_agave = node.paths.agave_validator.as_ref().map(|s| !s.is_empty()).unwrap_or(false);
-    let has_fdctl = node.paths.fdctl.as_ref().map(|s| !s.is_empty()).unwrap_or(false);
+    let has_agave = node
+        .paths
+        .agave_validator
+        .as_ref()
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
+    let has_fdctl = node
+        .paths
+        .fdctl
+        .as_ref()
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
 
     if !has_agave && !has_fdctl {
         issues.push(format!("{} must have at least one validator executable configured: either agaveValidatorPath (for Agave/Jito) or fdctlPath (for Firedancer)", node_name));
@@ -1574,7 +1601,9 @@ async fn detect_node_status_and_executable(
 
                 // Extract agave executable and ledger path
                 for (i, part) in parts.iter().enumerate() {
-                    if part.contains("agave-validator") && (part.ends_with("agave-validator") || part.contains("/agave-validator")) {
+                    if part.contains("agave-validator")
+                        && (part.ends_with("agave-validator") || part.contains("/agave-validator"))
+                    {
                         if agave_validator_executable.is_none() {
                             agave_validator_executable = Some(part.to_string());
                             _main_validator_executable = Some(part.to_string());
@@ -1732,23 +1761,23 @@ async fn detect_node_status_and_executable(
     // Basic swap readiness check during startup
     let mut swap_ready = None; // Will be determined based on basic checks
     let mut swap_issues = Vec::new();
-    
+
     // Basic checks for swap readiness
     if validator_type == crate::types::ValidatorType::Unknown {
         swap_ready = Some(false);
         swap_issues.push("Validator type could not be determined".to_string());
     }
-    
+
     if agave_validator_executable.is_none() && fdctl_executable.is_none() {
         swap_ready = Some(false);
         swap_issues.push("No validator executable found".to_string());
     }
-    
+
     if ledger_path.is_none() {
         swap_ready = Some(false);
         swap_issues.push("Ledger path not detected".to_string());
     }
-    
+
     // If no issues found so far, we can tentatively mark as ready
     // Full validation will still happen at switch time
     if swap_issues.is_empty() && validator_type != crate::types::ValidatorType::Unknown {
@@ -1960,6 +1989,7 @@ pub async fn check_node_swap_readiness(
 }
 
 /// Enhanced version of detect_node_status_and_executable with detailed progress reporting
+#[allow(clippy::too_many_arguments)]
 async fn detect_node_status_and_executable_with_progress(
     node: &crate::types::NodeConfig,
     validator_pair: &crate::types::ValidatorPair,
@@ -2057,7 +2087,9 @@ async fn detect_node_status_and_executable_with_progress(
             for (i, part) in parts.iter().enumerate() {
                 if part == &"--ledger" && i + 1 < parts.len() {
                     ledger_path = Some(parts[i + 1].to_string());
-                    logger.log(&format!("Extracted ledger path: {}", parts[i + 1])).ok();
+                    logger
+                        .log(&format!("Extracted ledger path: {}", parts[i + 1]))
+                        .ok();
                     break;
                 }
             }
@@ -2079,19 +2111,32 @@ async fn detect_node_status_and_executable_with_progress(
             for (i, part) in parts.iter().enumerate() {
                 if part == &"--config" && i + 1 < parts.len() {
                     let config_path = parts[i + 1];
-                    logger.log(&format!("Found Firedancer config at: {}", config_path)).ok();
+                    logger
+                        .log(&format!("Found Firedancer config at: {}", config_path))
+                        .ok();
 
                     // Read config file and extract ledger path
-                    let cat_cmd = format!("cat {} 2>/dev/null | grep -A 5 '\\[ledger\\]' | grep 'path' | head -1", config_path);
-                    if let Ok(config_output) = ssh_pool.execute_command(node, &ssh_key, &cat_cmd).await {
+                    let cat_cmd = format!(
+                        "cat {} 2>/dev/null | grep -A 5 '\\[ledger\\]' | grep 'path' | head -1",
+                        config_path
+                    );
+                    if let Ok(config_output) =
+                        ssh_pool.execute_command(node, &ssh_key, &cat_cmd).await
+                    {
                         for line in config_output.lines() {
                             if line.contains("path") && line.contains("=") {
                                 let path_parts: Vec<&str> = line.split('=').collect();
                                 if path_parts.len() >= 2 {
-                                    let path = path_parts[1].trim().trim_matches('"').trim_matches('\'');
+                                    let path =
+                                        path_parts[1].trim().trim_matches('"').trim_matches('\'');
                                     if !path.is_empty() {
                                         ledger_path = Some(path.to_string());
-                                        logger.log(&format!("Extracted ledger path from config: {}", path)).ok();
+                                        logger
+                                            .log(&format!(
+                                                "Extracted ledger path from config: {}",
+                                                path
+                                            ))
+                                            .ok();
                                         break;
                                     }
                                 }
@@ -2123,7 +2168,6 @@ async fn detect_node_status_and_executable_with_progress(
             validator_type_name.bright_green()
         );
     });
-
 
     // Step 3: Version Detection
     progress_bar.suspend(|| {
@@ -2264,23 +2308,23 @@ async fn detect_node_status_and_executable_with_progress(
     // Basic swap readiness check during startup
     let mut swap_ready = None; // Will be determined based on basic checks
     let mut swap_issues = Vec::new();
-    
+
     // Basic checks for swap readiness
     if validator_type == crate::types::ValidatorType::Unknown {
         swap_ready = Some(false);
         swap_issues.push("Validator type could not be determined".to_string());
     }
-    
+
     if agave_validator_executable.is_none() && fdctl_executable.is_none() {
         swap_ready = Some(false);
         swap_issues.push("No validator executable found".to_string());
     }
-    
+
     if ledger_path.is_none() {
         swap_ready = Some(false);
         swap_issues.push("Ledger path not detected".to_string());
     }
-    
+
     // If no issues found so far, we can tentatively mark as ready
     // Full validation will still happen at switch time
     if swap_issues.is_empty() && validator_type != crate::types::ValidatorType::Unknown {

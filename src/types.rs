@@ -171,6 +171,7 @@ impl FailureTracker {
         self.last_error = Some(error);
     }
 
+    #[allow(dead_code)]
     pub fn seconds_since_first_failure(&self) -> Option<u64> {
         self.first_failure_time.map(|t| t.elapsed().as_secs())
     }
@@ -182,6 +183,7 @@ impl FailureTracker {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct NodeHealthStatus {
     pub ssh_status: FailureTracker,
     pub rpc_status: FailureTracker,

@@ -52,8 +52,7 @@ pub async fn execute_rpc_call(
 
     let curl_command = format!(
         r#"curl -s http://localhost:{} -X POST -H "Content-Type: application/json" -d '{}' 2>&1"#,
-        rpc_port,
-        request.to_string()
+        rpc_port, request
     );
 
     let output = ssh_pool
@@ -113,6 +112,7 @@ pub async fn get_health(
 }
 
 /// Check if a validator is caught up using getHealth RPC
+#[allow(dead_code)]
 pub async fn is_validator_caught_up(
     ssh_pool: &AsyncSshPool,
     node: &NodeConfig,

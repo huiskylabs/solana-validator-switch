@@ -90,33 +90,115 @@ pub async fn switch_command_with_confirmation(
         match (active_node_with_status, standby_node_with_status) {
             (Some(active), Some(standby)) => (active, standby),
             _ => {
-                // Handle special case: both nodes are standby
+                // Handle special case: both nodes are standby or both unknown
                 let standby_nodes: Vec<_> = validator_status
                     .nodes_with_status
                     .iter()
                     .filter(|n| n.status == crate::types::NodeStatus::Standby)
                     .collect();
-                
+
+                let unknown_nodes: Vec<_> = validator_status
+                    .nodes_with_status
+                    .iter()
+                    .filter(|n| n.status == crate::types::NodeStatus::Unknown)
+                    .collect();
+
                 if standby_nodes.len() == 2 {
                     println_if_not_silent!(
                         "\n{}",
-                        "⚠️  Both nodes are in STANDBY state - Recovery Mode".yellow().bold()
+                        "⚠️  Both nodes are in STANDBY state - Recovery Mode"
+                            .yellow()
+                            .bold()
                     );
+
+                    // In recovery mode, try to identify which node has a tower file
+                    // The node with a tower file should be the "source" (assigned to active_node_with_status)
+                    let node0_has_tower =
+                        validator_status.nodes_with_status[0].tower_path.is_some();
+                    let node1_has_tower =
+                        validator_status.nodes_with_status[1].tower_path.is_some();
+
+                    let (source_idx, target_idx) = match (node0_has_tower, node1_has_tower) {
+                        (true, false) => {
+                            // Node 0 has tower, use it as source
+                            println_if_not_silent!(
+                                "   Tower file found on {} - using as source",
+                                validator_status.nodes_with_status[0].node.label
+                            );
+                            (0, 1)
+                        }
+                        (false, true) => {
+                            // Node 1 has tower, use it as source
+                            println_if_not_silent!(
+                                "   Tower file found on {} - using as source",
+                                validator_status.nodes_with_status[1].node.label
+                            );
+                            (1, 0)
+                        }
+                        (true, true) => {
+                            // Both have tower files - use node[0] as source (default)
+                            println_if_not_silent!(
+                                "   Both nodes have tower files - using {} as source",
+                                validator_status.nodes_with_status[0].node.label
+                            );
+                            (0, 1)
+                        }
+                        (false, false) => {
+                            // Neither has a detected tower file - this is risky
+                            println_if_not_silent!(
+                                "{}",
+                                "   ⚠️  WARNING: No tower file detected on either node!"
+                                    .bright_red()
+                            );
+                            println_if_not_silent!(
+                                "   Using {} as source (may fail if tower doesn't exist)",
+                                validator_status.nodes_with_status[0].node.label
+                            );
+                            (0, 1)
+                        }
+                    };
+
                     println_if_not_silent!(
                         "Will activate {} and keep {} as standby",
-                        validator_status.nodes_with_status[1].node.label,
-                        validator_status.nodes_with_status[0].node.label
+                        validator_status.nodes_with_status[target_idx].node.label,
+                        validator_status.nodes_with_status[source_idx].node.label
                     );
-                    // Switch second node to active, keep first as standby
+
                     (
-                        &validator_status.nodes_with_status[0], // Will remain standby
-                        &validator_status.nodes_with_status[1], // Will become active
+                        &validator_status.nodes_with_status[source_idx], // Source: has tower, will be demoted
+                        &validator_status.nodes_with_status[target_idx], // Target: will receive tower and become active
                     )
+                } else if unknown_nodes.len() == 2 {
+                    // Both nodes have Unknown status - RPC likely down on both
+                    println_if_not_silent!(
+                        "\n{}",
+                        "⚠️  Both nodes have UNKNOWN status - RPC may be down"
+                            .yellow()
+                            .bold()
+                    );
+                    println_if_not_silent!(
+                        "{}",
+                        "   Cannot safely determine which node is active!".bright_red()
+                    );
+                    println_if_not_silent!(
+                        "   Please verify node status manually before proceeding."
+                    );
+                    return Err(anyhow!(
+                        "Cannot switch: Both nodes have Unknown status. \
+                        Verify RPC health and node status before attempting switch."
+                    ));
                 } else {
                     // Fallback: use first two nodes if we can't determine status
                     if validator_status.nodes_with_status.len() < 2 {
-                        return Err(anyhow!("Validator must have at least 2 nodes configured for switching"));
+                        return Err(anyhow!(
+                            "Validator must have at least 2 nodes configured for switching"
+                        ));
                     }
+                    println_if_not_silent!(
+                        "\n{}",
+                        "⚠️  Cannot determine Active/Standby status - using default node order"
+                            .yellow()
+                    );
                     (
                         &validator_status.nodes_with_status[0],
                         &validator_status.nodes_with_status[1],
@@ -385,7 +467,9 @@ pub async fn switch_command_with_confirmation(
         }
 
         // Update the node statuses in app_state to reflect the switch
-        if !dry_run && show_status && app_state.validator_statuses.len() > 0 {
+        // Note: Always update state after successful switch, regardless of show_status
+        // This ensures UI state stays in sync even when called from auto-failover
+        if !dry_run && !app_state.validator_statuses.is_empty() {
             // Find the indices of active and standby nodes
             let mut active_idx = None;
             let mut standby_idx = None;
@@ -548,6 +632,8 @@ impl SwitchManager {
         );
         let active_switch_start = Instant::now();
         self.switch_primary_to_unfunded(dry_run).await?;
+        // Track that step 1 completed for potential rollback
+        let step1_completed = true;
         self.active_switch_time = Some(active_switch_start.elapsed());
         if !dry_run {
             println_if_not_silent!(
@@ -558,15 +644,50 @@ impl SwitchManager {
             );
         }
 
-        // Step 2: Transfer tower file
+        // Step 2: Transfer tower file (with rollback on failure)
         println_if_not_silent!(
             "\n{}",
             "📤 Step 2: Transfer Tower File".bright_blue().bold()
         );
-        self.transfer_tower_file(dry_run).await?;
+        if let Err(e) = self.transfer_tower_file(dry_run).await {
+            // Step 2 failed - attempt rollback of Step 1
+            if step1_completed && !dry_run {
+                println_if_not_silent!(
+                    "\n{}",
+                    "⚠️  Tower transfer failed! Attempting rollback..."
+                        .bright_red()
+                        .bold()
+                );
+                if let Err(rollback_err) = self.rollback_primary_to_funded().await {
+                    // CRITICAL: Both forward and rollback failed
+                    eprintln!(
+                        "\n{}",
+                        "🚨 CRITICAL: Rollback failed! Validator may be in inconsistent state!"
+                            .bright_red()
+                            .bold()
+                    );
+                    eprintln!("   Original error: {}", e);
+                    eprintln!("   Rollback error: {}", rollback_err);
+                    eprintln!(
+                        "   ⚠️  MANUAL INTERVENTION REQUIRED: Check validator status on both nodes!"
+                    );
+                    return Err(anyhow!(
+                        "Switch failed and rollback failed. Original: {}. Rollback: {}",
+                        e,
+                        rollback_err
+                    ));
+                }
+                println_if_not_silent!(
+                    "{}",
+                    "   ✓ Rollback successful - active node restored to funded identity"
+                        .bright_green()
+                );
+            }
+            return Err(e);
+        }
         // Note: tower_transfer_time is set inside transfer_tower_file method
 
-        // Step 3: Switch standby node to funded identity
+        // Step 3: Switch standby node to funded identity (with rollback on failure)
         println_if_not_silent!(
             "\n{}",
             "🚀 Step 3: Switch Standby Node to Funded Identity"
@@ -574,7 +695,43 @@ impl SwitchManager {
                 .bold()
         );
         let standby_switch_start = Instant::now();
-        self.switch_backup_to_funded(dry_run).await?;
+        if let Err(e) = self.switch_backup_to_funded(dry_run).await {
+            // Step 3 failed - attempt rollback of Step 1
+            // Note: Tower file was transferred but that's okay, it can be overwritten later
+            if step1_completed && !dry_run {
+                println_if_not_silent!(
+                    "\n{}",
+                    "⚠️  Standby activation failed! Attempting rollback..."
+                        .bright_red()
+                        .bold()
+                );
+                if let Err(rollback_err) = self.rollback_primary_to_funded().await {
+                    // CRITICAL: Both forward and rollback failed
+                    eprintln!(
+                        "\n{}",
+                        "🚨 CRITICAL: Rollback failed! Validator may be in inconsistent state!"
+                            .bright_red()
+                            .bold()
+                    );
+                    eprintln!("   Original error: {}", e);
+                    eprintln!("   Rollback error: {}", rollback_err);
+                    eprintln!(
+                        "   ⚠️  MANUAL INTERVENTION REQUIRED: Check validator status on both nodes!"
+                    );
+                    return Err(anyhow!(
+                        "Switch failed and rollback failed. Original: {}. Rollback: {}",
+                        e,
+                        rollback_err
+                    ));
+                }
+                println_if_not_silent!(
+                    "{}",
+                    "   ✓ Rollback successful - active node restored to funded identity"
+                        .bright_green()
+                );
+            }
+            return Err(e);
+        }
         self.standby_switch_time = Some(standby_switch_start.elapsed());
         if !dry_run {
             println_if_not_silent!(
@@ -597,6 +754,8 @@ impl SwitchManager {
                 .bright_blue()
                 .bold()
         );
+        // Note: Verification failure after successful switch does NOT trigger rollback
+        // because the switch has completed - both nodes have correct identities
         self.verify_backup_catchup(dry_run).await?;
 
         // Summary
@@ -622,10 +781,12 @@ impl SwitchManager {
             || process_info.contains("firedancer")
         {
             // Get fdctl executable path from config
-            let fdctl_path = crate::executable_utils::get_fdctl_path(&self.active_node_with_status)?;
+            let fdctl_path =
+                crate::executable_utils::get_fdctl_path(&self.active_node_with_status)?;
 
             // Extract config path from the process info
-            let config_path = crate::executable_utils::extract_firedancer_config_path(&process_info)?;
+            let config_path =
+                crate::executable_utils::extract_firedancer_config_path(&process_info)?;
 
             (
                 "Using Firedancer fdctl set-identity",
@@ -696,8 +857,10 @@ impl SwitchManager {
                 // Execute the switch command based on validator type
                 if process_info.contains("fdctl") || process_info.contains("firedancer") {
                     // Firedancer: fdctl set-identity --config <config> <identity>
-                    let fdctl_path = crate::executable_utils::get_fdctl_path(&self.active_node_with_status)?;
-                    let config_path = crate::executable_utils::extract_firedancer_config_path(&process_info)?;
+                    let fdctl_path =
+                        crate::executable_utils::get_fdctl_path(&self.active_node_with_status)?;
+                    let config_path =
+                        crate::executable_utils::extract_firedancer_config_path(&process_info)?;
 
                     let args = vec![
                         "set-identity",
@@ -742,6 +905,87 @@ impl SwitchManager {
             }
             // No sleep - move immediately to next step!
             spinner.stop_with_message("✅ Active validator switched to unfunded identity");
+        }
+
+        Ok(())
+    }
+
+    /// Rollback method: Switch the active node back to funded identity
+    /// Called when Step 2 or Step 3 fails to restore the original state
+    async fn rollback_primary_to_funded(&mut self) -> Result<()> {
+        // Detect validator type to use appropriate command
+        let process_info = {
+            let ssh_key = self.get_ssh_key_for_node(&self.active_node_with_status.node.host)?;
+            let pool = self.ssh_pool.clone();
+            pool.execute_command(
+                &self.active_node_with_status.node,
+                &ssh_key,
+                "ps aux | grep -E 'solana-validator|agave|fdctl|firedancer' | grep -v grep",
+            )
+            .await?
+        };
+
+        println_if_not_silent!(
+            "   Rollback: Switching {} back to funded identity...",
+            self.active_node_with_status.node.label
+        );
+
+        let ssh_key = self.get_ssh_key_for_node(&self.active_node_with_status.node.host)?;
+        let pool = self.ssh_pool.clone();
+
+        // Execute the rollback command based on validator type
+        if process_info.contains("fdctl") || process_info.contains("firedancer") {
+            // Firedancer: fdctl set-identity --config <config> <identity>
+            let fdctl_path =
+                crate::executable_utils::get_fdctl_path(&self.active_node_with_status)?;
+            let config_path =
+                crate::executable_utils::extract_firedancer_config_path(&process_info)?;
+
+            let args = vec![
+                "set-identity",
+                "--config",
+                &config_path,
+                &self.active_node_with_status.node.paths.funded_identity,
+            ];
+
+            pool.execute_command_with_args(
+                &self.active_node_with_status.node,
+                &ssh_key,
+                &fdctl_path,
+                &args,
+            )
+            .await?;
+        } else if process_info.contains("agave-validator") {
+            // Agave: agave-validator -l <ledger> set-identity <identity>
+            let agave_path = self
+                .active_node_with_status
+                .agave_validator_executable
+                .as_ref()
+                .ok_or_else(|| anyhow!("Agave validator executable path not found for rollback"))?;
+            let ledger_path = self
+                .active_node_with_status
+                .ledger_path
+                .as_ref()
+                .ok_or_else(|| anyhow!("Ledger path not found for rollback"))?;
+
+            let args = vec![
+                "-l",
+                ledger_path,
+                "set-identity",
+                &self.active_node_with_status.node.paths.funded_identity,
+            ];
+
+            pool.execute_command_with_args(
+                &self.active_node_with_status.node,
+                &ssh_key,
+                agave_path,
+                &args,
+            )
+            .await?;
+        } else {
+            return Err(anyhow!(
+                "Unsupported validator type for rollback set-identity"
+            ));
         }
 
         Ok(())
@@ -867,23 +1111,46 @@ impl SwitchManager {
         );
 
         if !dry_run {
-            // Verify the file on standby
-            let verify_result = {
+            // Calculate SHA256 checksum on source (active node)
+            let source_checksum = {
+                let ssh_key = self.get_ssh_key_for_node(&self.active_node_with_status.node.host)?;
+                let pool = self.ssh_pool.clone();
+                let sha_cmd = format!("sha256sum {} | cut -d' ' -f1", tower_path);
+                pool.execute_command(&self.active_node_with_status.node, &ssh_key, &sha_cmd)
+                    .await?
+            };
+
+            // Calculate SHA256 checksum on destination (standby node)
+            let dest_checksum = {
                 let ssh_key =
                     self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
                 let pool = self.ssh_pool.clone();
-                let ls_args = vec!["-la", &dest_path];
-                pool.execute_command_with_args(
-                    &self.standby_node_with_status.node,
-                    &ssh_key,
-                    "ls",
-                    &ls_args,
-                )
-                .await?
+                let sha_cmd = format!("sha256sum {} | cut -d' ' -f1", dest_path);
+                pool.execute_command(&self.standby_node_with_status.node, &ssh_key, &sha_cmd)
+                    .await?
             };
-            if verify_result.trim().is_empty() {
-                return Err(anyhow!("Failed to verify tower file on standby"));
+
+            // Compare checksums
+            let source_hash = source_checksum.trim();
+            let dest_hash = dest_checksum.trim();
+
+            if source_hash.is_empty() || dest_hash.is_empty() {
+                return Err(anyhow!(
+                    "Failed to compute tower file checksums (source: '{}', dest: '{}')",
+                    source_hash,
+                    dest_hash
+                ));
             }
+
+            if source_hash != dest_hash {
+                return Err(anyhow!(
+                    "Tower file checksum mismatch! Source: {}, Dest: {}. Transfer may be corrupted.",
+                    source_hash,
+                    dest_hash
+                ));
+            }
+
+            println_if_not_silent!("  ✓ Tower file verified (SHA256: {}...)", &source_hash[..8]);
         }
 
         Ok(())
@@ -906,10 +1173,12 @@ impl SwitchManager {
             || process_info.contains("firedancer")
         {
             // Get fdctl executable path from config
-            let fdctl_path = crate::executable_utils::get_fdctl_path(&self.standby_node_with_status)?;
+            let fdctl_path =
+                crate::executable_utils::get_fdctl_path(&self.standby_node_with_status)?;
 
             // Extract config path from the process info
-            let config_path = crate::executable_utils::extract_firedancer_config_path(&process_info)?;
+            let config_path =
+                crate::executable_utils::extract_firedancer_config_path(&process_info)?;
 
             (
                 "Using Firedancer fdctl set-identity",
@@ -981,8 +1250,10 @@ impl SwitchManager {
                 // Execute the switch command based on validator type
                 if process_info.contains("fdctl") || process_info.contains("firedancer") {
                     // Firedancer: fdctl set-identity --config <config> <identity>
-                    let fdctl_path = crate::executable_utils::get_fdctl_path(&self.standby_node_with_status)?;
-                    let config_path = crate::executable_utils::extract_firedancer_config_path(&process_info)?;
+                    let fdctl_path =
+                        crate::executable_utils::get_fdctl_path(&self.standby_node_with_status)?;
+                    let config_path =
+                        crate::executable_utils::extract_firedancer_config_path(&process_info)?;
 
                     let args = vec![
                         "set-identity",

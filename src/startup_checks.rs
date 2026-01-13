@@ -8,6 +8,7 @@ use crate::types::{NodeWithStatus, ValidatorPair};
 use crate::AppState;
 
 /// Perform startup safety checks for auto-failover configuration
+#[allow(dead_code)]
 pub async fn check_auto_failover_safety(
     app_state: &AppState,
     logger: &StartupLogger,
@@ -84,6 +85,7 @@ pub async fn check_auto_failover_safety(
 }
 
 /// Check that validators are not starting with their authorized voter identity
+#[allow(dead_code)]
 pub async fn check_startup_identity_safety(app_state: &AppState) -> Result<()> {
     println!(
         "\n{}",
@@ -121,6 +123,7 @@ pub async fn check_startup_identity_safety(app_state: &AppState) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 async fn check_node_identity(
     node: &NodeWithStatus,
     _validator_pair: &ValidatorPair,
@@ -164,6 +167,7 @@ async fn check_node_identity(
     Ok(())
 }
 
+#[allow(dead_code)]
 async fn check_node_startup_identity(
     node: &NodeWithStatus,
     ssh_pool: &AsyncSshPool,
@@ -193,6 +197,7 @@ async fn check_node_startup_identity(
     Ok(())
 }
 
+#[allow(dead_code)]
 async fn check_firedancer_identity_config(
     node: &NodeWithStatus,
     ssh_pool: &AsyncSshPool,
@@ -286,6 +291,7 @@ async fn check_firedancer_identity_config(
     Ok(())
 }
 
+#[allow(dead_code)]
 async fn check_agave_identity_config(
     node: &NodeWithStatus,
     ssh_pool: &AsyncSshPool,

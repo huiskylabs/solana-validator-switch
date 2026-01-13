@@ -9,6 +9,7 @@ pub struct ConfigManager {
 }
 
 impl ConfigManager {
+    #[allow(dead_code)]
     pub fn new() -> Result<Self> {
         Self::with_path(None)
     }

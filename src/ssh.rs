@@ -46,6 +46,20 @@ impl AsyncSshPool {
         format!("{}@{}:{}:{}", node.user, node.host, node.port, ssh_key_path)
     }
 
+    /// Check if a command requires shell features (pipes, redirections, etc.)
+    fn needs_shell_execution(command: &str) -> bool {
+        command.contains('|')
+            || command.contains('>')
+            || command.contains('<')
+            || command.contains('&')
+            || command.contains(';')
+            || command.contains('$')
+            || command.contains('`')
+            || command.contains("||")
+            || command.contains("&&")
+            || command.contains("2>&1")
+    }
+
     /// Get or create an SSH session for a node
     pub async fn get_session(&self, node: &NodeConfig, ssh_key_path: &str) -> Result<Arc<Session>> {
         let key = Self::get_connection_key(node, ssh_key_path);
@@ -173,17 +187,7 @@ impl AsyncSshPool {
     ) -> Result<String> {
         let session = self.get_session(node, ssh_key_path).await?;
 
-        // Check if command needs shell features (pipes, redirections, etc.)
-        let needs_shell = command.contains('|')
-            || command.contains('>')
-            || command.contains('<')
-            || command.contains('&')
-            || command.contains(';')
-            || command.contains('$')
-            || command.contains('`')
-            || command.contains("||")
-            || command.contains("&&")
-            || command.contains("2>&1");
+        let needs_shell = Self::needs_shell_execution(command);
 
         let output = if needs_shell {
             // Use bash -c with proper argument handling for shell features
@@ -235,17 +239,7 @@ impl AsyncSshPool {
     {
         let session = self.get_session(node, ssh_key_path).await?;
 
-        // Check if command needs shell features
-        let needs_shell = command.contains('|')
-            || command.contains('>')
-            || command.contains('<')
-            || command.contains('&')
-            || command.contains(';')
-            || command.contains('$')
-            || command.contains('`')
-            || command.contains("||")
-            || command.contains("&&")
-            || command.contains("2>&1");
+        let needs_shell = Self::needs_shell_execution(command);
 
         let mut child = if needs_shell {
             session
@@ -308,17 +302,7 @@ impl AsyncSshPool {
     ) -> Result<()> {
         let session = self.get_session(node, ssh_key_path).await?;
 
-        // Check if command needs shell features
-        let needs_shell = command.contains('|')
-            || command.contains('>')
-            || command.contains('<')
-            || command.contains('&')
-            || command.contains(';')
-            || command.contains('$')
-            || command.contains('`')
-            || command.contains("||")
-            || command.contains("&&")
-            || command.contains("2>&1");
+        let needs_shell = Self::needs_shell_execution(command);
 
         let mut child = if needs_shell {
             session
@@ -412,17 +396,7 @@ impl AsyncSshPool {
     ) -> Result<String> {
         let session = self.get_session(node, ssh_key_path).await?;
 
-        // Check if command needs shell features
-        let needs_shell = command.contains('|')
-            || command.contains('>')
-            || command.contains('<')
-            || command.contains('&')
-            || command.contains(';')
-            || command.contains('$')
-            || command.contains('`')
-            || command.contains("||")
-            || command.contains("&&")
-            || command.contains("2>&1");
+        let needs_shell = Self::needs_shell_execution(command);
 
         let shell_command = if needs_shell {
             format!("bash -c '{}'", command.replace("'", "'\\'''"))

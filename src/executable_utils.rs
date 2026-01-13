@@ -1,25 +1,21 @@
 use anyhow::{anyhow, Result};
 
 /// Get fdctl executable path from config (required, no auto-detection)
-pub fn get_fdctl_path(
-    node_with_status: &crate::types::NodeWithStatus,
-) -> Result<String> {
+pub fn get_fdctl_path(node_with_status: &crate::types::NodeWithStatus) -> Result<String> {
     node_with_status.fdctl_executable.clone()
         .ok_or_else(|| anyhow!("Firedancer fdctl executable path not configured. Please set 'fdctlPath' in node paths config"))
 }
 
 /// Get agave validator executable path from config (required, no auto-detection)
-pub fn get_agave_path(
-    node_with_status: &crate::types::NodeWithStatus,
-) -> Result<String> {
+#[allow(dead_code)]
+pub fn get_agave_path(node_with_status: &crate::types::NodeWithStatus) -> Result<String> {
     node_with_status.agave_validator_executable.clone()
         .ok_or_else(|| anyhow!("Agave validator executable path not configured. Please set 'agaveValidatorPath' in node paths config"))
 }
 
 /// Get solana CLI executable path from config (required, no auto-detection)
-pub fn get_solana_cli_path(
-    node_with_status: &crate::types::NodeWithStatus,
-) -> Result<String> {
+#[allow(dead_code)]
+pub fn get_solana_cli_path(node_with_status: &crate::types::NodeWithStatus) -> Result<String> {
     node_with_status.solana_cli_executable.clone()
         .ok_or_else(|| anyhow!("Solana CLI executable path not configured. Please set 'solanaCliPath' in node paths config"))
 }

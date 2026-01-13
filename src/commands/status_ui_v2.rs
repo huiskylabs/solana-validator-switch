@@ -21,6 +21,7 @@ async fn read_lock_with_timeout<T>(
 }
 
 /// Helper for acquiring write lock with timeout
+#[allow(dead_code)]
 async fn write_lock_with_timeout<T>(
     lock: &Arc<RwLock<T>>,
     timeout_ms: u64,
@@ -383,6 +384,7 @@ async fn handle_validator_switch_with_timeout(
 }
 
 /// Enhanced UI App state with async support
+#[allow(dead_code)]
 pub struct EnhancedStatusApp {
     pub app_state: Arc<AppState>,
     pub ssh_pool: Arc<AsyncSshPool>,
@@ -397,6 +399,7 @@ pub struct EnhancedStatusApp {
 }
 
 /// UI State that can be shared across threads
+#[allow(dead_code)]
 pub struct UiState {
     // Vote data for each validator
     pub vote_data: Vec<Option<ValidatorVoteData>>,
@@ -454,31 +457,18 @@ pub struct NodeFieldRefreshState {
     pub node_1: FieldRefreshStates,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct FieldRefreshStates {
     pub status_refreshing: bool,
     pub identity_refreshing: bool,
     pub version_refreshing: bool,
+    #[allow(dead_code)]
     pub catchup_refreshing: bool,
+    #[allow(dead_code)]
     pub health_refreshing: bool,
     pub ssh_connectivity_refreshing: bool,
     pub rpc_health_refreshing: bool,
     pub swap_readiness_refreshing: bool,
-}
-
-impl Default for FieldRefreshStates {
-    fn default() -> Self {
-        Self {
-            status_refreshing: false,
-            identity_refreshing: false,
-            version_refreshing: false,
-            catchup_refreshing: false,
-            health_refreshing: false,
-            ssh_connectivity_refreshing: false,
-            rpc_health_refreshing: false,
-            swap_readiness_refreshing: false,
-        }
-    }
 }
 
 // Removed FocusedPane enum as logs are no longer displayed
@@ -490,9 +480,9 @@ pub struct NodePairStatus {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct CatchupStatus {
     pub status: String,
-    #[allow(dead_code)]
     pub last_updated: Instant,
     pub is_streaming: bool,
 }
@@ -533,6 +523,7 @@ pub struct LogMessage {
 }
 
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 pub enum LogLevel {
     Info,
     Warning,
@@ -678,6 +669,7 @@ impl EnhancedStatusApp {
     }
 
     /// Spawn continuous catchup streaming tasks for each node
+    #[allow(dead_code)]
     fn spawn_catchup_streaming_tasks(&self) {
         let ui_state = Arc::clone(&self.ui_state);
         let app_state = Arc::clone(&self.app_state);
@@ -1725,7 +1717,8 @@ async fn fetch_catchup_for_node(
 }
 */
 
-/// Stream catchup status continuously for a single node  
+/// Stream catchup status continuously for a single node
+#[allow(dead_code)]
 async fn stream_catchup_for_node(
     ssh_pool: Arc<AsyncSshPool>,
     node: crate::types::NodeWithStatus,
@@ -1830,10 +1823,8 @@ async fn stream_catchup_for_node(
                     if let Some(ref mut status) = catchup_data.node_0 {
                         status.is_streaming = false;
                     }
-                } else {
-                    if let Some(ref mut status) = catchup_data.node_1 {
-                        status.is_streaming = false;
-                    }
+                } else if let Some(ref mut status) = catchup_data.node_1 {
+                    status.is_streaming = false;
                 }
             }
         }
@@ -1844,6 +1835,7 @@ async fn stream_catchup_for_node(
 }
 
 /// Parse catchup output to extract status
+#[allow(dead_code)]
 fn parse_catchup_output(output: &str, is_firedancer: bool) -> String {
     if is_firedancer {
         // For Firedancer, check if it's running
@@ -2131,6 +2123,7 @@ fn draw_validator_summaries(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_side_by_side_tables(
     f: &mut ratatui::Frame,
     area: Rect,
@@ -2149,10 +2142,10 @@ fn draw_side_by_side_tables(
     if validator_status.nodes_with_status.len() == 1 {
         // Use the full area for single node
         if let Some(node) = validator_status.nodes_with_status.get(0) {
-            let ssh_health = ssh_health_data.and_then(|s| Some(&s.node_0));
-            let rpc_health = rpc_health_data.and_then(|r| Some(&r.node_0));
+            let ssh_health = ssh_health_data.map(|s| &s.node_0);
+            let rpc_health = rpc_health_data.map(|r| &r.node_0);
             let node_refresh_state = field_refresh_state.map(|s| &s.node_0);
-            
+
             draw_single_node_table(
                 f,
                 area,
@@ -2185,19 +2178,19 @@ fn draw_side_by_side_tables(
 
     // Draw left table (node 0)
     if let Some(node) = validator_status.nodes_with_status.get(left_node_idx) {
-        let ssh_health = ssh_health_data.and_then(|s| {
+        let ssh_health = ssh_health_data.map(|s| {
             if left_node_idx == 0 {
-                Some(&s.node_0)
+                &s.node_0
             } else {
-                Some(&s.node_1)
+                &s.node_1
             }
         });
 
-        let rpc_health = rpc_health_data.and_then(|r| {
+        let rpc_health = rpc_health_data.map(|r| {
             if left_node_idx == 0 {
-                Some(&r.node_0)
+                &r.node_0
             } else {
-                Some(&r.node_1)
+                &r.node_1
             }
         });
 
@@ -2229,19 +2222,19 @@ fn draw_side_by_side_tables(
 
     // Draw right table (node 1)
     if let Some(node) = validator_status.nodes_with_status.get(right_node_idx) {
-        let ssh_health = ssh_health_data.and_then(|s| {
+        let ssh_health = ssh_health_data.map(|s| {
             if right_node_idx == 0 {
-                Some(&s.node_0)
+                &s.node_0
             } else {
-                Some(&s.node_1)
+                &s.node_1
             }
         });
 
-        let rpc_health = rpc_health_data.and_then(|r| {
+        let rpc_health = rpc_health_data.map(|r| {
             if right_node_idx == 0 {
-                Some(&r.node_0)
+                &r.node_0
             } else {
-                Some(&r.node_1)
+                &r.node_1
             }
         });
 
@@ -2272,6 +2265,7 @@ fn draw_side_by_side_tables(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_single_node_table(
     f: &mut ratatui::Frame,
     area: Rect,
@@ -2299,7 +2293,7 @@ fn draw_single_node_table(
     let mut rows = vec![];
 
     // Node Status (first row)
-    let status_display = if field_refresh_state.map_or(false, |s| s.status_refreshing) {
+    let status_display = if field_refresh_state.is_some_and(|s| s.status_refreshing) {
         format!("🔄 Checking... ({})", node.node.label)
     } else {
         format!(
@@ -2316,7 +2310,7 @@ fn draw_single_node_table(
     rows.push(Row::new(vec![
         Cell::from("Status"),
         Cell::from(status_display.clone()).style(Style::default().fg(
-            if field_refresh_state.map_or(false, |s| s.status_refreshing) {
+            if field_refresh_state.is_some_and(|s| s.status_refreshing) {
                 Color::DarkGray
             } else {
                 match node.status {
@@ -2336,7 +2330,7 @@ fn draw_single_node_table(
     ]));
 
     // Identity
-    let identity_display = if field_refresh_state.map_or(false, |s| s.identity_refreshing) {
+    let identity_display = if field_refresh_state.is_some_and(|s| s.identity_refreshing) {
         "🔄 Refreshing...".to_string()
     } else {
         node.current_identity
@@ -2356,7 +2350,7 @@ fn draw_single_node_table(
     ]));
 
     // Validator type and version
-    let client_display = if field_refresh_state.map_or(false, |s| s.version_refreshing) {
+    let client_display = if field_refresh_state.is_some_and(|s| s.version_refreshing) {
         "🔄 Detecting...".to_string()
     } else {
         let version = node.version.as_deref().unwrap_or("");
@@ -2382,18 +2376,12 @@ fn draw_single_node_table(
     ]));
 
     // Swap readiness
-    let swap_ready_display = if field_refresh_state.map_or(false, |s| s.swap_readiness_refreshing) {
+    let swap_ready_display = if field_refresh_state.is_some_and(|s| s.swap_readiness_refreshing) {
         "🔄 Refreshing...".to_string()
     } else {
         match node.swap_ready {
             Some(true) => "✅ Ready",
-            Some(false) => {
-                if node.swap_issues.is_empty() {
-                    "❌ Not Ready"
-                } else {
-                    "❌ Not Ready"
-                }
-            },
+            Some(false) => "❌ Not Ready",
             None => "⏳ Checking...",
         }
         .to_string()
@@ -2402,7 +2390,7 @@ fn draw_single_node_table(
     rows.push(Row::new(vec![
         Cell::from("Swap Ready"),
         Cell::from(swap_ready_display.clone()).style(Style::default().fg(
-            if field_refresh_state.map_or(false, |s| s.swap_readiness_refreshing) {
+            if field_refresh_state.is_some_and(|s| s.swap_readiness_refreshing) {
                 Color::Cyan
             } else {
                 match node.swap_ready {
@@ -2413,14 +2401,13 @@ fn draw_single_node_table(
             },
         )),
     ]));
-    
+
     // Display swap issues if any
     if matches!(node.swap_ready, Some(false)) && !node.swap_issues.is_empty() {
         for issue in &node.swap_issues {
             rows.push(Row::new(vec![
                 Cell::from("  └─ Issue"),
-                Cell::from(format!("⚠️  {}", issue))
-                    .style(Style::default().fg(Color::Yellow)),
+                Cell::from(format!("⚠️  {}", issue)).style(Style::default().fg(Color::Yellow)),
             ]));
         }
     }
@@ -2717,6 +2704,7 @@ fn create_section_header_with_label(label: &'static str) -> Row<'static> {
 }
 
 #[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
 fn draw_validator_table(
     f: &mut ratatui::Frame,
     area: Rect,
@@ -2923,9 +2911,11 @@ fn draw_validator_table(
         ]));
 
         // Display swap issues if any
-        let node_0_has_issues = matches!(node_0.swap_ready, Some(false)) && !node_0.swap_issues.is_empty();
-        let node_1_has_issues = matches!(node_1.swap_ready, Some(false)) && !node_1.swap_issues.is_empty();
-        
+        let node_0_has_issues =
+            matches!(node_0.swap_ready, Some(false)) && !node_0.swap_issues.is_empty();
+        let node_1_has_issues =
+            matches!(node_1.swap_ready, Some(false)) && !node_1.swap_issues.is_empty();
+
         if node_0_has_issues || node_1_has_issues {
             let max_issues = node_0.swap_issues.len().max(node_1.swap_issues.len());
             for i in 0..max_issues {
@@ -2939,7 +2929,7 @@ fn draw_validator_table(
                 } else {
                     String::new()
                 };
-                
+
                 rows.push(Row::new(vec![
                     Cell::from(if i == 0 { "  └─ Issues" } else { "" }),
                     Cell::from(issue_0).style(Style::default().fg(Color::Yellow)),
@@ -3004,8 +2994,18 @@ fn draw_validator_table(
         {
             rows.push(Row::new(vec![
                 Cell::from("Agave Path"),
-                Cell::from(node_0.agave_validator_executable.as_deref().unwrap_or("N/A")),
-                Cell::from(node_1.agave_validator_executable.as_deref().unwrap_or("N/A")),
+                Cell::from(
+                    node_0
+                        .agave_validator_executable
+                        .as_deref()
+                        .unwrap_or("N/A"),
+                ),
+                Cell::from(
+                    node_1
+                        .agave_validator_executable
+                        .as_deref()
+                        .unwrap_or("N/A"),
+                ),
             ]));
         }
 
@@ -3332,6 +3332,7 @@ fn draw_switch_ui(f: &mut ratatui::Frame, app_state: &AppState, ui_state: &UiSta
 }
 
 /// Helper function to shorten paths intelligently
+#[allow(dead_code)]
 fn shorten_path(path: &str, max_len: usize) -> String {
     if path == "N/A" || path.len() <= max_len {
         return path.to_string();
@@ -3984,7 +3985,7 @@ async fn refresh_node_version(
                 };
 
                 // Determine if it's Jito based on version output
-                let validator_type = if version.as_ref().map_or(false, |v| v.contains("jito")) {
+                let validator_type = if version.as_ref().is_some_and(|v| v.contains("jito")) {
                     crate::types::ValidatorType::Jito
                 } else {
                     crate::types::ValidatorType::Agave
@@ -4112,17 +4113,30 @@ pub async fn show_enhanced_status_ui(app_state: &AppState) -> Result<()> {
     // Small delay to ensure all startup output is complete
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let app_state_arc = Arc::new(app_state.clone());
-    let mut app = EnhancedStatusApp::new(app_state_arc.clone()).await?;
-    let switch_confirmed = run_enhanced_ui(&mut app).await?;
+    // Use a mutable copy of app_state that persists across switch cycles
+    let mut current_app_state = app_state.clone();
 
-    if switch_confirmed {
+    // Main UI loop - supports multiple consecutive switches
+    loop {
+        let app_state_arc = Arc::new(current_app_state.clone());
+        let mut app = EnhancedStatusApp::new(app_state_arc.clone()).await?;
+        let switch_confirmed = run_enhanced_ui(&mut app).await?;
+
+        if !switch_confirmed {
+            // User quit without requesting a switch - exit the loop
+            break;
+        }
+
         // Execute the switch
-        // Use the switch command with confirmation already provided
-        let mut app_state_mut = app_state.clone();
+        // Sync the UI's selected validator index to app_state before switch
+        // This ensures we switch the validator the user was viewing, not the default
+        if let Ok(ui_state_guard) = app.ui_state.try_read() {
+            current_app_state.selected_validator_index = ui_state_guard.selected_validator_index;
+        }
+
         let result = crate::commands::switch::switch_command_with_confirmation(
             false, // not a dry run
-            &mut app_state_mut,
+            &mut current_app_state,
             false, // don't require confirmation again
         )
         .await?;
@@ -4134,23 +4148,11 @@ pub async fn show_enhanced_status_ui(app_state: &AppState) -> Result<()> {
             // Wait a moment for the switch to take effect
             tokio::time::sleep(Duration::from_secs(2)).await;
 
-            // Restart the UI and trigger refresh in background
-            let app_state_arc = Arc::new(app_state.clone());
-            let mut app = EnhancedStatusApp::new(app_state_arc.clone()).await?;
-
-            // Spawn a background refresh after the UI starts
-            let app_state_for_refresh = app_state_arc.clone();
-            let ui_state_for_refresh = app.ui_state.clone();
-            tokio::spawn(async move {
-                // Wait for UI to start
-                tokio::time::sleep(Duration::from_millis(500)).await;
-                // Trigger refresh of all fields
-                refresh_all_fields(app_state_for_refresh, ui_state_for_refresh).await;
-            });
-
-            run_enhanced_ui(&mut app).await?;
+            // The loop will restart the UI with the updated current_app_state
+            // which now has the swapped Active/Standby statuses
         } else {
             println!("\n❌ Switch was not completed");
+            // Still restart the UI to let user try again or quit
         }
     }
 

@@ -209,8 +209,12 @@ impl AlertManager {
         let response = client.post(&url).json(&payload).send().await?;
 
         if !response.status().is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            anyhow::bail!("Telegram API error: {}", error_text);
+            let status = response.status();
+            let error_text = match response.text().await {
+                Ok(text) => text,
+                Err(e) => format!("(failed to read response body: {})", e),
+            };
+            anyhow::bail!("Telegram API error ({}): {}", status, error_text);
         }
 
         Ok(())
@@ -261,6 +265,7 @@ impl AlertManager {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn send_ssh_failure_alert(
         &self,
         validator_identity: &str,
@@ -295,6 +300,7 @@ impl AlertManager {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn send_rpc_failure_alert(
         &self,
         validator_identity: &str,
@@ -329,6 +335,7 @@ impl AlertManager {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn send_delinquency_alert_with_health(
         &self,
         validator_identity: &str,
@@ -400,6 +407,7 @@ impl AlertManager {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn send_emergency_takeover_alert(
         &self,
         validator_identity: &str,
@@ -490,6 +498,7 @@ impl AlertManager {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn send_catchup_failure_alert(
         &self,
         validator_identity: &str,
@@ -519,11 +528,13 @@ impl AlertManager {
 }
 
 // Helper to track alert cooldowns per validator
+#[allow(dead_code)]
 pub struct AlertTracker {
     last_alert_times: Vec<Option<Instant>>,
     cooldown_seconds: u64,
 }
 
+#[allow(dead_code)]
 impl AlertTracker {
     pub fn new(validator_count: usize) -> Self {
         Self::with_cooldown(validator_count, 1800) // Default 30 minutes
@@ -565,12 +576,14 @@ impl AlertTracker {
 }
 
 // Comprehensive alert tracker for different alert types
+#[allow(dead_code)]
 pub struct ComprehensiveAlertTracker {
     pub delinquency_tracker: AlertTracker,
     pub ssh_failure_tracker: Vec<AlertTracker>, // Per node tracker
     pub rpc_failure_tracker: AlertTracker,
 }
 
+#[allow(dead_code)]
 impl ComprehensiveAlertTracker {
     pub fn new(validator_count: usize, nodes_per_validator: usize) -> Self {
         let mut ssh_trackers = Vec::new();

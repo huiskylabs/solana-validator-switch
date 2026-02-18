@@ -2513,6 +2513,112 @@ fn draw_single_node_table(
         Cell::from(vote_display).style(vote_style),
     ]));
 
+    // TVC Performance section (active node only)
+    rows.push(create_section_header_with_label("TVC PERFORMANCE"));
+
+    if is_active {
+        if let Some(vote_data) = vote_data {
+            if let Some(metrics) = &vote_data.tvc_metrics {
+                // TVC Rank
+                let rank_pct =
+                    metrics.tvc_rank as f64 / metrics.total_validators.max(1) as f64;
+                let rank_color = if rank_pct <= 0.10 {
+                    Color::Green
+                } else if rank_pct <= 0.50 {
+                    Color::Yellow
+                } else {
+                    Color::Red
+                };
+                rows.push(Row::new(vec![
+                    Cell::from("TVC Rank"),
+                    Cell::from(format!(
+                        "#{} / {}",
+                        metrics.tvc_rank, metrics.total_validators
+                    ))
+                    .style(Style::default().fg(rank_color)),
+                ]));
+
+                // Vote Latency
+                let latency_color = if metrics.avg_vote_latency <= 2.0 {
+                    Color::Green
+                } else if metrics.avg_vote_latency <= 4.0 {
+                    Color::Yellow
+                } else {
+                    Color::Red
+                };
+                rows.push(Row::new(vec![
+                    Cell::from("Vote Latency"),
+                    Cell::from(format!("{:.1} slots (avg)", metrics.avg_vote_latency))
+                        .style(Style::default().fg(latency_color)),
+                ]));
+
+                // Missed Votes
+                let missed_pct = if metrics.missed_votes_window > 0 {
+                    (metrics.missed_votes as f64 / metrics.missed_votes_window as f64) * 100.0
+                } else {
+                    0.0
+                };
+                let missed_color = if missed_pct <= 2.0 {
+                    Color::Green
+                } else if missed_pct <= 5.0 {
+                    Color::Yellow
+                } else {
+                    Color::Red
+                };
+                rows.push(Row::new(vec![
+                    Cell::from("Missed Votes"),
+                    Cell::from(format!(
+                        "{} / {} ({:.1}%)",
+                        metrics.missed_votes, metrics.missed_votes_window, missed_pct
+                    ))
+                    .style(Style::default().fg(missed_color)),
+                ]));
+            } else {
+                // Active but metrics not available
+                rows.push(Row::new(vec![
+                    Cell::from("TVC Rank"),
+                    Cell::from("-"),
+                ]));
+                rows.push(Row::new(vec![
+                    Cell::from("Vote Latency"),
+                    Cell::from("-"),
+                ]));
+                rows.push(Row::new(vec![
+                    Cell::from("Missed Votes"),
+                    Cell::from("-"),
+                ]));
+            }
+        } else {
+            // Active but no vote data
+            rows.push(Row::new(vec![
+                Cell::from("TVC Rank"),
+                Cell::from("-"),
+            ]));
+            rows.push(Row::new(vec![
+                Cell::from("Vote Latency"),
+                Cell::from("-"),
+            ]));
+            rows.push(Row::new(vec![
+                Cell::from("Missed Votes"),
+                Cell::from("-"),
+            ]));
+        }
+    } else {
+        // Standby node
+        rows.push(Row::new(vec![
+            Cell::from("TVC Rank"),
+            Cell::from("-"),
+        ]));
+        rows.push(Row::new(vec![
+            Cell::from("Vote Latency"),
+            Cell::from("-"),
+        ]));
+        rows.push(Row::new(vec![
+            Cell::from("Missed Votes"),
+            Cell::from("-"),
+        ]));
+    }
+
     // Section separator before SSH
     rows.push(create_section_header_with_label("HEALTH"));
 

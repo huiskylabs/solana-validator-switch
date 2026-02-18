@@ -25,11 +25,79 @@ pub struct RecentVote {
 }
 
 #[derive(Debug, Clone)]
+pub struct TvcPerformanceMetrics {
+    pub tvc_rank: u32,
+    pub total_validators: u32,
+    pub avg_vote_latency: f64,
+    pub missed_votes: u64,
+    pub missed_votes_window: u64,
+}
+
+#[derive(Debug, Clone)]
 pub struct ValidatorVoteData {
     #[allow(dead_code)]
     pub vote_account_info: VoteAccountInfo,
     pub recent_votes: Vec<RecentVote>,
     pub is_voting: bool,
+    pub tvc_metrics: Option<TvcPerformanceMetrics>,
+}
+
+fn compute_tvc_rank(
+    vote_account: &solana_client::rpc_response::RpcVoteAccountStatus,
+    vote_pubkey_str: &str,
+) -> Option<(u32, u32)> {
+    let mut epoch_credits: Vec<(String, u64)> = vote_account
+        .current
+        .iter()
+        .chain(vote_account.delinquent.iter())
+        .filter_map(|acct| {
+            acct.epoch_credits.last().map(|&(_, credits, prev)| {
+                (acct.vote_pubkey.clone(), credits.saturating_sub(prev))
+            })
+        })
+        .collect();
+
+    epoch_credits.sort_by(|a, b| b.1.cmp(&a.1));
+    let total = epoch_credits.len() as u32;
+    let rank = epoch_credits
+        .iter()
+        .position(|(pk, _)| pk == vote_pubkey_str)
+        .map(|pos| (pos as u32) + 1)?;
+    Some((rank, total))
+}
+
+fn compute_avg_vote_latency(recent_votes: &[RecentVote]) -> Option<f64> {
+    if recent_votes.len() <= 1 {
+        return None;
+    }
+    // Exclude the last element (oldest vote, which defaults to 1)
+    let votes_to_avg = &recent_votes[..recent_votes.len() - 1];
+    if votes_to_avg.is_empty() {
+        return None;
+    }
+    let sum: u64 = votes_to_avg.iter().map(|v| v.latency).sum();
+    Some(sum as f64 / votes_to_avg.len() as f64)
+}
+
+fn compute_missed_votes(
+    votes: &std::collections::VecDeque<solana_sdk::vote::state::Lockout>,
+    current_slot: u64,
+    max_window: u64,
+) -> (u64, u64) {
+    if votes.is_empty() {
+        return (0, 0);
+    }
+    let voted_slots: std::collections::HashSet<u64> = votes.iter().map(|l| l.slot()).collect();
+    let oldest_slot = votes.front().map(|l| l.slot()).unwrap_or(current_slot);
+    let raw_window = current_slot.saturating_sub(oldest_slot) + 1;
+    let effective_window = raw_window.min(max_window);
+    let window_start = current_slot.saturating_sub(effective_window - 1);
+    let voted_in_window = voted_slots
+        .iter()
+        .filter(|&&s| s >= window_start && s <= current_slot)
+        .count() as u64;
+    let missed = effective_window.saturating_sub(voted_in_window);
+    (missed, effective_window)
 }
 
 pub async fn fetch_vote_account_data(
@@ -109,6 +177,24 @@ pub async fn fetch_vote_account_data(
         });
     }
 
+    // Compute TVC performance metrics from already-fetched data
+    let tvc_metrics = {
+        let rank_data = compute_tvc_rank(&vote_account, vote_pubkey_str);
+        let avg_latency = compute_avg_vote_latency(&recent_votes);
+        let (missed, window) = compute_missed_votes(&vote_state.votes, current_slot, 500);
+
+        match (rank_data, avg_latency) {
+            (Some((rank, total)), Some(latency)) => Some(TvcPerformanceMetrics {
+                tvc_rank: rank,
+                total_validators: total,
+                avg_vote_latency: latency,
+                missed_votes: missed,
+                missed_votes_window: window,
+            }),
+            _ => None,
+        }
+    };
+
     // Determine if validator is voting (has voted recently)
     let is_voting = if let Some(last_vote) = recent_votes.first() {
         last_vote.latency < 150 // Consider voting if voted within last 150 slots (~1 minute)
@@ -138,5 +224,6 @@ pub async fn fetch_vote_account_data(
         },
         recent_votes,
         is_voting,
+        tvc_metrics,
     })
 }

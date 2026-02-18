@@ -767,78 +767,81 @@ impl SwitchManager {
     }
 
     pub(crate) async fn switch_primary_to_unfunded(&mut self, dry_run: bool) -> Result<()> {
-        // Detect validator type to use appropriate command
-        let process_info = {
-            let ssh_key = self.get_ssh_key_for_node(&self.active_node_with_status.node.host)?;
-            let pool = self.ssh_pool.clone();
-            pool.execute_command(
-                &self.active_node_with_status.node,
-                &ssh_key,
-                "ps aux | grep -E 'solana-validator|agave|fdctl|firedancer' | grep -v grep",
-            )
-            .await?
-        };
+        // Use already-detected validator type instead of re-parsing ps aux
+        let (subtitle, switch_command) = match self.active_node_with_status.validator_type {
+            crate::types::ValidatorType::Firedancer => {
+                // Get fdctl executable path from config
+                let fdctl_path =
+                    crate::executable_utils::get_fdctl_path(&self.active_node_with_status)?;
 
-        let (subtitle, switch_command) = if process_info.contains("fdctl")
-            || process_info.contains("firedancer")
-        {
-            // Get fdctl executable path from config
-            let fdctl_path =
-                crate::executable_utils::get_fdctl_path(&self.active_node_with_status)?;
+                // For Firedancer, we need process info to extract the config path
+                let process_info = {
+                    let ssh_key =
+                        self.get_ssh_key_for_node(&self.active_node_with_status.node.host)?;
+                    let pool = self.ssh_pool.clone();
+                    pool.execute_command(
+                        &self.active_node_with_status.node,
+                        &ssh_key,
+                        "ps aux | grep 'bin/fdctl' | grep -v grep",
+                    )
+                    .await?
+                };
 
-            // Extract config path from the process info
-            let config_path =
-                crate::executable_utils::extract_firedancer_config_path(&process_info)?;
+                let config_path =
+                    crate::executable_utils::extract_firedancer_config_path(&process_info)?;
 
-            (
-                "Using Firedancer fdctl set-identity",
-                format!(
-                    "{} set-identity --config \"{}\" \"{}\"",
-                    fdctl_path,
-                    config_path,
-                    self.active_node_with_status.node.paths.unfunded_identity
-                ),
-            )
-        } else if process_info.contains("agave-validator") {
-            // Use detected agave executable path if available
-            let agave_path = self
-                .active_node_with_status
-                .agave_validator_executable
-                .as_ref()
-                .ok_or_else(|| anyhow!("Agave validator executable path not found"))?;
+                (
+                    "Using Firedancer fdctl set-identity",
+                    format!(
+                        "{} set-identity --config \"{}\" \"{}\"",
+                        fdctl_path,
+                        config_path,
+                        self.active_node_with_status.node.paths.unfunded_identity
+                    ),
+                )
+            }
+            crate::types::ValidatorType::Agave | crate::types::ValidatorType::Jito => {
+                // Use detected agave executable path if available
+                let agave_path = self
+                    .active_node_with_status
+                    .agave_validator_executable
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("Agave validator executable path not found"))?;
 
-            // Use detected ledger path if available, otherwise error
-            let ledger_path = self
-                .active_node_with_status
-                .ledger_path
-                .as_ref()
-                .ok_or_else(|| anyhow!("Ledger path not detected for active node"))?;
+                // Use detected ledger path if available, otherwise error
+                let ledger_path = self
+                    .active_node_with_status
+                    .ledger_path
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("Ledger path not detected for active node"))?;
 
-            (
-                "Using Agave validator set-identity",
-                format!(
-                    "{} -l \"{}\" set-identity \"{}\"",
-                    agave_path,
-                    ledger_path,
-                    self.active_node_with_status.node.paths.unfunded_identity
-                ),
-            )
-        } else {
-            // Use detected ledger path if available, otherwise error
-            let ledger_path = self
-                .active_node_with_status
-                .ledger_path
-                .as_ref()
-                .ok_or_else(|| anyhow!("Ledger path not detected for active node"))?;
+                (
+                    "Using Agave validator set-identity",
+                    format!(
+                        "{} -l \"{}\" set-identity \"{}\"",
+                        agave_path,
+                        ledger_path,
+                        self.active_node_with_status.node.paths.unfunded_identity
+                    ),
+                )
+            }
+            _ => {
+                // Use detected ledger path if available, otherwise error
+                let ledger_path = self
+                    .active_node_with_status
+                    .ledger_path
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("Ledger path not detected for active node"))?;
 
-            (
-                "Using Solana validator restart",
-                format!("{} exit && solana-validator --identity {} --vote-account {} --ledger {} --limit-ledger-size 100000000 --log - &", 
-                    "solana-validator",  // Using validator binary directly instead of solana CLI
-                    self.active_node_with_status.node.paths.unfunded_identity,
-                    self.active_node_with_status.node.paths.vote_keypair,
-                    ledger_path)
-            )
+                (
+                    "Using Solana validator restart",
+                    format!("{} exit && solana-validator --identity {} --vote-account {} --ledger {} --limit-ledger-size 100000000 --log - &",
+                        "solana-validator",
+                        self.active_node_with_status.node.paths.unfunded_identity,
+                        self.active_node_with_status.node.paths.vote_keypair,
+                        ledger_path)
+                )
+            }
         };
 
         println_if_not_silent!("{}", subtitle.dimmed());
@@ -925,76 +928,84 @@ impl SwitchManager {
             .get_fresh_ssh_session(&self.active_node_with_status.node, &ssh_key)
             .await?;
 
-        // Detect validator type to use appropriate command
-        let process_info = {
-            let pool = self.ssh_pool.clone();
-            pool.execute_command(
-                &self.active_node_with_status.node,
-                &ssh_key,
-                "ps aux | grep -E 'solana-validator|agave|fdctl|firedancer' | grep -v grep",
-            )
-            .await?
-        };
-
         println_if_not_silent!(
             "   Rollback: Switching {} back to funded identity...",
             self.active_node_with_status.node.label
         );
         let pool = self.ssh_pool.clone();
 
-        // Execute the rollback command based on validator type
-        if process_info.contains("fdctl") || process_info.contains("firedancer") {
-            // Firedancer: fdctl set-identity --config <config> <identity>
-            let fdctl_path =
-                crate::executable_utils::get_fdctl_path(&self.active_node_with_status)?;
-            let config_path =
-                crate::executable_utils::extract_firedancer_config_path(&process_info)?;
+        // Use already-detected validator type instead of re-parsing ps aux
+        match self.active_node_with_status.validator_type {
+            crate::types::ValidatorType::Firedancer => {
+                // Firedancer: fdctl set-identity --config <config> <identity>
+                let fdctl_path =
+                    crate::executable_utils::get_fdctl_path(&self.active_node_with_status)?;
 
-            let args = vec![
-                "set-identity",
-                "--config",
-                &config_path,
-                &self.active_node_with_status.node.paths.funded_identity,
-            ];
+                // For Firedancer, we need process info to extract the config path
+                let process_info = {
+                    let pool2 = self.ssh_pool.clone();
+                    pool2
+                        .execute_command(
+                            &self.active_node_with_status.node,
+                            &ssh_key,
+                            "ps aux | grep 'bin/fdctl' | grep -v grep",
+                        )
+                        .await?
+                };
 
-            pool.execute_command_with_args(
-                &self.active_node_with_status.node,
-                &ssh_key,
-                &fdctl_path,
-                &args,
-            )
-            .await?;
-        } else if process_info.contains("agave-validator") {
-            // Agave: agave-validator -l <ledger> set-identity <identity>
-            let agave_path = self
-                .active_node_with_status
-                .agave_validator_executable
-                .as_ref()
-                .ok_or_else(|| anyhow!("Agave validator executable path not found for rollback"))?;
-            let ledger_path = self
-                .active_node_with_status
-                .ledger_path
-                .as_ref()
-                .ok_or_else(|| anyhow!("Ledger path not found for rollback"))?;
+                let config_path =
+                    crate::executable_utils::extract_firedancer_config_path(&process_info)?;
 
-            let args = vec![
-                "-l",
-                ledger_path,
-                "set-identity",
-                &self.active_node_with_status.node.paths.funded_identity,
-            ];
+                let args = vec![
+                    "set-identity",
+                    "--config",
+                    &config_path,
+                    &self.active_node_with_status.node.paths.funded_identity,
+                ];
 
-            pool.execute_command_with_args(
-                &self.active_node_with_status.node,
-                &ssh_key,
-                agave_path,
-                &args,
-            )
-            .await?;
-        } else {
-            return Err(anyhow!(
-                "Unsupported validator type for rollback set-identity"
-            ));
+                pool.execute_command_with_args(
+                    &self.active_node_with_status.node,
+                    &ssh_key,
+                    &fdctl_path,
+                    &args,
+                )
+                .await?;
+            }
+            crate::types::ValidatorType::Agave | crate::types::ValidatorType::Jito => {
+                // Agave: agave-validator -l <ledger> set-identity <identity>
+                let agave_path = self
+                    .active_node_with_status
+                    .agave_validator_executable
+                    .as_ref()
+                    .ok_or_else(|| {
+                        anyhow!("Agave validator executable path not found for rollback")
+                    })?;
+                let ledger_path = self
+                    .active_node_with_status
+                    .ledger_path
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("Ledger path not found for rollback"))?;
+
+                let args = vec![
+                    "-l",
+                    ledger_path,
+                    "set-identity",
+                    &self.active_node_with_status.node.paths.funded_identity,
+                ];
+
+                pool.execute_command_with_args(
+                    &self.active_node_with_status.node,
+                    &ssh_key,
+                    agave_path,
+                    &args,
+                )
+                .await?;
+            }
+            _ => {
+                return Err(anyhow!(
+                    "Unsupported validator type for rollback set-identity"
+                ));
+            }
         }
 
         Ok(())
@@ -1184,78 +1195,81 @@ impl SwitchManager {
     }
 
     pub(crate) async fn switch_backup_to_funded(&mut self, dry_run: bool) -> Result<()> {
-        // Detect validator type to use appropriate command
-        let process_info = {
-            let ssh_key = self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
-            let pool = self.ssh_pool.clone();
-            pool.execute_command(
-                &self.standby_node_with_status.node,
-                &ssh_key,
-                "ps aux | grep -E 'solana-validator|agave|fdctl|firedancer' | grep -v grep",
-            )
-            .await?
-        };
+        // Use already-detected validator type instead of re-parsing ps aux
+        let (subtitle, switch_command) = match self.standby_node_with_status.validator_type {
+            crate::types::ValidatorType::Firedancer => {
+                // Get fdctl executable path from config
+                let fdctl_path =
+                    crate::executable_utils::get_fdctl_path(&self.standby_node_with_status)?;
 
-        let (subtitle, switch_command) = if process_info.contains("fdctl")
-            || process_info.contains("firedancer")
-        {
-            // Get fdctl executable path from config
-            let fdctl_path =
-                crate::executable_utils::get_fdctl_path(&self.standby_node_with_status)?;
+                // For Firedancer, we need process info to extract the config path
+                let process_info = {
+                    let ssh_key =
+                        self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
+                    let pool = self.ssh_pool.clone();
+                    pool.execute_command(
+                        &self.standby_node_with_status.node,
+                        &ssh_key,
+                        "ps aux | grep 'bin/fdctl' | grep -v grep",
+                    )
+                    .await?
+                };
 
-            // Extract config path from the process info
-            let config_path =
-                crate::executable_utils::extract_firedancer_config_path(&process_info)?;
+                let config_path =
+                    crate::executable_utils::extract_firedancer_config_path(&process_info)?;
 
-            (
-                "Using Firedancer fdctl set-identity",
-                format!(
-                    "{} set-identity --config \"{}\" \"{}\"",
-                    fdctl_path,
-                    config_path,
-                    self.standby_node_with_status.node.paths.funded_identity
-                ),
-            )
-        } else if process_info.contains("agave-validator") {
-            // Use detected agave executable path if available
-            let agave_path = self
-                .standby_node_with_status
-                .agave_validator_executable
-                .as_ref()
-                .ok_or_else(|| anyhow!("Agave validator executable path not found"))?;
+                (
+                    "Using Firedancer fdctl set-identity",
+                    format!(
+                        "{} set-identity --config \"{}\" \"{}\"",
+                        fdctl_path,
+                        config_path,
+                        self.standby_node_with_status.node.paths.funded_identity
+                    ),
+                )
+            }
+            crate::types::ValidatorType::Agave | crate::types::ValidatorType::Jito => {
+                // Use detected agave executable path if available
+                let agave_path = self
+                    .standby_node_with_status
+                    .agave_validator_executable
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("Agave validator executable path not found"))?;
 
-            // Use detected ledger path if available, otherwise error
-            let ledger_path = self
-                .standby_node_with_status
-                .ledger_path
-                .as_ref()
-                .ok_or_else(|| anyhow!("Ledger path not detected for standby node"))?;
+                // Use detected ledger path if available, otherwise error
+                let ledger_path = self
+                    .standby_node_with_status
+                    .ledger_path
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("Ledger path not detected for standby node"))?;
 
-            (
-                "Using Agave validator set-identity",
-                format!(
-                    "{} -l \"{}\" set-identity \"{}\"",
-                    agave_path,
-                    ledger_path,
-                    self.standby_node_with_status.node.paths.funded_identity
-                ),
-            )
-        } else {
-            // Use detected ledger path if available, otherwise error
-            let ledger_path = self
-                .standby_node_with_status
-                .ledger_path
-                .as_ref()
-                .ok_or_else(|| anyhow!("Ledger path not detected for standby node"))?;
+                (
+                    "Using Agave validator set-identity",
+                    format!(
+                        "{} -l \"{}\" set-identity \"{}\"",
+                        agave_path,
+                        ledger_path,
+                        self.standby_node_with_status.node.paths.funded_identity
+                    ),
+                )
+            }
+            _ => {
+                // Use detected ledger path if available, otherwise error
+                let ledger_path = self
+                    .standby_node_with_status
+                    .ledger_path
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("Ledger path not detected for standby node"))?;
 
-            (
-                "Using Solana validator restart",
-                format!("{} exit && solana-validator --identity {} --vote-account {} --ledger {} --limit-ledger-size 100000000 --log - &", 
-                    "solana-validator",  // Using validator binary directly instead of solana CLI
-                    self.standby_node_with_status.node.paths.funded_identity,
-                    self.standby_node_with_status.node.paths.vote_keypair,
-                    ledger_path)
-            )
+                (
+                    "Using Solana validator restart",
+                    format!("{} exit && solana-validator --identity {} --vote-account {} --ledger {} --limit-ledger-size 100000000 --log - &",
+                        "solana-validator",
+                        self.standby_node_with_status.node.paths.funded_identity,
+                        self.standby_node_with_status.node.paths.vote_keypair,
+                        ledger_path)
+                )
+            }
         };
 
         println_if_not_silent!("{}", subtitle.dimmed());

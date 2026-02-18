@@ -680,13 +680,17 @@ fn parse_batch_output(output: &str, status: &mut ComprehensiveStatus) {
                         // Extract client type from the end
                         if version_output.contains("client:Firedancer") {
                             status.version = Some(format!("Firedancer {}", version_num));
-                        } else if version_output.contains("client:Agave") {
+                        } else if version_output.contains("client:Agave")
+                            || version_output.contains("client:Bam")
+                        {
                             status.version = Some(format!("Agave {}", version_num));
                         } else {
                             // Fallback based on version number pattern
                             if version_num.starts_with("0.") {
                                 status.version = Some(format!("Firedancer {}", version_num));
-                            } else if version_num.starts_with("2.") {
+                            } else if version_num.starts_with("2.")
+                                || version_num.starts_with("3.")
+                            {
                                 status.version = Some(format!("Agave {}", version_num));
                             } else {
                                 status.version = Some(format!("Unknown {}", version_num));
@@ -970,8 +974,8 @@ fn parse_agave_version(version_line: &str) -> String {
         } else {
             "Jito".to_string()
         }
-    } else if version_line.contains("client:Agave") {
-        // Regular Agave - extract version number
+    } else if version_line.contains("client:Agave") || version_line.contains("client:Bam") {
+        // Regular Agave (including Bam client) - extract version number
         if let Some(version_part) = version_line.split_whitespace().nth(1) {
             format!("Agave {}", version_part)
         } else {

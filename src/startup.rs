@@ -1681,11 +1681,18 @@ async fn detect_node_status_and_executable(
                         let version_num = parts[1];
                         if line.contains("client:Firedancer") {
                             version = Some(format!("Firedancer {}", version_num));
-                        } else if line.contains("client:Agave") {
+                        } else if line.contains("client:Agave")
+                            || line.contains("client:Bam")
+                        {
                             version = Some(format!("Agave {}", version_num));
                         } else if version_num.starts_with("0.") {
                             version = Some(format!("Firedancer {}", version_num));
-                        } else if version_num.starts_with("2.") {
+                        } else if version_num.starts_with("2.")
+                            || version_num.starts_with("3.")
+                        {
+                            version = Some(format!("Agave {}", version_num));
+                        } else if line.starts_with("agave-validator ") {
+                            // agave-validator binary is a strong signal for Agave
                             version = Some(format!("Agave {}", version_num));
                         }
                     }
@@ -2213,11 +2220,18 @@ async fn detect_node_status_and_executable_with_progress(
                         let version_num = parts[1];
                         if line.contains("client:Firedancer") {
                             version = Some(format!("Firedancer {}", version_num));
-                        } else if line.contains("client:Agave") {
+                        } else if line.contains("client:Agave")
+                            || line.contains("client:Bam")
+                        {
                             version = Some(format!("Agave {}", version_num));
                         } else if version_num.starts_with("0.") {
                             version = Some(format!("Firedancer {}", version_num));
-                        } else if version_num.starts_with("2.") {
+                        } else if version_num.starts_with("2.")
+                            || version_num.starts_with("3.")
+                        {
+                            version = Some(format!("Agave {}", version_num));
+                        } else if line.starts_with("agave-validator ") {
+                            // agave-validator binary is a strong signal for Agave
                             version = Some(format!("Agave {}", version_num));
                         }
                     }

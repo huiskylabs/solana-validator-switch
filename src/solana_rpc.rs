@@ -80,15 +80,16 @@ fn compute_avg_vote_latency(recent_votes: &[RecentVote]) -> Option<f64> {
 }
 
 fn compute_missed_votes(
-    votes: &std::collections::VecDeque<solana_sdk::vote::state::Lockout>,
+    votes: &std::collections::VecDeque<solana_sdk::vote::state::LandedVote>,
     current_slot: u64,
     max_window: u64,
 ) -> (u64, u64) {
     if votes.is_empty() {
         return (0, 0);
     }
-    let voted_slots: std::collections::HashSet<u64> = votes.iter().map(|l| l.slot()).collect();
-    let oldest_slot = votes.front().map(|l| l.slot()).unwrap_or(current_slot);
+    let voted_slots: std::collections::HashSet<u64> =
+        votes.iter().map(|l| l.lockout.slot()).collect();
+    let oldest_slot = votes.front().map(|l| l.lockout.slot()).unwrap_or(current_slot);
     let raw_window = current_slot.saturating_sub(oldest_slot) + 1;
     let effective_window = raw_window.min(max_window);
     let window_start = current_slot.saturating_sub(effective_window - 1);

@@ -858,52 +858,66 @@ impl SwitchManager {
                 let pool = self.ssh_pool.clone();
 
                 // Execute the switch command based on validator type
-                if process_info.contains("fdctl") || process_info.contains("firedancer") {
-                    // Firedancer: fdctl set-identity --config <config> <identity>
-                    let fdctl_path =
-                        crate::executable_utils::get_fdctl_path(&self.active_node_with_status)?;
-                    let config_path =
-                        crate::executable_utils::extract_firedancer_config_path(&process_info)?;
+                match self.active_node_with_status.validator_type {
+                    crate::types::ValidatorType::Firedancer => {
+                        // Firedancer: fdctl set-identity --config <config> <identity>
+                        let fdctl_path =
+                            crate::executable_utils::get_fdctl_path(&self.active_node_with_status)?;
 
-                    let args = vec![
-                        "set-identity",
-                        "--config",
-                        &config_path,
-                        &self.active_node_with_status.node.paths.unfunded_identity,
-                    ];
+                        let process_info = {
+                            let ssh_key2 = self.get_ssh_key_for_node(&self.active_node_with_status.node.host)?;
+                            let pool2 = self.ssh_pool.clone();
+                            pool2.execute_command(
+                                &self.active_node_with_status.node,
+                                &ssh_key2,
+                                "ps aux | grep 'bin/fdctl' | grep -v grep",
+                            ).await?
+                        };
+                        let config_path =
+                            crate::executable_utils::extract_firedancer_config_path(&process_info)?;
 
-                    pool.execute_command_with_args(
-                        &self.active_node_with_status.node,
-                        &ssh_key,
-                        &fdctl_path,
-                        &args,
-                    )
-                    .await?;
-                } else if process_info.contains("agave-validator") {
-                    // Agave: agave-validator -l <ledger> set-identity <identity>
-                    let agave_path = self
-                        .active_node_with_status
-                        .agave_validator_executable
-                        .as_ref()
-                        .unwrap();
-                    let ledger_path = self.active_node_with_status.ledger_path.as_ref().unwrap();
+                        let args = vec![
+                            "set-identity",
+                            "--config",
+                            &config_path,
+                            &self.active_node_with_status.node.paths.unfunded_identity,
+                        ];
 
-                    let args = vec![
-                        "-l",
-                        ledger_path,
-                        "set-identity",
-                        &self.active_node_with_status.node.paths.unfunded_identity,
-                    ];
+                        pool.execute_command_with_args(
+                            &self.active_node_with_status.node,
+                            &ssh_key,
+                            &fdctl_path,
+                            &args,
+                        )
+                        .await?;
+                    }
+                    crate::types::ValidatorType::Agave | crate::types::ValidatorType::Jito => {
+                        // Agave: agave-validator -l <ledger> set-identity <identity>
+                        let agave_path = self
+                            .active_node_with_status
+                            .agave_validator_executable
+                            .as_ref()
+                            .unwrap();
+                        let ledger_path = self.active_node_with_status.ledger_path.as_ref().unwrap();
 
-                    pool.execute_command_with_args(
-                        &self.active_node_with_status.node,
-                        &ssh_key,
-                        agave_path,
-                        &args,
-                    )
-                    .await?;
-                } else {
-                    return Err(anyhow!("Unsupported validator type for set-identity"));
+                        let args = vec![
+                            "-l",
+                            ledger_path,
+                            "set-identity",
+                            &self.active_node_with_status.node.paths.unfunded_identity,
+                        ];
+
+                        pool.execute_command_with_args(
+                            &self.active_node_with_status.node,
+                            &ssh_key,
+                            agave_path,
+                            &args,
+                        )
+                        .await?;
+                    }
+                    _ => {
+                        return Err(anyhow!("Unsupported validator type for set-identity"));
+                    }
                 }
             }
             // No sleep - move immediately to next step!
@@ -1263,52 +1277,66 @@ impl SwitchManager {
                 let pool = self.ssh_pool.clone();
 
                 // Execute the switch command based on validator type
-                if process_info.contains("fdctl") || process_info.contains("firedancer") {
-                    // Firedancer: fdctl set-identity --config <config> <identity>
-                    let fdctl_path =
-                        crate::executable_utils::get_fdctl_path(&self.standby_node_with_status)?;
-                    let config_path =
-                        crate::executable_utils::extract_firedancer_config_path(&process_info)?;
+                match self.standby_node_with_status.validator_type {
+                    crate::types::ValidatorType::Firedancer => {
+                        // Firedancer: fdctl set-identity --config <config> <identity>
+                        let fdctl_path =
+                            crate::executable_utils::get_fdctl_path(&self.standby_node_with_status)?;
 
-                    let args = vec![
-                        "set-identity",
-                        "--config",
-                        &config_path,
-                        &self.standby_node_with_status.node.paths.funded_identity,
-                    ];
+                        let process_info = {
+                            let ssh_key2 = self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
+                            let pool2 = self.ssh_pool.clone();
+                            pool2.execute_command(
+                                &self.standby_node_with_status.node,
+                                &ssh_key2,
+                                "ps aux | grep 'bin/fdctl' | grep -v grep",
+                            ).await?
+                        };
+                        let config_path =
+                            crate::executable_utils::extract_firedancer_config_path(&process_info)?;
 
-                    pool.execute_command_with_args(
-                        &self.standby_node_with_status.node,
-                        &ssh_key,
-                        &fdctl_path,
-                        &args,
-                    )
-                    .await?;
-                } else if process_info.contains("agave-validator") {
-                    // Agave: agave-validator -l <ledger> set-identity --require-tower <identity>
-                    let agave_path = self
-                        .standby_node_with_status
-                        .agave_validator_executable
-                        .as_ref()
-                        .unwrap();
-                    let ledger_path = self.standby_node_with_status.ledger_path.as_ref().unwrap();
+                        let args = vec![
+                            "set-identity",
+                            "--config",
+                            &config_path,
+                            &self.standby_node_with_status.node.paths.funded_identity,
+                        ];
 
-                    let args = vec![
-                        "-l",
-                        ledger_path,
-                        "set-identity",
-                        &self.standby_node_with_status.node.paths.funded_identity,
-                    ];
+                        pool.execute_command_with_args(
+                            &self.standby_node_with_status.node,
+                            &ssh_key,
+                            &fdctl_path,
+                            &args,
+                        )
+                        .await?;
+                    }
+                    crate::types::ValidatorType::Agave | crate::types::ValidatorType::Jito => {
+                        // Agave: agave-validator -l <ledger> set-identity --require-tower <identity>
+                        let agave_path = self
+                            .standby_node_with_status
+                            .agave_validator_executable
+                            .as_ref()
+                            .unwrap();
+                        let ledger_path = self.standby_node_with_status.ledger_path.as_ref().unwrap();
 
-                    pool.execute_command_with_args(
-                        &self.standby_node_with_status.node,
-                        &ssh_key,
-                        agave_path,
-                        &args,
-                    )
-                    .await?;
-                } else {
-                    return Err(anyhow!("Unsupported validator type for set-identity"));
+                        let args = vec![
+                            "-l",
+                            ledger_path,
+                            "set-identity",
+                            &self.standby_node_with_status.node.paths.funded_identity,
+                        ];
+
+                        pool.execute_command_with_args(
+                            &self.standby_node_with_status.node,
+                            &ssh_key,
+                            agave_path,
+                            &args,
+                        )
+                        .await?;
+                    }
+                    _ => {
+                        return Err(anyhow!("Unsupported validator type for set-identity"));
+                    }
                 }
             }
             // No sleep - switch is complete!

@@ -100,6 +100,13 @@ pub enum ValidatorType {
     Unknown,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum RemoteShellType {
+    Bash,
+    PowerShell,       // Windows PowerShell
+    PowerShellCore,   // pwsh on Linux/macOS
+}
+
 #[derive(Debug, Clone)]
 pub struct NodeWithStatus {
     pub node: NodeConfig,

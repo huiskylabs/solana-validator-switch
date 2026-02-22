@@ -1,4 +1,4 @@
-use crate::types::NodeConfig;
+use crate::types::{NodeConfig, RemoteShellType};
 use anyhow::{anyhow, Result};
 use openssh::{Session, SessionBuilder, Stdio};
 use std::collections::HashMap;
@@ -10,6 +10,7 @@ use tokio::sync::RwLock;
 /// SSH session pool with async support and connection reuse
 pub struct AsyncSshPool {
     sessions: Arc<RwLock<HashMap<String, Arc<Session>>>>,
+    shell_types: Arc<RwLock<HashMap<String, RemoteShellType>>>,
     config: PoolConfig,
 }
 
@@ -38,6 +39,7 @@ impl AsyncSshPool {
     pub fn with_config(config: PoolConfig) -> Self {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
+            shell_types: Arc::new(RwLock::new(HashMap::new())),
             config,
         }
     }
@@ -60,6 +62,40 @@ impl AsyncSshPool {
             || command.contains("2>&1")
     }
 
+    /// Detect the remote shell type (PowerShell vs bash)
+    async fn detect_remote_shell(&self, session: &Session) -> Result<RemoteShellType> {
+        // Try pwsh (PowerShell Core) detection first - this is what's common on Linux
+        let pwsh_test = session
+            .command("pwsh")
+            .arg("-Command")
+            .arg("$PSVersionTable.PSVersion.Major")
+            .output()
+            .await;
+
+        if let Ok(output) = pwsh_test {
+            if output.status.success() {
+                return Ok(RemoteShellType::PowerShellCore);
+            }
+        }
+
+        // Try Windows PowerShell detection
+        let ps_test = session
+            .command("powershell")
+            .arg("-Command")
+            .arg("$PSVersionTable.PSVersion.Major")
+            .output()
+            .await;
+
+        if let Ok(output) = ps_test {
+            if output.status.success() {
+                return Ok(RemoteShellType::PowerShell);
+            }
+        }
+
+        // Default to bash for Linux/Unix systems
+        Ok(RemoteShellType::Bash)
+    }
+
     /// Get or create an SSH session for a node
     pub async fn get_session(&self, node: &NodeConfig, ssh_key_path: &str) -> Result<Arc<Session>> {
         let key = Self::get_connection_key(node, ssh_key_path);
@@ -79,6 +115,17 @@ impl AsyncSshPool {
         let session = self.create_session(node, ssh_key_path).await?;
         let session_arc = Arc::new(session);
 
+        // Detect shell type if not cached
+        {
+            let shell_types = self.shell_types.read().await;
+            if !shell_types.contains_key(&key) {
+                drop(shell_types); // Release read lock before writing
+                let detected_type = self.detect_remote_shell(&session_arc).await?;
+                let mut shell_types = self.shell_types.write().await;
+                shell_types.insert(key.clone(), detected_type);
+            }
+        }
+
         // Store session
         {
             let mut sessions = self.sessions.write().await;
@@ -86,6 +133,19 @@ impl AsyncSshPool {
         }
 
         Ok(session_arc)
+    }
+
+    /// Get the cached shell type for a node, ensuring session exists first
+    pub async fn get_shell_type(&self, node: &NodeConfig, ssh_key_path: &str) -> Result<RemoteShellType> {
+        // Ensure session exists (which triggers detection)
+        let _ = self.get_session(node, ssh_key_path).await?;
+
+        // Retrieve cached shell type
+        let key = Self::get_connection_key(node, ssh_key_path);
+        let shell_types = self.shell_types.read().await;
+        Ok(shell_types.get(&key)
+            .cloned()
+            .unwrap_or(RemoteShellType::Bash))
     }
 
     async fn create_session(&self, node: &NodeConfig, ssh_key_path: &str) -> Result<Session> {
@@ -187,17 +247,46 @@ impl AsyncSshPool {
     ) -> Result<String> {
         let session = self.get_session(node, ssh_key_path).await?;
 
+        // Get cached shell type
+        let key = Self::get_connection_key(node, ssh_key_path);
+        let shell_types = self.shell_types.read().await;
+        let shell_type = shell_types.get(&key)
+            .cloned()
+            .unwrap_or(RemoteShellType::Bash);
+        drop(shell_types);
+
         let needs_shell = Self::needs_shell_execution(command);
 
         let output = if needs_shell {
-            // Use bash -c with proper argument handling for shell features
-            session
-                .command("bash")
-                .arg("-c")
-                .arg(command)
-                .output()
-                .await
-                .map_err(|e| anyhow!("Failed to execute command: {}", e))?
+            match shell_type {
+                RemoteShellType::Bash => {
+                    session
+                        .command("bash")
+                        .arg("-c")
+                        .arg(command)
+                        .output()
+                        .await
+                        .map_err(|e| anyhow!("Failed to execute command: {}", e))?
+                }
+                RemoteShellType::PowerShell => {
+                    session
+                        .command("powershell")
+                        .arg("-Command")
+                        .arg(command)
+                        .output()
+                        .await
+                        .map_err(|e| anyhow!("Failed to execute command: {}", e))?
+                }
+                RemoteShellType::PowerShellCore => {
+                    session
+                        .command("pwsh")
+                        .arg("-c")
+                        .arg(command)
+                        .output()
+                        .await
+                        .map_err(|e| anyhow!("Failed to execute command: {}", e))?
+                }
+            }
         } else {
             // Execute directly for better performance
             session
@@ -239,18 +328,52 @@ impl AsyncSshPool {
     {
         let session = self.get_session(node, ssh_key_path).await?;
 
+        // Get cached shell type
+        let key = Self::get_connection_key(node, ssh_key_path);
+        let shell_types = self.shell_types.read().await;
+        let shell_type = shell_types.get(&key)
+            .cloned()
+            .unwrap_or(RemoteShellType::Bash);
+        drop(shell_types);
+
         let needs_shell = Self::needs_shell_execution(command);
 
         let mut child = if needs_shell {
-            session
-                .command("bash")
-                .arg("-c")
-                .arg(command)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .await
-                .map_err(|e| anyhow!("Failed to spawn command: {}", e))?
+            match shell_type {
+                RemoteShellType::Bash => {
+                    session
+                        .command("bash")
+                        .arg("-c")
+                        .arg(command)
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .spawn()
+                        .await
+                        .map_err(|e| anyhow!("Failed to spawn command: {}", e))?
+                }
+                RemoteShellType::PowerShell => {
+                    session
+                        .command("powershell")
+                        .arg("-Command")
+                        .arg(command)
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .spawn()
+                        .await
+                        .map_err(|e| anyhow!("Failed to spawn command: {}", e))?
+                }
+                RemoteShellType::PowerShellCore => {
+                    session
+                        .command("pwsh")
+                        .arg("-c")
+                        .arg(command)
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .spawn()
+                        .await
+                        .map_err(|e| anyhow!("Failed to spawn command: {}", e))?
+                }
+            }
         } else {
             session
                 .command(command)
@@ -302,18 +425,52 @@ impl AsyncSshPool {
     ) -> Result<()> {
         let session = self.get_session(node, ssh_key_path).await?;
 
+        // Get cached shell type
+        let key = Self::get_connection_key(node, ssh_key_path);
+        let shell_types = self.shell_types.read().await;
+        let shell_type = shell_types.get(&key)
+            .cloned()
+            .unwrap_or(RemoteShellType::Bash);
+        drop(shell_types);
+
         let needs_shell = Self::needs_shell_execution(command);
 
         let mut child = if needs_shell {
-            session
-                .command("bash")
-                .arg("-c")
-                .arg(command)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .await
-                .map_err(|e| anyhow!("Failed to spawn command: {}", e))?
+            match shell_type {
+                RemoteShellType::Bash => {
+                    session
+                        .command("bash")
+                        .arg("-c")
+                        .arg(command)
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .spawn()
+                        .await
+                        .map_err(|e| anyhow!("Failed to spawn command: {}", e))?
+                }
+                RemoteShellType::PowerShell => {
+                    session
+                        .command("powershell")
+                        .arg("-Command")
+                        .arg(command)
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .spawn()
+                        .await
+                        .map_err(|e| anyhow!("Failed to spawn command: {}", e))?
+                }
+                RemoteShellType::PowerShellCore => {
+                    session
+                        .command("pwsh")
+                        .arg("-c")
+                        .arg(command)
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .spawn()
+                        .await
+                        .map_err(|e| anyhow!("Failed to spawn command: {}", e))?
+                }
+            }
         } else {
             session
                 .command(command)

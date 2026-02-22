@@ -1,4 +1,6 @@
 use crate::commands::error_handler::ProgressSpinner;
+use crate::ssh::AsyncSshPool;
+use crate::types::NodeConfig;
 use anyhow::{anyhow, Result};
 use colored::*;
 use std::io::Write;
@@ -913,9 +915,18 @@ impl SwitchManager {
     /// Rollback method: Switch the active node back to funded identity
     /// Called when Step 2 or Step 3 fails to restore the original state
     async fn rollback_primary_to_funded(&mut self) -> Result<()> {
+        println_if_not_silent!(
+            "  ⚠️  Attempting rollback with fresh SSH connection..."
+        );
+
+        // Get fresh SSH connection for rollback (don't reuse potentially failed connection)
+        let ssh_key = self.get_ssh_key_for_node(&self.active_node_with_status.node.host)?;
+        let _fresh_session = self
+            .get_fresh_ssh_session(&self.active_node_with_status.node, &ssh_key)
+            .await?;
+
         // Detect validator type to use appropriate command
         let process_info = {
-            let ssh_key = self.get_ssh_key_for_node(&self.active_node_with_status.node.host)?;
             let pool = self.ssh_pool.clone();
             pool.execute_command(
                 &self.active_node_with_status.node,
@@ -929,8 +940,6 @@ impl SwitchManager {
             "   Rollback: Switching {} back to funded identity...",
             self.active_node_with_status.node.label
         );
-
-        let ssh_key = self.get_ssh_key_for_node(&self.active_node_with_status.node.host)?;
         let pool = self.ssh_pool.clone();
 
         // Execute the rollback command based on validator type
@@ -989,6 +998,20 @@ impl SwitchManager {
         }
 
         Ok(())
+    }
+
+    /// Force a fresh SSH connection by removing existing session from pool
+    async fn get_fresh_ssh_session(
+        &self,
+        node: &NodeConfig,
+        ssh_key_path: &str,
+    ) -> Result<Arc<openssh::Session>> {
+        // Remove existing session from pool to force new connection
+        let key = AsyncSshPool::get_connection_key(node, ssh_key_path);
+        self.ssh_pool.remove_session(&key).await;
+
+        // Get new session (will create fresh connection)
+        self.ssh_pool.get_session(node, ssh_key_path).await
     }
 
     pub(crate) async fn transfer_tower_file(&mut self, dry_run: bool) -> Result<()> {
@@ -1127,41 +1150,34 @@ impl SwitchManager {
             let source_hash = source_checksum.trim();
             let dest_hash = dest_checksum.trim();
 
-            // Verify checksums but only warn on failure (resilient mode)
+            // Verify checksums - CRITICAL for validator safety
             if source_hash.is_empty() || dest_hash.is_empty() {
-                spinner.stop_with_message(&format!(
-                    "  ✅ Transferred in {} ({:.2} MB/s) - {} {}",
-                    format!("{}ms", transfer_duration.as_millis())
-                        .bright_green()
-                        .bold(),
-                    speed_mbps,
-                    "⚠️  Checksum verification skipped".yellow().bold(),
-                    format!("(source: '{}', dest: '{}')", source_hash, dest_hash).dimmed()
-                ));
-            } else if source_hash != dest_hash {
-                spinner.stop_with_message(&format!(
-                    "  ✅ Transferred in {} ({:.2} MB/s) - {} {}",
-                    format!("{}ms", transfer_duration.as_millis())
-                        .bright_green()
-                        .bold(),
-                    speed_mbps,
-                    "⚠️  Checksum mismatch".yellow().bold(),
-                    format!("(src: {}..., dst: {}...)", &source_hash[..8], &dest_hash[..8]).dimmed()
-                ));
-                println_if_not_silent!(
-                    "  {} Transfer completed but checksums differ - proceeding with swap",
-                    "⚠️".yellow().bold()
-                );
-            } else {
-                spinner.stop_with_message(&format!(
-                    "  ✅ Transferred in {} ({:.2} MB/s) - Verified (SHA256: {}...)",
-                    format!("{}ms", transfer_duration.as_millis())
-                        .bright_green()
-                        .bold(),
-                    speed_mbps,
-                    &source_hash[..8]
+                spinner.stop_with_message("");
+                return Err(anyhow!(
+                    "Failed to compute tower file checksums (source: '{}', dest: '{}')",
+                    source_hash,
+                    dest_hash
                 ));
             }
+
+            if source_hash != dest_hash {
+                spinner.stop_with_message("");
+                return Err(anyhow!(
+                    "Tower file checksum mismatch! Source: {}..., Dest: {}... Transfer may be corrupted.",
+                    &source_hash[..16],
+                    &dest_hash[..16]
+                ));
+            }
+
+            // Only show success if verification passed
+            spinner.stop_with_message(&format!(
+                "  ✅ Transferred in {} ({:.2} MB/s) - Verified (SHA256: {}...)",
+                format!("{}ms", transfer_duration.as_millis())
+                    .bright_green()
+                    .bold(),
+                speed_mbps,
+                &source_hash[..8]
+            ));
         }
 
         Ok(())

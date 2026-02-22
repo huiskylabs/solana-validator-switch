@@ -103,8 +103,8 @@ pub enum ValidatorType {
 #[derive(Debug, Clone, PartialEq)]
 pub enum RemoteShellType {
     Bash,
-    PowerShell,       // Windows PowerShell
-    PowerShellCore,   // pwsh on Linux/macOS
+    PowerShell,     // Windows PowerShell
+    PowerShellCore, // pwsh on Linux/macOS
 }
 
 #[derive(Debug, Clone)]

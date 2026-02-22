@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::RwLock;
+use tokio::time::timeout;
 
 /// SSH session pool with async support and connection reuse
 pub struct AsyncSshPool {
@@ -44,7 +45,7 @@ impl AsyncSshPool {
         }
     }
 
-    fn get_connection_key(node: &NodeConfig, ssh_key_path: &str) -> String {
+    pub fn get_connection_key(node: &NodeConfig, ssh_key_path: &str) -> String {
         format!("{}@{}:{}:{}", node.user, node.host, node.port, ssh_key_path)
     }
 
@@ -135,6 +136,12 @@ impl AsyncSshPool {
         Ok(session_arc)
     }
 
+    /// Remove a session from the pool (useful for forcing fresh connections)
+    pub async fn remove_session(&self, key: &str) {
+        let mut sessions = self.sessions.write().await;
+        sessions.remove(key);
+    }
+
     /// Get the cached shell type for a node, ensuring session exists first
     pub async fn get_shell_type(
         &self,
@@ -198,10 +205,10 @@ impl AsyncSshPool {
     }
 
     async fn is_session_alive(&self, session: &Session) -> bool {
-        // Simple check by running a lightweight command
-        match session.command("true").output().await {
-            Ok(output) => output.status.success(),
-            Err(_) => false,
+        // Simple check by running a lightweight command with timeout
+        match timeout(Duration::from_secs(5), session.command("true").output()).await {
+            Ok(Ok(output)) => output.status.success(),
+            _ => false, // Timeout or error = dead session
         }
     }
 
@@ -220,10 +227,10 @@ impl AsyncSshPool {
             cmd.arg(arg);
         }
 
-        let output = cmd
-            .output()
+        // Timeout for validator commands (set-identity, etc.)
+        let output = timeout(Duration::from_secs(60), cmd.output())
             .await
-            .map_err(|e| anyhow!("Failed to execute command: {}", e))?;
+            .map_err(|_| anyhow!("Command timed out after 60s"))??;
 
         // For commands with args, always return stdout content if available
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -263,37 +270,46 @@ impl AsyncSshPool {
 
         let needs_shell = Self::needs_shell_execution(command);
 
+        // Use longer timeout for shell commands, shorter for direct commands
+        let timeout_secs = if needs_shell { 60 } else { 30 };
+
         let output = if needs_shell {
             match shell_type {
-                RemoteShellType::Bash => session
-                    .command("bash")
-                    .arg("-c")
-                    .arg(command)
-                    .output()
-                    .await
-                    .map_err(|e| anyhow!("Failed to execute command: {}", e))?,
-                RemoteShellType::PowerShell => session
-                    .command("powershell")
-                    .arg("-Command")
-                    .arg(command)
-                    .output()
-                    .await
-                    .map_err(|e| anyhow!("Failed to execute command: {}", e))?,
-                RemoteShellType::PowerShellCore => session
-                    .command("pwsh")
-                    .arg("-c")
-                    .arg(command)
-                    .output()
-                    .await
-                    .map_err(|e| anyhow!("Failed to execute command: {}", e))?,
+                RemoteShellType::Bash => timeout(
+                    Duration::from_secs(timeout_secs),
+                    session.command("bash").arg("-c").arg(command).output(),
+                )
+                .await
+                .map_err(|_| anyhow!("Command timed out after {}s", timeout_secs))?
+                .map_err(|e| anyhow!("Failed to execute command: {}", e))?,
+                RemoteShellType::PowerShell => timeout(
+                    Duration::from_secs(timeout_secs),
+                    session
+                        .command("powershell")
+                        .arg("-Command")
+                        .arg(command)
+                        .output(),
+                )
+                .await
+                .map_err(|_| anyhow!("Command timed out after {}s", timeout_secs))?
+                .map_err(|e| anyhow!("Failed to execute command: {}", e))?,
+                RemoteShellType::PowerShellCore => timeout(
+                    Duration::from_secs(timeout_secs),
+                    session.command("pwsh").arg("-c").arg(command).output(),
+                )
+                .await
+                .map_err(|_| anyhow!("Command timed out after {}s", timeout_secs))?
+                .map_err(|e| anyhow!("Failed to execute command: {}", e))?,
             }
         } else {
             // Execute directly for better performance
-            session
-                .command(command)
-                .output()
-                .await
-                .map_err(|e| anyhow!("Failed to execute command: {}", e))?
+            timeout(
+                Duration::from_secs(timeout_secs),
+                session.command(command).output(),
+            )
+            .await
+            .map_err(|_| anyhow!("Command timed out after {}s", timeout_secs))?
+            .map_err(|e| anyhow!("Failed to execute command: {}", e))?
         };
 
         // For commands with 2>&1, stderr is redirected to stdout, so we should always return stdout
@@ -592,63 +608,70 @@ impl AsyncSshPool {
     ) -> Result<()> {
         let session = self.get_session(node, ssh_key_path).await?;
 
-        // Start base64 -d on remote, writing to stdout
-        let mut base64_child = session
-            .command("base64")
-            .arg("-d")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .await
-            .map_err(|e| anyhow!("Failed to spawn base64 command: {}", e))?;
+        // Wrap the entire transfer operation in a timeout (2 minutes for large tower files)
+        timeout(Duration::from_secs(120), async {
+            // Start base64 -d on remote, writing to stdout
+            let mut base64_child = session
+                .command("base64")
+                .arg("-d")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .await
+                .map_err(|e| anyhow!("Failed to spawn base64 command: {}", e))?;
 
-        // Pipe input data
-        if let Some(mut stdin) = base64_child.stdin().take() {
-            use tokio::io::AsyncWriteExt;
-            stdin.write_all(base64_data.as_bytes()).await?;
-            stdin.flush().await?;
-            drop(stdin); // Close pipe
-        }
+            // Pipe input data
+            if let Some(mut stdin) = base64_child.stdin().take() {
+                use tokio::io::AsyncWriteExt;
+                stdin.write_all(base64_data.as_bytes()).await?;
+                stdin.flush().await?;
+                drop(stdin); // Close pipe
+            }
 
-        // Read decoded output
-        let mut stdout = base64_child
-            .stdout()
-            .take()
-            .ok_or_else(|| anyhow!("Failed to get stdout"))?;
-        let mut decoded = Vec::new();
-        tokio::io::copy(&mut stdout, &mut decoded).await?;
+            // Read decoded output
+            let mut stdout = base64_child
+                .stdout()
+                .take()
+                .ok_or_else(|| anyhow!("Failed to get stdout"))?;
+            let mut decoded = Vec::new();
+            tokio::io::copy(&mut stdout, &mut decoded).await?;
 
-        // Wait for base64 command to complete
-        let status = base64_child.wait().await?;
-        if !status.success() {
-            return Err(anyhow!("base64 -d command failed"));
-        }
+            // Wait for base64 command to complete
+            let status = base64_child.wait().await?;
+            if !status.success() {
+                return Err(anyhow!("base64 -d command failed"));
+            }
 
-        // Now send this decoded content to a remote file using dd
-        let mut dd_child = session
-            .command("dd")
-            .arg(format!("of={}", remote_path))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .await
-            .map_err(|e| anyhow!("Failed to spawn dd command: {}", e))?;
+            // Now send this decoded content to a remote file using dd
+            let mut dd_child = session
+                .command("dd")
+                .arg(format!("of={}", remote_path))
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .await
+                .map_err(|e| anyhow!("Failed to spawn dd command: {}", e))?;
 
-        // Write decoded content to dd stdin
-        if let Some(mut dd_stdin) = dd_child.stdin().take() {
-            use tokio::io::AsyncWriteExt;
-            dd_stdin.write_all(&decoded).await?;
-            dd_stdin.flush().await?;
-            drop(dd_stdin);
-        }
+            // Write decoded content to dd stdin
+            if let Some(mut dd_stdin) = dd_child.stdin().take() {
+                use tokio::io::AsyncWriteExt;
+                dd_stdin.write_all(&decoded).await?;
+                dd_stdin.flush().await?;
+                drop(dd_stdin);
+            }
 
-        // Wait for dd command to complete
-        let dd_status = dd_child.wait().await?;
-        if !dd_status.success() {
-            return Err(anyhow!("dd command failed"));
-        }
+            // Wait for dd command to complete
+            let dd_status = dd_child.wait().await?;
+            if !dd_status.success() {
+                return Err(anyhow!("dd command failed"));
+            }
+
+            Ok(())
+        })
+        .await
+        .map_err(|_| anyhow!("Tower file transfer timed out after 120s"))??;
 
         Ok(())
     }

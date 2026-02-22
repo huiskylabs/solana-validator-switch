@@ -2338,11 +2338,15 @@ async fn detect_node_status_and_executable_with_progress(
     logger.log("Checking startup identity configuration...")?;
 
     if validator_type != crate::types::ValidatorType::Unknown {
+        // Get shell type from SSH pool
+        let shell_type = ssh_pool.get_shell_type(node, &ssh_key).await?;
+
         if let Err(e) = crate::startup_checks::check_node_startup_identity_inline(
             node,
             validator_type.clone(),
             ssh_pool,
             &ssh_key,
+            shell_type,
         )
         .await
         {
@@ -2458,6 +2462,9 @@ async fn check_node_startup_identity_for_auto_failover(
         node.node.label
     ))?;
 
+    // Get shell type from SSH pool
+    let shell_type = ssh_pool.get_shell_type(&node.node, ssh_key).await?;
+
     // Check startup identity configuration based on validator type
     match node.validator_type {
         crate::types::ValidatorType::Firedancer => {
@@ -2470,6 +2477,7 @@ async fn check_node_startup_identity_for_auto_failover(
                 node.validator_type.clone(),
                 ssh_pool,
                 ssh_key,
+                shell_type,
             )
             .await?
         }
@@ -2483,6 +2491,7 @@ async fn check_node_startup_identity_for_auto_failover(
                 node.validator_type.clone(),
                 ssh_pool,
                 ssh_key,
+                shell_type,
             )
             .await?
         }

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use crate::ssh::AsyncSshPool;
 use crate::startup_logger::StartupLogger;
-use crate::types::{NodeWithStatus, ValidatorPair};
+use crate::types::{NodeWithStatus, RemoteShellType, ValidatorPair};
 use crate::AppState;
 
 /// Perform startup safety checks for auto-failover configuration
@@ -137,6 +137,9 @@ async fn check_node_identity(
 
     println!("    Checking {}: ", node.node.label);
 
+    // Get shell type
+    let shell_type = ssh_pool.get_shell_type(&node.node, ssh_key).await?;
+
     // Check startup identity configuration based on validator type
     match node.validator_type {
         crate::types::ValidatorType::Firedancer => {
@@ -144,14 +147,14 @@ async fn check_node_identity(
                 "{} is Firedancer type, checking config",
                 node.node.label
             ))?;
-            check_firedancer_identity_config(node, ssh_pool, ssh_key).await?
+            check_firedancer_identity_config(node, ssh_pool, ssh_key, shell_type).await?
         }
         crate::types::ValidatorType::Agave | crate::types::ValidatorType::Jito => {
             logger.log(&format!(
                 "{} is Agave/Jito type, checking command line",
                 node.node.label
             ))?;
-            check_agave_identity_config(node, ssh_pool, ssh_key).await?
+            check_agave_identity_config(node, ssh_pool, ssh_key, shell_type).await?
         }
         crate::types::ValidatorType::Unknown => {
             logger.log(&format!(
@@ -179,13 +182,16 @@ async fn check_node_startup_identity(
 
     println!("    Checking {}: ", node.node.label);
 
+    // Get shell type
+    let shell_type = ssh_pool.get_shell_type(&node.node, ssh_key).await?;
+
     // Check identity configuration based on validator type
     match node.validator_type {
         crate::types::ValidatorType::Firedancer => {
-            check_firedancer_identity_config(node, ssh_pool, ssh_key).await?
+            check_firedancer_identity_config(node, ssh_pool, ssh_key, shell_type).await?
         }
         crate::types::ValidatorType::Agave | crate::types::ValidatorType::Jito => {
-            check_agave_identity_config(node, ssh_pool, ssh_key).await?
+            check_agave_identity_config(node, ssh_pool, ssh_key, shell_type).await?
         }
         crate::types::ValidatorType::Unknown => {
             println!("      ⚠️  Unknown validator type - skipping check");
@@ -202,6 +208,7 @@ async fn check_firedancer_identity_config(
     node: &NodeWithStatus,
     ssh_pool: &AsyncSshPool,
     ssh_key: &str,
+    shell_type: RemoteShellType,
 ) -> Result<()> {
     // TODO: This function should use a proper TOML parser instead of grep/string parsing.
     // Current implementation is fragile and error-prone. Should:
@@ -211,7 +218,14 @@ async fn check_firedancer_identity_config(
     // 4. Access fields properly: config["consensus"]["identity_path"] and config["consensus"]["authorized_voter_paths"][0]
 
     // Get the Firedancer config file path
-    let ps_cmd = "ps aux | grep -E 'fdctl.*--config' | grep -v grep";
+    let ps_cmd = match shell_type {
+        RemoteShellType::Bash => {
+            "ps aux | grep -E 'fdctl.*--config' | grep -v grep"
+        }
+        RemoteShellType::PowerShell | RemoteShellType::PowerShellCore => {
+            "ps aux | Select-String -Pattern 'fdctl.*--config' | Select-String -Pattern 'grep' -NotMatch"
+        }
+    };
     let process_info = ssh_pool
         .execute_command(&node.node, ssh_key, ps_cmd)
         .await?;
@@ -229,10 +243,14 @@ async fn check_firedancer_identity_config(
         .ok_or_else(|| anyhow!("Failed to find Firedancer config path in running process"))?;
 
     // Read the consensus section from the config file
-    let config_cmd = format!(
-        "grep -A10 '\\[consensus\\]' \"{}\" | grep -E 'identity_path|authorized_voter_paths' -A3",
-        config_path
-    );
+    let config_cmd = match shell_type {
+        RemoteShellType::Bash => {
+            format!("grep -A10 '\\[consensus\\]' \"{}\" | grep -E 'identity_path|authorized_voter_paths' -A3", config_path)
+        }
+        RemoteShellType::PowerShell | RemoteShellType::PowerShellCore => {
+            format!("Get-Content '{}' | Select-String -Pattern '\\[consensus\\]' -Context 0,10 | Select-String -Pattern 'identity_path|authorized_voter_paths' -Context 0,3", config_path)
+        }
+    };
     let config_content = ssh_pool
         .execute_command(&node.node, ssh_key, &config_cmd)
         .await?;
@@ -296,10 +314,17 @@ async fn check_agave_identity_config(
     node: &NodeWithStatus,
     ssh_pool: &AsyncSshPool,
     ssh_key: &str,
+    shell_type: RemoteShellType,
 ) -> Result<()> {
     // Get the running process command line
-    let ps_cmd =
-        "ps aux | grep -E 'solana-validator|agave-validator|jito-validator' | grep -v grep";
+    let ps_cmd = match shell_type {
+        RemoteShellType::Bash => {
+            "ps aux | grep -E 'solana-validator|agave-validator|jito-validator' | grep -v grep"
+        }
+        RemoteShellType::PowerShell | RemoteShellType::PowerShellCore => {
+            "ps aux | Select-String -Pattern 'solana-validator|agave-validator|jito-validator' | Select-String -Pattern 'grep' -NotMatch"
+        }
+    };
     let process_info = ssh_pool
         .execute_command(&node.node, ssh_key, ps_cmd)
         .await?;
@@ -359,13 +384,14 @@ pub async fn check_node_startup_identity_inline(
     validator_type: crate::types::ValidatorType,
     ssh_pool: &AsyncSshPool,
     ssh_key: &str,
+    shell_type: RemoteShellType,
 ) -> Result<()> {
     match validator_type {
         crate::types::ValidatorType::Firedancer => {
-            check_firedancer_identity_config_inline(node, ssh_pool, ssh_key).await
+            check_firedancer_identity_config_inline(node, ssh_pool, ssh_key, shell_type).await
         }
         crate::types::ValidatorType::Agave | crate::types::ValidatorType::Jito => {
-            check_agave_identity_config_inline(node, ssh_pool, ssh_key).await
+            check_agave_identity_config_inline(node, ssh_pool, ssh_key, shell_type).await
         }
         crate::types::ValidatorType::Unknown => Ok(()),
     }
@@ -375,12 +401,20 @@ async fn check_firedancer_identity_config_inline(
     node: &crate::types::NodeConfig,
     ssh_pool: &AsyncSshPool,
     ssh_key: &str,
+    shell_type: RemoteShellType,
 ) -> Result<()> {
     // TODO: This function should use a proper TOML parser instead of grep/string parsing.
     // See TODO comment in check_firedancer_identity_config() above.
 
     // Get the Firedancer config file path
-    let ps_cmd = "ps aux | grep -E 'fdctl.*--config' | grep -v grep";
+    let ps_cmd = match shell_type {
+        RemoteShellType::Bash => {
+            "ps aux | grep -E 'fdctl.*--config' | grep -v grep"
+        }
+        RemoteShellType::PowerShell | RemoteShellType::PowerShellCore => {
+            "ps aux | Select-String -Pattern 'fdctl.*--config' | Select-String -Pattern 'grep' -NotMatch"
+        }
+    };
     let process_info = ssh_pool.execute_command(node, ssh_key, ps_cmd).await?;
 
     let config_path = process_info
@@ -396,10 +430,14 @@ async fn check_firedancer_identity_config_inline(
         .ok_or_else(|| anyhow!("Failed to find Firedancer config path"))?;
 
     // Read the consensus section from the config file
-    let config_cmd = format!(
-        "grep -A10 '\\[consensus\\]' \"{}\" | grep -E 'identity_path|authorized_voter_paths' -A3",
-        config_path
-    );
+    let config_cmd = match shell_type {
+        RemoteShellType::Bash => {
+            format!("grep -A10 '\\[consensus\\]' \"{}\" | grep -E 'identity_path|authorized_voter_paths' -A3", config_path)
+        }
+        RemoteShellType::PowerShell | RemoteShellType::PowerShellCore => {
+            format!("Get-Content '{}' | Select-String -Pattern '\\[consensus\\]' -Context 0,10 | Select-String -Pattern 'identity_path|authorized_voter_paths' -Context 0,3", config_path)
+        }
+    };
     let config_content = ssh_pool.execute_command(node, ssh_key, &config_cmd).await?;
 
     // Parse identity_path
@@ -437,10 +475,17 @@ async fn check_agave_identity_config_inline(
     node: &crate::types::NodeConfig,
     ssh_pool: &AsyncSshPool,
     ssh_key: &str,
+    shell_type: RemoteShellType,
 ) -> Result<()> {
     // Get the running process command line
-    let ps_cmd =
-        "ps aux | grep -E 'solana-validator|agave-validator|jito-validator' | grep -v grep";
+    let ps_cmd = match shell_type {
+        RemoteShellType::Bash => {
+            "ps aux | grep -E 'solana-validator|agave-validator|jito-validator' | grep -v grep"
+        }
+        RemoteShellType::PowerShell | RemoteShellType::PowerShellCore => {
+            "ps aux | Select-String -Pattern 'solana-validator|agave-validator|jito-validator' | Select-String -Pattern 'grep' -NotMatch"
+        }
+    };
     let process_info = ssh_pool.execute_command(node, ssh_key, ps_cmd).await?;
 
     let process_line = process_info

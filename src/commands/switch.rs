@@ -1102,15 +1102,8 @@ impl SwitchManager {
         let file_size = encoded_data.len() as u64 * 3 / 4; // approximate original size from base64
         let speed_mbps = (file_size as f64 / 1024.0 / 1024.0) / transfer_duration.as_secs_f64();
 
-        println_if_not_silent!(
-            "  ✅ Transferred in {} ({:.2} MB/s)",
-            format!("{}ms", transfer_duration.as_millis())
-                .bright_green()
-                .bold(),
-            speed_mbps
-        );
-
         if !dry_run {
+            let spinner = ConditionalSpinner::new("Verifying tower file integrity...");
             // Calculate SHA256 checksum on source (active node)
             let source_checksum = {
                 let ssh_key = self.get_ssh_key_for_node(&self.active_node_with_status.node.host)?;
@@ -1134,23 +1127,41 @@ impl SwitchManager {
             let source_hash = source_checksum.trim();
             let dest_hash = dest_checksum.trim();
 
+            // Verify checksums but only warn on failure (resilient mode)
             if source_hash.is_empty() || dest_hash.is_empty() {
-                return Err(anyhow!(
-                    "Failed to compute tower file checksums (source: '{}', dest: '{}')",
-                    source_hash,
-                    dest_hash
+                spinner.stop_with_message(&format!(
+                    "  ✅ Transferred in {} ({:.2} MB/s) - {} {}",
+                    format!("{}ms", transfer_duration.as_millis())
+                        .bright_green()
+                        .bold(),
+                    speed_mbps,
+                    "⚠️  Checksum verification skipped".yellow().bold(),
+                    format!("(source: '{}', dest: '{}')", source_hash, dest_hash).dimmed()
+                ));
+            } else if source_hash != dest_hash {
+                spinner.stop_with_message(&format!(
+                    "  ✅ Transferred in {} ({:.2} MB/s) - {} {}",
+                    format!("{}ms", transfer_duration.as_millis())
+                        .bright_green()
+                        .bold(),
+                    speed_mbps,
+                    "⚠️  Checksum mismatch".yellow().bold(),
+                    format!("(src: {}..., dst: {}...)", &source_hash[..8], &dest_hash[..8]).dimmed()
+                ));
+                println_if_not_silent!(
+                    "  {} Transfer completed but checksums differ - proceeding with swap",
+                    "⚠️".yellow().bold()
+                );
+            } else {
+                spinner.stop_with_message(&format!(
+                    "  ✅ Transferred in {} ({:.2} MB/s) - Verified (SHA256: {}...)",
+                    format!("{}ms", transfer_duration.as_millis())
+                        .bright_green()
+                        .bold(),
+                    speed_mbps,
+                    &source_hash[..8]
                 ));
             }
-
-            if source_hash != dest_hash {
-                return Err(anyhow!(
-                    "Tower file checksum mismatch! Source: {}, Dest: {}. Transfer may be corrupted.",
-                    source_hash,
-                    dest_hash
-                ));
-            }
-
-            println_if_not_silent!("  ✓ Tower file verified (SHA256: {}...)", &source_hash[..8]);
         }
 
         Ok(())

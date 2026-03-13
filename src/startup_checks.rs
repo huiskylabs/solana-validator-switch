@@ -7,6 +7,30 @@ use crate::startup_logger::StartupLogger;
 use crate::types::{NodeWithStatus, RemoteShellType, ValidatorPair};
 use crate::AppState;
 
+/// Strip ANSI escape codes from a string.
+/// Handles sequences like ESC[...m that grep --color adds to output.
+fn strip_ansi(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            if chars.peek() == Some(&'[') {
+                chars.next(); // consume '['
+                // consume digits, semicolons until we hit an ASCII letter
+                while let Some(&next) = chars.peek() {
+                    chars.next();
+                    if next.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
 /// Perform startup safety checks for auto-failover configuration
 #[allow(dead_code)]
 pub async fn check_auto_failover_safety(
@@ -319,7 +343,7 @@ async fn check_agave_identity_config(
     // Get the running process command line
     let ps_cmd = match shell_type {
         RemoteShellType::Bash => {
-            "ps aux | grep -E 'solana-validator|agave-validator|jito-validator' | grep -v grep"
+            "ps auxww | grep --color=never -E 'solana-validator|agave-validator|jito-validator' | grep --color=never -v grep"
         }
         RemoteShellType::PowerShell | RemoteShellType::PowerShellCore => {
             "ps aux | Select-String -Pattern 'solana-validator|agave-validator|jito-validator' | Select-String -Pattern 'grep' -NotMatch"
@@ -329,13 +353,16 @@ async fn check_agave_identity_config(
         .execute_command(&node.node, ssh_key, ps_cmd)
         .await?;
 
-    let process_line = process_info
-        .lines()
-        .find(|line| line.contains("validator"))
-        .ok_or_else(|| anyhow!("Failed to find validator process"))?;
+    if !process_info.lines().any(|line| line.contains("validator")) {
+        return Err(anyhow!("Failed to find validator process"));
+    }
+
+    // Strip ANSI escape codes (added by grep --color on some systems) before parsing
+    let clean_info = strip_ansi(&process_info);
 
     // Extract --identity and --authorized-voter paths
-    let parts: Vec<&str> = process_line.split_whitespace().collect();
+    // Join all lines to handle ps output wrapping on narrow SSH terminals
+    let parts: Vec<&str> = clean_info.split_whitespace().collect();
 
     let identity_path = parts
         .windows(2)
@@ -480,7 +507,7 @@ async fn check_agave_identity_config_inline(
     // Get the running process command line
     let ps_cmd = match shell_type {
         RemoteShellType::Bash => {
-            "ps aux | grep -E 'solana-validator|agave-validator|jito-validator' | grep -v grep"
+            "ps auxww | grep --color=never -E 'solana-validator|agave-validator|jito-validator' | grep --color=never -v grep"
         }
         RemoteShellType::PowerShell | RemoteShellType::PowerShellCore => {
             "ps aux | Select-String -Pattern 'solana-validator|agave-validator|jito-validator' | Select-String -Pattern 'grep' -NotMatch"
@@ -488,13 +515,16 @@ async fn check_agave_identity_config_inline(
     };
     let process_info = ssh_pool.execute_command(node, ssh_key, ps_cmd).await?;
 
-    let process_line = process_info
-        .lines()
-        .find(|line| line.contains("validator"))
-        .ok_or_else(|| anyhow!("Failed to find validator process"))?;
+    if !process_info.lines().any(|line| line.contains("validator")) {
+        return Err(anyhow!("Failed to find validator process"));
+    }
+
+    // Strip ANSI escape codes (added by grep --color on some systems) before parsing
+    let clean_info = strip_ansi(&process_info);
 
     // Extract --identity and --authorized-voter paths
-    let parts: Vec<&str> = process_line.split_whitespace().collect();
+    // Join all lines to handle ps output wrapping on narrow SSH terminals
+    let parts: Vec<&str> = clean_info.split_whitespace().collect();
 
     let identity_path = parts
         .windows(2)

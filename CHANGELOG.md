@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.6] - 2026-03-13
+
+### Fixed
+- Startup process validation now strips ANSI escape codes from command output for accurate parsing
+- Improved command output handling to prevent false negatives in validator process detection
+
 ## [1.4.0] - 2025-01-27
 
 ### Fixed

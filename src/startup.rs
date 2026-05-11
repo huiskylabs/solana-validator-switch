@@ -2111,7 +2111,7 @@ async fn detect_node_status_and_executable_with_progress(
     if validator_type == crate::types::ValidatorType::Firedancer && ledger_path.is_none() {
         // Try to extract ledger path from Firedancer config file
         // First find the config path from the running process
-        let config_cmd = "ps aux | grep 'fdctl.*--config' | grep -v grep | head -1";
+        let config_cmd = "ps aux | grep 'fdctl.*--config ' | grep -v grep | head -1";
         if let Ok(output) = ssh_pool.execute_command(node, &ssh_key, config_cmd).await {
             // Extract config path
             let parts: Vec<&str> = output.split_whitespace().collect();

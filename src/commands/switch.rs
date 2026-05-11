@@ -2,7 +2,9 @@ use crate::commands::error_handler::ProgressSpinner;
 use crate::ssh::AsyncSshPool;
 use crate::types::NodeConfig;
 use anyhow::{anyhow, Result};
+use base64::{engine::general_purpose, Engine as _};
 use colored::*;
+use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -42,6 +44,17 @@ impl ConditionalSpinner {
             spinner.stop_with_message(message);
         }
     }
+}
+
+fn sha256_hex(data: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(data))
+}
+
+fn decode_base64_payload(payload: &str) -> Result<Vec<u8>> {
+    let normalized: String = payload.chars().filter(|c| !c.is_whitespace()).collect();
+    general_purpose::STANDARD
+        .decode(normalized)
+        .map_err(|e| anyhow!("Failed to decode transferred tower data: {}", e))
 }
 
 pub async fn switch_command(dry_run: bool, app_state: &mut crate::AppState) -> Result<bool> {
@@ -1152,14 +1165,8 @@ impl SwitchManager {
 
         if !dry_run {
             let spinner = ConditionalSpinner::new("Verifying tower file integrity...");
-            // Calculate SHA256 checksum on source (active node)
-            let source_checksum = {
-                let ssh_key = self.get_ssh_key_for_node(&self.active_node_with_status.node.host)?;
-                let pool = self.ssh_pool.clone();
-                let sha_cmd = format!("sha256sum {} | cut -d' ' -f1", tower_path);
-                pool.execute_command(&self.active_node_with_status.node, &ssh_key, &sha_cmd)
-                    .await?
-            };
+            // Calculate SHA256 checksum from the exact bytes that were transferred.
+            let source_checksum = sha256_hex(&decode_base64_payload(&encoded_data)?);
 
             // Calculate SHA256 checksum on destination (standby node)
             let dest_checksum = {
@@ -1441,6 +1448,94 @@ impl SwitchManager {
         } else {
             println_if_not_silent!("✅ Validator identity switch completed successfully");
         }
+    }
+}
+
+#[cfg(test)]
+mod helper_tests {
+    //! Unit tests for the small helpers used during tower-file verification.
+    //!
+    //! These helpers underpin the fix for the verification race where the
+    //! source tower file could change between the read and the post-transfer
+    //! re-hash on the active node. By checksumming the exact transferred
+    //! bytes, we eliminate that race; these tests cover the helpers in
+    //! isolation so regressions are caught immediately.
+
+    use super::{decode_base64_payload, sha256_hex};
+
+    #[test]
+    fn sha256_hex_of_empty_input_matches_known_constant() {
+        // SHA256 of the empty string is the well-known constant
+        // e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.
+        let hex = sha256_hex(&[]);
+        assert_eq!(
+            hex,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    fn sha256_hex_of_abc_matches_known_constant() {
+        // SHA256("abc") = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad.
+        let hex = sha256_hex(b"abc");
+        assert_eq!(
+            hex,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn decode_base64_payload_round_trips_clean_input() {
+        // "hello" -> base64 "aGVsbG8=" -> back to "hello" bytes.
+        let bytes = decode_base64_payload("aGVsbG8=").expect("clean base64 should decode");
+        assert_eq!(bytes, b"hello");
+    }
+
+    #[test]
+    fn decode_base64_payload_strips_whitespace_before_decode() {
+        // Remote tools (base64, ssh stdout) often wrap output at 76 columns
+        // and may emit trailing newlines or extra spaces. The helper must
+        // treat all of those as transport noise and recover the original
+        // bytes identically to a clean payload.
+        // "hello world" -> "aGVsbG8gd29ybGQ=" (16 chars + padding).
+        let wrapped = "aGVs\nbG8g\td29y\rbGQ=  \n";
+        let bytes = decode_base64_payload(wrapped).expect("wrapped base64 should decode");
+        assert_eq!(bytes, b"hello world");
+    }
+
+    #[test]
+    fn decode_base64_payload_handles_empty_input() {
+        let bytes = decode_base64_payload("").expect("empty payload should decode to no bytes");
+        assert!(bytes.is_empty());
+    }
+
+    #[test]
+    fn decode_base64_payload_rejects_invalid_input() {
+        // Non-base64 characters should produce an error rather than a silent
+        // success — otherwise we would happily hash garbage and report a
+        // false match to the destination.
+        let err = decode_base64_payload("not valid base64 @@@").unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("Failed to decode transferred tower data"),
+            "expected helpful error context, got: {msg}",
+        );
+    }
+
+    #[test]
+    fn sha256_hex_matches_independent_recompute_of_decoded_bytes() {
+        // End-to-end property: hashing the in-memory bytes that came out of
+        // decode_base64_payload should always equal hashing the original
+        // input directly. This is the property the verification race fix
+        // relies on.
+        let original: &[u8] = b"the quick brown fox jumps over the lazy dog";
+        let payload = {
+            use base64::{engine::general_purpose, Engine as _};
+            general_purpose::STANDARD.encode(original)
+        };
+        let decoded = decode_base64_payload(&payload).expect("decode succeeds");
+        assert_eq!(decoded, original);
+        assert_eq!(sha256_hex(&decoded), sha256_hex(original));
     }
 }
 

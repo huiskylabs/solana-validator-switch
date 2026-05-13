@@ -94,6 +94,7 @@ mod tests {
             validator_type,
             agave_validator_executable: Some("/usr/bin/agave-validator".to_string()),
             fdctl_executable: None,
+            firedancer_config_path: None,
             solana_cli_executable: Some("/usr/bin/solana".to_string()),
             version: Some("1.18.0".to_string()),
             sync_status: Some("Caught up".to_string()),
@@ -176,6 +177,7 @@ mod tests {
         
         let mut active_with_status = create_test_node_with_status(active_node, NodeStatus::Active, ValidatorType::Firedancer);
         active_with_status.fdctl_executable = Some("/home/solana/fdctl".to_string());
+        active_with_status.firedancer_config_path = Some("/home/solana/firedancer-config.toml".to_string());
         
         let validator_pair = ValidatorPair {
             vote_pubkey: "Vote123".to_string(),
@@ -184,8 +186,7 @@ mod tests {
             nodes: vec![],
         };
         
-        let ssh_pool = MockSshPool::new()
-            .with_response("ps aux", "solana 1234 /home/solana/fdctl run --config /home/solana/firedancer-config.toml");
+        let ssh_pool = MockSshPool::new();
         
         let ssh_pool_arc = Arc::new(Mutex::new(ssh_pool));
         let mut manager = SwitchManager::new(
@@ -203,6 +204,7 @@ mod tests {
         assert!(history.iter().any(|(_, cmd)| cmd.contains("/home/solana/fdctl set-identity")));
         assert!(history.iter().any(|(_, cmd)| cmd.contains("--config /home/solana/firedancer-config.toml")));
         assert!(history.iter().any(|(_, cmd)| cmd.contains("/unfunded1.json")));
+        assert!(!history.iter().any(|(_, cmd)| cmd.contains("ps aux")));
     }
     
     #[tokio::test]

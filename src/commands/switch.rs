@@ -543,6 +543,7 @@ pub(crate) struct SwitchManager {
     identity_switch_time: Option<Duration>,
     active_switch_time: Option<Duration>,
     standby_switch_time: Option<Duration>,
+    offline_window_time: Option<Duration>,
 }
 
 impl SwitchManager {
@@ -564,6 +565,7 @@ impl SwitchManager {
             identity_switch_time: None,
             active_switch_time: None,
             standby_switch_time: None,
+            offline_window_time: None,
         }
     }
 
@@ -573,6 +575,28 @@ impl SwitchManager {
             .get(host)
             .cloned()
             .ok_or_else(|| anyhow!("No SSH key detected for host: {}", host))
+    }
+
+    async fn get_firedancer_config_path(
+        &self,
+        node_with_status: &crate::types::NodeWithStatus,
+    ) -> Result<String> {
+        if let Some(config_path) = &node_with_status.firedancer_config_path {
+            return Ok(config_path.clone());
+        }
+
+        // Fall back to one process lookup only if startup did not cache the config path.
+        let ssh_key = self.get_ssh_key_for_node(&node_with_status.node.host)?;
+        let pool = self.ssh_pool.clone();
+        let process_info = pool
+            .execute_command(
+                &node_with_status.node,
+                &ssh_key,
+                "ps aux | grep 'bin/fdctl ' | grep -v grep",
+            )
+            .await?;
+
+        crate::executable_utils::extract_firedancer_config_path(&process_info)
     }
 
     async fn execute_switch(&mut self, dry_run: bool, require_confirmation: bool) -> Result<bool> {
@@ -638,6 +662,10 @@ impl SwitchManager {
         // Start timing the entire switch operation
         let total_switch_start = Instant::now();
 
+        if !dry_run {
+            self.warmup_backup_connection("the failover").await?;
+        }
+
         // Step 1: Switch active node to unfunded identity
         println_if_not_silent!(
             "\n{}",
@@ -650,6 +678,8 @@ impl SwitchManager {
         // Track that step 1 completed for potential rollback
         let step1_completed = true;
         self.active_switch_time = Some(active_switch_start.elapsed());
+        // Mark primary offline start point (after active node switched to unfunded)
+        let primary_offline_start = Instant::now();
         if !dry_run {
             println_if_not_silent!(
                 "   ✓ Completed in {}",
@@ -748,6 +778,9 @@ impl SwitchManager {
             return Err(e);
         }
         self.standby_switch_time = Some(standby_switch_start.elapsed());
+        // Record downtime: from primary_offline_start to when standby finished activating
+        let primary_offline_end = Instant::now();
+        self.offline_window_time = Some(primary_offline_end.duration_since(primary_offline_start));
         if !dry_run {
             println_if_not_silent!(
                 "   ✓ Completed in {}",
@@ -760,6 +793,16 @@ impl SwitchManager {
         // Record total identity switch time
         if !dry_run {
             self.identity_switch_time = Some(total_switch_start.elapsed());
+        }
+
+        // Show offline window in summary if available
+        if let Some(downtime) = self.offline_window_time {
+            if !dry_run {
+                println_if_not_silent!(
+                    "\n   ⏱️  Primary offline → Standby online: {}ms",
+                    format!("{:.1}", downtime.as_secs_f64() * 1000.0).bright_cyan()
+                );
+            }
         }
 
         // Step 4: Verify new active node health (former standby)
@@ -786,22 +829,9 @@ impl SwitchManager {
                 // Get fdctl executable path from config
                 let fdctl_path =
                     crate::executable_utils::get_fdctl_path(&self.active_node_with_status)?;
-
-                // For Firedancer, we need process info to extract the config path
-                let process_info = {
-                    let ssh_key =
-                        self.get_ssh_key_for_node(&self.active_node_with_status.node.host)?;
-                    let pool = self.ssh_pool.clone();
-                    pool.execute_command(
-                        &self.active_node_with_status.node,
-                        &ssh_key,
-                        "ps aux | grep 'bin/fdctl' | grep -v grep",
-                    )
-                    .await?
-                };
-
-                let config_path =
-                    crate::executable_utils::extract_firedancer_config_path(&process_info)?;
+                let config_path = self
+                    .get_firedancer_config_path(&self.active_node_with_status)
+                    .await?;
 
                 (
                     "Using Firedancer fdctl set-identity",
@@ -878,18 +908,9 @@ impl SwitchManager {
                         // Firedancer: fdctl set-identity --config <config> <identity>
                         let fdctl_path =
                             crate::executable_utils::get_fdctl_path(&self.active_node_with_status)?;
-
-                        let process_info = {
-                            let ssh_key2 = self.get_ssh_key_for_node(&self.active_node_with_status.node.host)?;
-                            let pool2 = self.ssh_pool.clone();
-                            pool2.execute_command(
-                                &self.active_node_with_status.node,
-                                &ssh_key2,
-                                "ps aux | grep 'bin/fdctl' | grep -v grep",
-                            ).await?
-                        };
-                        let config_path =
-                            crate::executable_utils::extract_firedancer_config_path(&process_info)?;
+                        let config_path = self
+                            .get_firedancer_config_path(&self.active_node_with_status)
+                            .await?;
 
                         let args = vec![
                             "set-identity",
@@ -967,21 +988,9 @@ impl SwitchManager {
                 // Firedancer: fdctl set-identity --config <config> <identity>
                 let fdctl_path =
                     crate::executable_utils::get_fdctl_path(&self.active_node_with_status)?;
-
-                // For Firedancer, we need process info to extract the config path
-                let process_info = {
-                    let pool2 = self.ssh_pool.clone();
-                    pool2
-                        .execute_command(
-                            &self.active_node_with_status.node,
-                            &ssh_key,
-                            "ps aux | grep 'bin/fdctl' | grep -v grep",
-                        )
-                        .await?
-                };
-
-                let config_path =
-                    crate::executable_utils::extract_firedancer_config_path(&process_info)?;
+                let config_path = self
+                    .get_firedancer_config_path(&self.active_node_with_status)
+                    .await?;
 
                 let args = vec![
                     "set-identity",
@@ -1052,6 +1061,22 @@ impl SwitchManager {
         self.ssh_pool.get_session(node, ssh_key_path).await
     }
 
+    async fn warmup_backup_connection(&self, purpose: &str) -> Result<()> {
+        let standby_ssh_key = self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
+        let pool = self.ssh_pool.clone();
+
+        println_if_not_silent!(
+            "  🔥 Pre-warming backup SSH connection for {}...",
+            purpose
+        );
+
+        let _ = pool
+            .get_session(&self.standby_node_with_status.node, &standby_ssh_key)
+            .await?;
+
+        Ok(())
+    }
+
     pub(crate) async fn transfer_tower_file(&mut self, dry_run: bool) -> Result<()> {
         // Use the derived tower path from active node
         let tower_path = self
@@ -1103,58 +1128,56 @@ impl SwitchManager {
         let start_time = Instant::now();
 
         // Execute the streaming transfer using base64 encoding
-        let encoded_data = if !dry_run {
-            let spinner = ConditionalSpinner::new("Reading tower file...");
-            let ssh_key_active =
-                self.get_ssh_key_for_node(&self.active_node_with_status.node.host)?;
-            let data = {
-                let pool = self.ssh_pool.clone();
-                let base64_args = vec![tower_path.as_str()];
-                match pool
-                    .execute_command_with_args(
-                        &self.active_node_with_status.node,
-                        &ssh_key_active,
-                        "base64",
-                        &base64_args,
-                    )
-                    .await
-                {
-                    Ok(data) => data,
-                    Err(e) => {
-                        spinner.stop_with_message(&format!("❌ Failed to read tower file: {}", e));
-                        return Err(anyhow!("Failed to read tower file: {}", e));
+            // Read base64 from source and transfer separately, measuring each phase
+            let (encoded_data, read_ms, transfer_ms, decoded_bytes) = if !dry_run {
+                // Read base64 from active
+                let read_start = Instant::now();
+                let ssh_key_active =
+                    self.get_ssh_key_for_node(&self.active_node_with_status.node.host)?;
+                let data = {
+                    let pool = self.ssh_pool.clone();
+                    let base64_args = vec![tower_path.as_str()];
+                    match pool
+                        .execute_command_with_args(
+                            &self.active_node_with_status.node,
+                            &ssh_key_active,
+                            "base64",
+                            &base64_args,
+                        )
+                        .await
+                    {
+                        Ok(data) => data,
+                        Err(e) => {
+                            return Err(anyhow!("Failed to read tower file: {}", e));
+                        }
                     }
-                }
-            };
-            spinner.stop_with_message("");
+                };
+                let read_duration = read_start.elapsed();
 
-            let spinner = ConditionalSpinner::new("Transferring tower file...");
-            let ssh_key_standby =
-                self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
-            {
-                let pool = self.ssh_pool.clone();
-                match pool
-                    .transfer_base64_to_file(
+                // Transfer to standby and measure
+                let transfer_start = Instant::now();
+                let ssh_key_standby =
+                    self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
+                {
+                    let pool = self.ssh_pool.clone();
+                    pool.transfer_base64_to_file(
                         &self.standby_node_with_status.node,
                         &ssh_key_standby,
                         &dest_path,
                         &data,
                     )
                     .await
-                {
-                    Ok(_) => {}
-                    Err(e) => {
-                        spinner.stop_with_message(&format!("❌ Failed to write tower file: {}", e));
-                        return Err(anyhow!("Failed to write tower file: {}", e));
-                    }
+                    .map_err(|e| anyhow!("Failed to write tower file: {}", e))?;
                 }
-            }
-            spinner.stop_with_message("");
-            data
-        } else {
-            // For dry run, just use a dummy value
-            String::from("dummy")
-        };
+                let transfer_duration = transfer_start.elapsed();
+
+                // Estimation of decoded bytes (base64 -> bytes)
+                let decoded_bytes = data.len() as u64 * 3 / 4;
+
+                (data, read_duration.as_secs_f64() * 1000.0, transfer_duration.as_secs_f64() * 1000.0, decoded_bytes)
+            } else {
+                (String::from("dummy"), 0.0, 0.0, 0)
+            };
 
         let transfer_duration = start_time.elapsed();
         self.tower_transfer_time = Some(transfer_duration);
@@ -1212,6 +1235,15 @@ impl SwitchManager {
             ));
         }
 
+        // Print detailed per-phase timings for debugging (visible in both dry-run and live modes)
+        println_if_not_silent!(
+            "   ▸ Read: {:.1}ms, Transfer: {:.1}ms, Total: {}ms, Bytes: {}",
+            read_ms,
+            transfer_ms,
+            transfer_duration.as_millis(),
+            decoded_bytes
+        );
+
         Ok(())
     }
 
@@ -1222,22 +1254,9 @@ impl SwitchManager {
                 // Get fdctl executable path from config
                 let fdctl_path =
                     crate::executable_utils::get_fdctl_path(&self.standby_node_with_status)?;
-
-                // For Firedancer, we need process info to extract the config path
-                let process_info = {
-                    let ssh_key =
-                        self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
-                    let pool = self.ssh_pool.clone();
-                    pool.execute_command(
-                        &self.standby_node_with_status.node,
-                        &ssh_key,
-                        "ps aux | grep 'bin/fdctl' | grep -v grep",
-                    )
-                    .await?
-                };
-
-                let config_path =
-                    crate::executable_utils::extract_firedancer_config_path(&process_info)?;
+                let config_path = self
+                    .get_firedancer_config_path(&self.standby_node_with_status)
+                    .await?;
 
                 (
                     "Using Firedancer fdctl set-identity",
@@ -1315,18 +1334,9 @@ impl SwitchManager {
                         // Firedancer: fdctl set-identity --config <config> <identity>
                         let fdctl_path =
                             crate::executable_utils::get_fdctl_path(&self.standby_node_with_status)?;
-
-                        let process_info = {
-                            let ssh_key2 = self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
-                            let pool2 = self.ssh_pool.clone();
-                            pool2.execute_command(
-                                &self.standby_node_with_status.node,
-                                &ssh_key2,
-                                "ps aux | grep 'bin/fdctl' | grep -v grep",
-                            ).await?
-                        };
-                        let config_path =
-                            crate::executable_utils::extract_firedancer_config_path(&process_info)?;
+                        let config_path = self
+                            .get_firedancer_config_path(&self.standby_node_with_status)
+                            .await?;
 
                         let args = vec![
                             "set-identity",
@@ -1335,6 +1345,7 @@ impl SwitchManager {
                             &self.standby_node_with_status.node.paths.funded_identity,
                         ];
 
+                        let cmd_start = Instant::now();
                         pool.execute_command_with_args(
                             &self.standby_node_with_status.node,
                             &ssh_key,
@@ -1342,6 +1353,11 @@ impl SwitchManager {
                             &args,
                         )
                         .await?;
+                        let cmd_elapsed = cmd_start.elapsed();
+                        println_if_not_silent!(
+                            "   ▸ standby set-identity command took {:.1}ms",
+                            cmd_elapsed.as_secs_f64() * 1000.0
+                        );
                     }
                     crate::types::ValidatorType::Agave | crate::types::ValidatorType::Jito => {
                         // Agave: agave-validator -l <ledger> set-identity --require-tower <identity>
@@ -1359,6 +1375,7 @@ impl SwitchManager {
                             &self.standby_node_with_status.node.paths.funded_identity,
                         ];
 
+                        let cmd_start = Instant::now();
                         pool.execute_command_with_args(
                             &self.standby_node_with_status.node,
                             &ssh_key,
@@ -1366,6 +1383,11 @@ impl SwitchManager {
                             &args,
                         )
                         .await?;
+                        let cmd_elapsed = cmd_start.elapsed();
+                        println_if_not_silent!(
+                            "   ▸ standby set-identity command took {:.1}ms",
+                            cmd_elapsed.as_secs_f64() * 1000.0
+                        );
                     }
                     _ => {
                         return Err(anyhow!("Unsupported validator type for set-identity"));

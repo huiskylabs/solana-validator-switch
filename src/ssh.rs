@@ -101,14 +101,20 @@ impl AsyncSshPool {
     pub async fn get_session(&self, node: &NodeConfig, ssh_key_path: &str) -> Result<Arc<Session>> {
         let key = Self::get_connection_key(node, ssh_key_path);
 
-        // Try to get existing session
+        // Try to get existing session. We always probe liveness before
+        // returning a cached session because the cost of a missed-detection
+        // (handing back a dead session right before a failover) is much
+        // higher than the cost of one extra round-trip per call.
         {
             let sessions = self.sessions.read().await;
             if let Some(session) = sessions.get(&key) {
-                // Check if session is still alive
                 if self.is_session_alive(session).await {
                     return Ok(Arc::clone(session));
                 }
+
+                // Session is stale; drop it so we reconnect cleanly below.
+                drop(sessions);
+                self.remove_session(&key).await;
             }
         }
 

@@ -114,6 +114,7 @@ pub struct NodeWithStatus {
     pub validator_type: ValidatorType, // Type of validator (Firedancer, Agave, Jito, etc.)
     pub agave_validator_executable: Option<String>, // Path to agave-validator executable (for catchup check)
     pub fdctl_executable: Option<String>, // Path to fdctl executable (for firedancer identity set)
+    pub firedancer_config_path: Option<String>, // Cached Firedancer config path from startup detection
     pub solana_cli_executable: Option<String>, // Path to solana CLI executable
     pub version: Option<String>,          // Version information (e.g., "Firedancer 0.505.20216")
     pub sync_status: Option<String>,      // Sync status (e.g., "Caught up (slot: 344297365)")

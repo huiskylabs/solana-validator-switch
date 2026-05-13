@@ -36,6 +36,7 @@ mod switch_validation_tests {
             validator_type: ValidatorType::Agave,
             agave_validator_executable: Some("/home/solana/bin/agave-validator".to_string()),
             fdctl_executable: None,
+            firedancer_config_path: None,
             solana_cli_executable: Some("/home/solana/bin/solana".to_string()),
             version: Some("Agave 2.0.0".to_string()),
             sync_status: Some("Caught up".to_string()),

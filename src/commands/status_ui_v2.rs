@@ -48,7 +48,7 @@ use std::io::{self, Write};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
-use tokio::time::interval;
+use tokio::time::{interval, MissedTickBehavior};
 
 // Required imports for alerts and vote data
 use crate::alert::AlertManager;
@@ -92,7 +92,7 @@ async fn refresh_vote_data_for_alerts(
                 }
 
                 let _ = log_sender.send(LogMessage {
-                    host: format!("validator-{}", idx),
+                    host: validator_log_host(&app_state, idx),
                     message: format!(
                             "[{}] Vote data fetched: last slot {}",
                             node_label,
@@ -111,7 +111,7 @@ async fn refresh_vote_data_for_alerts(
                 }
 
                 let _ = log_sender.send(LogMessage {
-                    host: format!("validator-{}", idx),
+                    host: validator_log_host(&app_state, idx),
                         message: format!("[{}] Failed to fetch vote data: {}", node_label, e),
                     timestamp: Instant::now(),
                     level: LogLevel::Error,
@@ -121,177 +121,196 @@ async fn refresh_vote_data_for_alerts(
             }
         }
 
-        // Spawn background health checks for each node: log getHealth and send low-priority alerts when configured
-        let app_state_health = app_state.clone();
-        let ui_state_health = ui_state.clone();
-        let log_sender_health = log_sender.clone();
-        let alert_manager_health = alert_manager.clone();
+    }
 
-        tokio::spawn(async move {
-            for (vidx, validator_status) in app_state_health.validator_statuses.iter().enumerate() {
-                // Precompute values that inner tasks need so they don't capture the
-                // entire `app_state_health` Arc (which would move it on the first
-                // iteration and break subsequent iterations).
-                let validator_count = app_state_health.validator_statuses.len();
-                let validator_identity = validator_status.validator_pair.identity_pubkey.clone();
+    // Spawn background health checks for each node: log getHealth and send
+    // low-priority alerts when configured.
+    //
+    // This runs ONCE per master tick (not once per validator). The inner
+    // loops below already iterate every (validator, node) pair, so spawning
+    // this task inside the per-validator for-loop above would produce N×N
+    // health checks per tick with N validator pairs (and N duplicate log
+    // entries per backup). Keep this spawn at function scope so it fires
+    // exactly once per call to refresh_vote_data_for_alerts.
+    let app_state_health = app_state.clone();
+    let ui_state_health = ui_state.clone();
+    let log_sender_health = log_sender.clone();
+    let alert_manager_health = alert_manager.clone();
 
-                for (nidx, node_with_status) in validator_status.nodes_with_status.iter().enumerate() {
-                    let node = node_with_status.node.clone();
-                    let node_status = node_with_status.status.clone();
-                    let validator_type = node_with_status.validator_type.clone();
-                    let ssh_key_opt = app_state_health.detected_ssh_keys.get(&node.host).cloned();
-                    let ssh_pool = app_state_health.ssh_pool.clone();
-                    let log_sender = log_sender_health.clone();
-                    let alert_mgr = alert_manager_health.clone();
-                    let ui_state_local = ui_state_health.clone();
-                    let validator_identity_for_task = validator_identity.clone();
+    tokio::spawn(async move {
+        for (vidx, validator_status) in app_state_health.validator_statuses.iter().enumerate() {
+            // Precompute values that inner tasks need so they don't capture the
+            // entire `app_state_health` Arc (which would move it on the first
+            // iteration and break subsequent iterations).
+            let validator_count = app_state_health.validator_statuses.len();
+            let validator_identity = validator_status.validator_pair.identity_pubkey.clone();
 
-                    tokio::spawn(async move {
-                        // Prepare host tag for logs
-                        let host_tag = format!("validator-{}:node-{}", vidx, nidx);
+            for (nidx, node_with_status) in validator_status.nodes_with_status.iter().enumerate() {
+                let node = node_with_status.node.clone();
+                let node_status = node_with_status.status.clone();
+                let validator_type = node_with_status.validator_type.clone();
+                let ssh_key_opt = app_state_health.detected_ssh_keys.get(&node.host).cloned();
+                let ssh_pool = app_state_health.ssh_pool.clone();
+                let log_sender = log_sender_health.clone();
+                let alert_mgr = alert_manager_health.clone();
+                let ui_state_local = ui_state_health.clone();
+                let validator_identity_for_task = validator_identity.clone();
 
-                        if let Some(ssh_key) = ssh_key_opt {
-                            let rpc_port = crate::validator_rpc::get_rpc_port(validator_type, None);
-                            match crate::validator_rpc::get_health(&*ssh_pool, &node, &ssh_key, rpc_port).await {
-                                Ok(is_healthy) => {
-                                    // Update UI state rpc health
-                                    if let Ok(mut st) = ui_state_local.try_write() {
-                                        if let Some(pair) = st.rpc_health_data.get_mut(vidx) {
-                                            let rpc_status = if nidx == 0 { &mut pair.node_0 } else { &mut pair.node_1 };
-                                            rpc_status.is_healthy = is_healthy;
-                                            rpc_status.last_check = Some(Instant::now());
-                                            rpc_status.error_message = None;
-                                            rpc_status.failure_start = None;
-                                        }
-                                    }
+                tokio::spawn(async move {
+                    // Use the operator-facing node label for log entries so
+                    // entries match the rest of the log stream (which keys
+                    // off the node label, not the internal index).
+                    let host_tag = node.label.clone();
 
-                                    let _ = log_sender.send(LogMessage {
-                                        host: host_tag.clone(),
-                                        message: format!("getHealth -> {}", if is_healthy { "Healthy" } else { "Unhealthy" }),
-                                        timestamp: Instant::now(),
-                                        level: if is_healthy { LogLevel::Info } else { LogLevel::Warning },
-                                    });
+                    // Skip the primary (active) validator. Its liveness is
+                    // already inferred from the vote-account-status check
+                    // against the cluster's RPC, so calling getHealth here
+                    // would just add load to the production primary.
+                    if node_status == crate::types::NodeStatus::Active {
+                        return;
+                    }
 
-                                    // If standby and unhealthy -> send low-priority alert
-                                    if !is_healthy && node_status == crate::types::NodeStatus::Standby {
-                                        if let Some(am) = alert_mgr.as_ref() {
-                                            // Throttle using delinquency tracker for now
-                                            let _ = ALERT_TRACKER.get_or_init(|| {
-                                                Mutex::new(ComprehensiveAlertTracker::new(validator_count, 2))
-                                            });
-                                            let tracker_mutex = ALERT_TRACKER.get().unwrap();
-                                            // Decide whether to alert under the std::sync::Mutex
-                                            // guard; drop the guard before any .await so the
-                                            // future stays Send and we don't risk holding a
-                                            // sync lock across a network call.
-                                            let (should_send, remaining_seconds) = {
-                                                let mut tracker = tracker_mutex.lock().unwrap();
-                                                if tracker.delinquency_tracker.should_send_alert(vidx) {
-                                                    (true, 0u64)
-                                                } else {
-                                                    (
-                                                        false,
-                                                        tracker.delinquency_tracker.seconds_until_next_alert(vidx).unwrap_or(0),
-                                                    )
-                                                }
-                                            };
-                                            if should_send {
-                                                let identity = validator_identity_for_task.clone();
-                                                let res = am.send_backup_delinquency_alert(&identity, &node.label, 0, 0).await;
-                                                if let Err(e) = res {
-                                                    let _ = log_sender.send(LogMessage {
-                                                        host: host_tag.clone(),
-                                                        message: format!("Failed to send LOW-PRIORITY backup health alert: {}", e),
-                                                        timestamp: Instant::now(),
-                                                        level: LogLevel::Error,
-                                                    });
-                                                } else {
-                                                    let _ = log_sender.send(LogMessage {
-                                                        host: host_tag.clone(),
-                                                        message: "LOW-PRIORITY backup health alert sent".to_string(),
-                                                        timestamp: Instant::now(),
-                                                        level: LogLevel::Warning,
-                                                    });
-                                                }
-                                            } else {
-                                                let _ = log_sender.send(LogMessage {
-                                                    host: host_tag.clone(),
-                                                    message: format!("Backup health alert suppressed by cooldown: {}s remaining", remaining_seconds),
-                                                    timestamp: Instant::now(),
-                                                    level: LogLevel::Info,
-                                                });
-                                            }
-                                        }
+                    if let Some(ssh_key) = ssh_key_opt {
+                        let rpc_port = crate::validator_rpc::get_rpc_port(validator_type, None);
+                        match crate::validator_rpc::get_health(&*ssh_pool, &node, &ssh_key, rpc_port).await {
+                            Ok(is_healthy) => {
+                                // Update UI state rpc health
+                                if let Ok(mut st) = ui_state_local.try_write() {
+                                    if let Some(pair) = st.rpc_health_data.get_mut(vidx) {
+                                        let rpc_status = if nidx == 0 { &mut pair.node_0 } else { &mut pair.node_1 };
+                                        rpc_status.is_healthy = is_healthy;
+                                        rpc_status.last_check = Some(Instant::now());
+                                        rpc_status.error_message = None;
+                                        rpc_status.failure_start = None;
                                     }
                                 }
-                                Err(e) => {
-                                    // Update rpc health failure state and possibly send low-priority alert after 30s
-                                    if let Ok(mut st) = ui_state_local.try_write() {
-                                        if let Some(pair) = st.rpc_health_data.get_mut(vidx) {
-                                            let rpc_status = if nidx == 0 { &mut pair.node_0 } else { &mut pair.node_1 };
-                                            rpc_status.is_healthy = false;
-                                            rpc_status.last_check = Some(Instant::now());
-                                            rpc_status.error_message = Some(e.to_string());
-                                            if rpc_status.failure_start.is_none() {
-                                                rpc_status.failure_start = Some(Instant::now());
-                                            }
 
-                                            // Check duration
-                                            if let Some(start) = rpc_status.failure_start {
-                                                let elapsed = start.elapsed().as_secs();
-                                                let threshold = 30u64;
+                                let _ = log_sender.send(LogMessage {
+                                    host: host_tag.clone(),
+                                    message: format!("getHealth -> {}", if is_healthy { "Healthy" } else { "Unhealthy" }),
+                                    timestamp: Instant::now(),
+                                    level: if is_healthy { LogLevel::Info } else { LogLevel::Warning },
+                                });
+
+                                // If standby and unhealthy -> send low-priority alert
+                                if !is_healthy && node_status == crate::types::NodeStatus::Standby {
+                                    if let Some(am) = alert_mgr.as_ref() {
+                                        // Throttle using delinquency tracker for now
+                                        let _ = ALERT_TRACKER.get_or_init(|| {
+                                            Mutex::new(ComprehensiveAlertTracker::new(validator_count, 2))
+                                        });
+                                        let tracker_mutex = ALERT_TRACKER.get().unwrap();
+                                        // Decide whether to alert under the std::sync::Mutex
+                                        // guard; drop the guard before any .await so the
+                                        // future stays Send and we don't risk holding a
+                                        // sync lock across a network call.
+                                        let (should_send, remaining_seconds) = {
+                                            let mut tracker = tracker_mutex.lock().unwrap();
+                                            if tracker.delinquency_tracker.should_send_alert(vidx) {
+                                                (true, 0u64)
+                                            } else {
+                                                (
+                                                    false,
+                                                    tracker.delinquency_tracker.seconds_until_next_alert(vidx).unwrap_or(0),
+                                                )
+                                            }
+                                        };
+                                        if should_send {
+                                            let identity = validator_identity_for_task.clone();
+                                            let res = am.send_backup_delinquency_alert(&identity, &node.label, 0, 0).await;
+                                            if let Err(e) = res {
                                                 let _ = log_sender.send(LogMessage {
                                                     host: host_tag.clone(),
-                                                    message: format!("getHealth -> Unreachable: {} ({}s)", e, elapsed),
+                                                    message: format!("Failed to send LOW-PRIORITY backup health alert: {}", e),
                                                     timestamp: Instant::now(),
                                                     level: LogLevel::Error,
                                                 });
+                                            } else {
+                                                let _ = log_sender.send(LogMessage {
+                                                    host: host_tag.clone(),
+                                                    message: "LOW-PRIORITY backup health alert sent".to_string(),
+                                                    timestamp: Instant::now(),
+                                                    level: LogLevel::Warning,
+                                                });
+                                            }
+                                        } else {
+                                            let _ = log_sender.send(LogMessage {
+                                                host: host_tag.clone(),
+                                                message: format!("Backup health alert suppressed by cooldown: {}s remaining", remaining_seconds),
+                                                timestamp: Instant::now(),
+                                                level: LogLevel::Info,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                // Update rpc health failure state and possibly send low-priority alert after 30s
+                                if let Ok(mut st) = ui_state_local.try_write() {
+                                    if let Some(pair) = st.rpc_health_data.get_mut(vidx) {
+                                        let rpc_status = if nidx == 0 { &mut pair.node_0 } else { &mut pair.node_1 };
+                                        rpc_status.is_healthy = false;
+                                        rpc_status.last_check = Some(Instant::now());
+                                        rpc_status.error_message = Some(e.to_string());
+                                        if rpc_status.failure_start.is_none() {
+                                            rpc_status.failure_start = Some(Instant::now());
+                                        }
 
-                                                if elapsed >= threshold {
-                                                    if let Some(am) = alert_mgr.as_ref() {
-                                                        // Throttle RPC failure alerts under
-                                                        // std::sync::Mutex; drop guard before .await.
-                                                        let _ = ALERT_TRACKER.get_or_init(|| {
-                                                            Mutex::new(ComprehensiveAlertTracker::new(validator_count, 2))
-                                                        });
-                                                        let tracker_mutex = ALERT_TRACKER.get().unwrap();
-                                                        let (should_send_rpc, remaining_rpc) = {
-                                                            let mut tracker = tracker_mutex.lock().unwrap();
-                                                            if tracker.rpc_failure_tracker.should_send_alert(vidx) {
-                                                                (true, 0u64)
-                                                            } else {
-                                                                (
-                                                                    false,
-                                                                    tracker.rpc_failure_tracker.seconds_until_next_alert(vidx).unwrap_or(0),
-                                                                )
-                                                            }
-                                                        };
-                                                        if should_send_rpc {
-                                                            let identity = validator_identity_for_task.clone();
-                                                            let res = am.send_rpc_failure_alert_low_priority(&identity, &node.label, 1, elapsed, &e.to_string()).await;
-                                                            if let Err(e) = res {
-                                                                let _ = log_sender.send(LogMessage {
-                                                                    host: host_tag.clone(),
-                                                                    message: format!("Failed to send LOW-PRIORITY RPC failure alert: {}", e),
-                                                                    timestamp: Instant::now(),
-                                                                    level: LogLevel::Error,
-                                                                });
-                                                            } else {
-                                                                let _ = log_sender.send(LogMessage {
-                                                                    host: host_tag.clone(),
-                                                                    message: "LOW-PRIORITY RPC failure alert sent".to_string(),
-                                                                    timestamp: Instant::now(),
-                                                                    level: LogLevel::Warning,
-                                                                });
-                                                            }
+                                        // Check duration
+                                        if let Some(start) = rpc_status.failure_start {
+                                            let elapsed = start.elapsed().as_secs();
+                                            let threshold = 30u64;
+                                            let _ = log_sender.send(LogMessage {
+                                                host: host_tag.clone(),
+                                                message: format!("getHealth -> Unreachable: {} ({}s)", e, elapsed),
+                                                timestamp: Instant::now(),
+                                                level: LogLevel::Error,
+                                            });
+
+                                            if elapsed >= threshold {
+                                                if let Some(am) = alert_mgr.as_ref() {
+                                                    // Throttle RPC failure alerts under
+                                                    // std::sync::Mutex; drop guard before .await.
+                                                    let _ = ALERT_TRACKER.get_or_init(|| {
+                                                        Mutex::new(ComprehensiveAlertTracker::new(validator_count, 2))
+                                                    });
+                                                    let tracker_mutex = ALERT_TRACKER.get().unwrap();
+                                                    let (should_send_rpc, remaining_rpc) = {
+                                                        let mut tracker = tracker_mutex.lock().unwrap();
+                                                        if tracker.rpc_failure_tracker.should_send_alert(vidx) {
+                                                            (true, 0u64)
+                                                        } else {
+                                                            (
+                                                                false,
+                                                                tracker.rpc_failure_tracker.seconds_until_next_alert(vidx).unwrap_or(0),
+                                                            )
+                                                        }
+                                                    };
+                                                    if should_send_rpc {
+                                                        let identity = validator_identity_for_task.clone();
+                                                        let res = am.send_rpc_failure_alert_low_priority(&identity, &node.label, 1, elapsed, &e.to_string()).await;
+                                                        if let Err(e) = res {
+                                                            let _ = log_sender.send(LogMessage {
+                                                                host: host_tag.clone(),
+                                                                message: format!("Failed to send LOW-PRIORITY RPC failure alert: {}", e),
+                                                                timestamp: Instant::now(),
+                                                                level: LogLevel::Error,
+                                                            });
                                                         } else {
                                                             let _ = log_sender.send(LogMessage {
                                                                 host: host_tag.clone(),
-                                                                message: format!("RPC failure alert suppressed by cooldown: {}s remaining", remaining_rpc),
+                                                                message: "LOW-PRIORITY RPC failure alert sent".to_string(),
                                                                 timestamp: Instant::now(),
-                                                                level: LogLevel::Info,
+                                                                level: LogLevel::Warning,
                                                             });
                                                         }
+                                                    } else {
+                                                        let _ = log_sender.send(LogMessage {
+                                                            host: host_tag.clone(),
+                                                            message: format!("RPC failure alert suppressed by cooldown: {}s remaining", remaining_rpc),
+                                                            timestamp: Instant::now(),
+                                                            level: LogLevel::Info,
+                                                        });
                                                     }
                                                 }
                                             }
@@ -299,19 +318,19 @@ async fn refresh_vote_data_for_alerts(
                                     }
                                 }
                             }
-                        } else {
-                            let _ = log_sender.send(LogMessage {
-                                host: format!("validator-{}:node-{}", vidx, nidx),
-                                message: "No SSH key configured for host; skipping getHealth".to_string(),
-                                timestamp: Instant::now(),
-                                level: LogLevel::Error,
-                            });
                         }
-                    });
-                }
+                    } else {
+                        let _ = log_sender.send(LogMessage {
+                            host: host_tag.clone(),
+                            message: "No SSH key configured for host; skipping getHealth".to_string(),
+                            timestamp: Instant::now(),
+                            level: LogLevel::Error,
+                        });
+                    }
+                });
             }
-        });
-    }
+        }
+    });
 
     // Update UI state and check for delinquency alerts
     if let Ok(mut state) = ui_state.try_write() {
@@ -404,7 +423,7 @@ async fn refresh_vote_data_for_alerts(
 
                     // Log delinquency check for debugging
                     let _ = log_sender.send(LogMessage {
-                        host: format!("validator-{}", idx),
+                        host: validator_log_host(&app_state, idx),
                             message: format!("[{}] Delinquency check: {} seconds without vote (threshold: {}s)", 
                                 // Use active node label for identification
                                 if let Some(node_with_status) = app_state.validator_statuses[idx]
@@ -432,7 +451,7 @@ async fn refresh_vote_data_for_alerts(
                                 .unwrap_or(0);
 
                             let _ = log_sender.send(LogMessage {
-                                host: format!("validator-{}", idx),
+                                host: validator_log_host(&app_state, idx),
                                 message: format!(
                                     "Delinquency alert suppressed by cooldown: {}s remaining (threshold: {}s)",
                                     remaining, threshold
@@ -478,7 +497,7 @@ async fn refresh_vote_data_for_alerts(
                 let identity = app_state.validator_statuses[idx].validator_pair.identity_pubkey.clone();
                 // Pre-send log: record alert intent and priority
                 let _ = log_sender.send(LogMessage {
-                    host: format!("validator-{}", idx),
+                    host: validator_log_host(&app_state, idx),
                     message: format!(
                         "Preparing to send {} delinquency alert for {}: {}s without vote",
                         if is_backup { "LOW-PRIORITY" } else { "HIGH-PRIORITY" },
@@ -514,14 +533,14 @@ async fn refresh_vote_data_for_alerts(
 
                     if let Err(e) = res {
                         let _ = log_sender.send(LogMessage {
-                            host: format!("validator-{}", idx),
+                            host: active_node.label.clone(),
                             message: format!("Failed to send {} delinquency alert: {}", if is_backup { "LOW-PRIORITY" } else { "HIGH-PRIORITY" }, e),
                             timestamp: Instant::now(),
                             level: LogLevel::Error,
                         });
                     } else {
                         let _ = log_sender.send(LogMessage {
-                            host: format!("validator-{}", idx),
+                            host: active_node.label.clone(),
                             message: format!("{} delinquency alert sent: {} seconds without vote", if is_backup { "LOW-PRIORITY" } else { "HIGH-PRIORITY" }, seconds_since_vote),
                             timestamp: Instant::now(),
                             level: LogLevel::Warning,
@@ -984,6 +1003,121 @@ pub(crate) fn should_send_get_health_low_priority_alert(
     tracker.should_send_alert(idx)
 }
 
+/// How often we will repeat the "slow" per-node checks against the primary.
+///
+/// Things like swap-readiness, version, and status/identity don't change
+/// between operator actions, so polling them every 10 seconds against the
+/// production primary just burns SSH/RPC quota without telling us anything
+/// new. Backup nodes still run these checks at the normal 10 second cadence.
+const PRIMARY_SLOW_CHECK_INTERVAL: Duration = Duration::from_secs(600);
+
+/// Per-(validator, node, check_kind) timestamp of the last time we let a slow
+/// primary check run. Used by `should_throttle_primary_check` below.
+static PRIMARY_CHECK_TIMESTAMPS: OnceLock<
+    Mutex<std::collections::HashMap<(usize, usize, &'static str), Instant>>,
+> = OnceLock::new();
+
+/// Returns true if a periodic check should be skipped on the primary because
+/// we last ran it less than `interval` ago.
+///
+/// Backup nodes (status != Active) are never throttled; the caller proceeds
+/// at the normal cadence. The first call for a given (validator, node,
+/// check_kind) tuple always runs (so the very first tick after startup
+/// produces fresh data), and the timestamp is recorded only when the call is
+/// allowed to proceed.
+fn should_throttle_primary_check(
+    node_status: &crate::types::NodeStatus,
+    validator_idx: usize,
+    node_idx: usize,
+    check_kind: &'static str,
+    interval: Duration,
+) -> bool {
+    if *node_status != crate::types::NodeStatus::Active {
+        return false;
+    }
+    let map = PRIMARY_CHECK_TIMESTAMPS
+        .get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+    let mut guard = map.lock().unwrap();
+    let key = (validator_idx, node_idx, check_kind);
+    match guard.get(&key) {
+        Some(last) if last.elapsed() < interval => true,
+        _ => {
+            guard.insert(key, Instant::now());
+            false
+        }
+    }
+}
+
+/// Clear one or more per-field "refreshing" flags on a node's
+/// `FieldRefreshStates` so the UI stops showing the spinner and falls back
+/// to displaying the cached value.
+///
+/// The 10-second master tick in `spawn_background_tasks` proactively sets
+/// every field's `*_refreshing` flag to true before dispatching the refresh
+/// functions. The refresh functions normally clear their own flag at the
+/// end of a successful run. When a refresh function early-returns instead
+/// (skipped or throttled for the primary) the flag would otherwise stay
+/// true forever, leaving the UI showing "Refreshing..." for the cached
+/// values. Callers in early-return paths use this helper so the UI shows
+/// the cached value during the skip window.
+/// Look up the operator-facing label to use as a log entry's `host` field for
+/// a given validator pair.
+///
+/// We prefer the currently-Active node's label (so log entries match what the
+/// operator sees on the UI's primary line). If there is no Active node we fall
+/// back to the first node in the pair, and only if that also fails do we fall
+/// back to the legacy `"validator-N"` synthetic identifier. The fallback exists
+/// purely for the corner case where `validator_idx` is out of bounds; in
+/// normal operation every log entry should be labelled with a real node name.
+/// Clear any cached throttle timestamps for every check_kind on a given
+/// (validator_idx, node_idx) so that the next call to
+/// `should_throttle_primary_check` for that node runs the check immediately
+/// instead of skipping it.
+///
+/// Used when a sibling node has just flipped to `Active` and the cached
+/// status of THIS node is no longer trustworthy as "the active primary" -
+/// we want the next 10 s tick to re-check this node at backup cadence
+/// regardless of any throttle window it would otherwise be subject to.
+fn clear_throttle_timestamps_for_node(validator_idx: usize, node_idx: usize) {
+    let map = PRIMARY_CHECK_TIMESTAMPS
+        .get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+    let mut guard = map.lock().unwrap();
+    guard.retain(|(vidx, nidx, _), _| !(*vidx == validator_idx && *nidx == node_idx));
+}
+
+fn validator_log_host(app_state: &AppState, validator_idx: usize) -> String {
+    app_state
+        .validator_statuses
+        .get(validator_idx)
+        .and_then(|vs| {
+            vs.nodes_with_status
+                .iter()
+                .find(|n| n.status == crate::types::NodeStatus::Active)
+                .or_else(|| vs.nodes_with_status.first())
+        })
+        .map(|n| n.node.label.clone())
+        .unwrap_or_else(|| format!("validator-{}", validator_idx))
+}
+
+async fn clear_field_refresh_flags<F>(
+    ui_state: &Arc<RwLock<UiState>>,
+    validator_idx: usize,
+    node_idx: usize,
+    apply: F,
+) where
+    F: FnOnce(&mut FieldRefreshStates),
+{
+    let mut st = ui_state.write().await;
+    if let Some(refresh_state) = st.field_refresh_states.get_mut(validator_idx) {
+        let target = if node_idx == 0 {
+            &mut refresh_state.node_0
+        } else {
+            &mut refresh_state.node_1
+        };
+        apply(target);
+    }
+}
+
 impl EnhancedStatusApp {
     pub async fn new(app_state: Arc<AppState>) -> Result<Self> {
         let ssh_pool = Arc::clone(&app_state.ssh_pool);
@@ -1192,6 +1326,13 @@ impl EnhancedStatusApp {
 
         tokio::spawn(async move {
             let mut interval = interval(Duration::from_secs(10));
+            // Don't try to "catch up" on missed ticks. If the previous refresh
+            // took longer than 10 s (e.g. a slow backup SSH check), we want
+            // the next tick to fire on the next normally-scheduled boundary,
+            // not burst-fire several iterations back-to-back. Without this,
+            // a single slow cycle produces a flurry of overlapping refreshes
+            // and duplicate log entries.
+            interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
             // Initialize alert manager if alerts are configured
             let alert_manager = app_state_for_refresh
@@ -1304,7 +1445,7 @@ impl EnhancedStatusApp {
                             }
 
                             let _ = log_sender.send(LogMessage {
-                                host: format!("validator-{}", idx),
+                                host: validator_log_host(&app_state, idx),
                                 message: format!(
                                     "Vote data fetched: last slot {}",
                                     data.recent_votes.last().map(|v| v.slot).unwrap_or(0)
@@ -1348,7 +1489,7 @@ impl EnhancedStatusApp {
                             }
 
                             let _ = log_sender.send(LogMessage {
-                                host: format!("validator-{}", idx),
+                                host: validator_log_host(&app_state, idx),
                                 message: format!("Failed to fetch vote data: {}", e),
                                 timestamp: Instant::now(),
                                 level: LogLevel::Error,
@@ -1405,7 +1546,7 @@ impl EnhancedStatusApp {
 
                                     // Log delinquency check for debugging
                                     let _ = log_sender.send(LogMessage {
-                                        host: format!("validator-{}", idx),
+                                        host: validator_log_host(&app_state, idx),
                                         message: format!("Delinquency check: {} seconds without vote (threshold: {}s)", seconds_since_vote, threshold),
                                         timestamp: Instant::now(),
                                         level: LogLevel::Info,
@@ -1469,7 +1610,7 @@ impl EnhancedStatusApp {
 
                                         if let Err(e) = alert_result {
                                             let _ = log_sender.send(LogMessage {
-                                                host: format!("validator-{}", idx),
+                                                host: validator_log_host(&app_state, idx),
                                                 message: format!(
                                                     "Failed to send {} delinquency alert: {}",
                                                     alert_priority, e
@@ -1479,7 +1620,7 @@ impl EnhancedStatusApp {
                                             });
                                         } else {
                                             let _ = log_sender.send(LogMessage {
-                                                host: format!("validator-{}", idx),
+                                                host: validator_log_host(&app_state, idx),
                                                 message: format!("{} delinquency alert sent: {} seconds without vote", alert_priority, seconds_since_vote),
                                                 timestamp: Instant::now(),
                                                 level: LogLevel::Warning,
@@ -1496,7 +1637,7 @@ impl EnhancedStatusApp {
                                                 // We check vote_rpc_failures == 0 to ensure we have reliable on-chain data
                                                 if vote_rpc_failures == 0 {
                                                     let _ = log_sender.send(LogMessage {
-                                                        host: format!("validator-{}", idx),
+                                                        host: validator_log_host(&app_state, idx),
                                                         message: format!(
                                                             "Auto-failover conditions met: vote_rpc_failures={}, delinquent for {} seconds",
                                                             vote_rpc_failures,
@@ -1507,7 +1648,7 @@ impl EnhancedStatusApp {
                                                     });
 
                                                     let _ = log_sender.send(LogMessage {
-                                                        host: format!("validator-{}", idx),
+                                                        host: validator_log_host(&app_state, idx),
                                                         message: "🚨 AUTO-FAILOVER: Initiating emergency takeover".to_string(),
                                                         timestamp: Instant::now(),
                                                         level: LogLevel::Error,
@@ -1531,7 +1672,7 @@ impl EnhancedStatusApp {
                                                     });
                                                 } else {
                                                     let _ = log_sender.send(LogMessage {
-                                                        host: format!("validator-{}", idx),
+                                                        host: validator_log_host(&app_state, idx),
                                                         message: format!(
                                                             "Auto-failover suppressed: vote_rpc_failures={} (need 0 for reliable on-chain data)",
                                                             vote_rpc_failures
@@ -1993,7 +2134,7 @@ impl EnhancedStatusApp {
                             if seconds_since_vote >= threshold {
                                 if state.validator_health[idx].ssh_status.consecutive_failures > 0 {
                                     let _ = log_sender.send(LogMessage {
-                                        host: format!("validator-{}", idx),
+                                        host: validator_log_host(&app_state, idx),
                                         message: format!("Delinquency alert SUPPRESSED: SSH is failing (delinquent for {}s, SSH failures: {})", seconds_since_vote, state.validator_health[idx].ssh_status.consecutive_failures),
                                         timestamp: Instant::now(),
                                         level: LogLevel::Warning,
@@ -2001,7 +2142,7 @@ impl EnhancedStatusApp {
                                 }
                                 if state.validator_health[idx].rpc_status.consecutive_failures > 0 {
                                     let _ = log_sender.send(LogMessage {
-                                        host: format!("validator-{}", idx),
+                                        host: validator_log_host(&app_state, idx),
                                         message: format!("Delinquency alert SUPPRESSED: RPC is failing (delinquent for {}s, RPC failures: {})", seconds_since_vote, state.validator_health[idx].rpc_status.consecutive_failures),
                                         timestamp: Instant::now(),
                                         level: LogLevel::Warning,
@@ -2281,6 +2422,23 @@ async fn stream_catchup_for_node(
     node_idx: usize,
     log_sender: tokio::sync::mpsc::UnboundedSender<LogMessage>,
 ) {
+    // Skip continuous catchup streaming on the primary. The streaming task
+    // keeps a `solana catchup` (or `fdctl status`) process running on the
+    // remote node, which itself hammers the primary's own RPC continuously.
+    // A voting primary is by definition caught up, and vote-account status
+    // against the cluster already tells us that — so this stream is pure
+    // load with no operator value when the node is Active.
+    if node.status == crate::types::NodeStatus::Active {
+        let _ = log_sender.send(LogMessage {
+            host: node.node.label.clone(),
+            message: "[primary] catchup stream skipped: tracked via cluster vote-account status"
+                .to_string(),
+            timestamp: Instant::now(),
+            level: LogLevel::Info,
+        });
+        return;
+    }
+
     loop {
         // Determine the catchup command based on node type
         let catchup_command = if node.validator_type == crate::types::ValidatorType::Firedancer {
@@ -3850,6 +4008,15 @@ async fn execute_emergency_failover(
         }
     };
 
+    // Pre-warm the SSH session to the primary. The 10-second periodic SSH
+    // ping against the primary has been disabled to reduce load on the
+    // production node, so the cached SSH session may have gone idle and the
+    // OpenSSH controlmaster may have dropped it. Establishing the session
+    // here keeps the connection-setup cost off the critical failover path.
+    if let Some(ssh_key) = detected_ssh_keys.get(&active_node.node.host) {
+        let _ = ssh_pool.get_session(&active_node.node, ssh_key).await;
+    }
+
     // Set the emergency takeover flag to suspend UI rendering
     *emergency_takeover_flag.write().await = true;
 
@@ -4120,6 +4287,16 @@ async fn refresh_validator_fields(
     };
 
     // Refresh each node
+    //
+    // Each per-node check is spawned as its own task so they run concurrently,
+    // but we collect their JoinHandles and await them all before returning.
+    // That contract is load-bearing: the caller (`refresh_all_fields`) clears
+    // `is_refreshing` only after we return, and the master 10 s tick gates on
+    // that flag to decide whether to start another cycle. If we returned
+    // before the spawned tasks finished, the next tick would race in and
+    // start a second concurrent refresh, producing the duplicate-log bursts
+    // we used to see in the runtime log.
+    let mut node_task_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     for (node_idx, node_with_status) in nodes.iter().enumerate() {
         let node = node_with_status.clone();
         let validator_pair_clone = validator_pair.clone();
@@ -4139,7 +4316,8 @@ async fn refresh_validator_fields(
         let ssh_key_clone = ssh_key.clone();
 
         // Refresh status and identity
-        tokio::spawn(async move {
+        let log_sender_clone = log_sender.clone();
+        node_task_handles.push(tokio::spawn(async move {
             // Small delay to ensure UI shows loading state
             tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -4151,9 +4329,10 @@ async fn refresh_validator_fields(
                 ssh_pool_clone,
                 ssh_key_clone,
                 ui_state_clone,
+                log_sender_clone,
             )
             .await;
-        });
+        }));
 
         // Version refresh flag is already set in the key handler
 
@@ -4163,7 +4342,8 @@ async fn refresh_validator_fields(
         let ssh_pool_clone = ssh_pool.clone();
         let ssh_key_clone = ssh_key.clone();
 
-        tokio::spawn(async move {
+        let log_sender_clone = log_sender.clone();
+        node_task_handles.push(tokio::spawn(async move {
             // Small delay to ensure UI shows loading state
             tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -4174,9 +4354,10 @@ async fn refresh_validator_fields(
                 ssh_pool_clone,
                 ssh_key_clone,
                 ui_state_clone,
+                log_sender_clone,
             )
             .await;
-        });
+        }));
 
         // Refresh SSH connectivity
         let ui_state_clone = ui_state.clone();
@@ -4184,7 +4365,7 @@ async fn refresh_validator_fields(
         let ssh_pool_clone = ssh_pool.clone();
         let ssh_key_clone = ssh_key.clone();
 
-        tokio::spawn(async move {
+        node_task_handles.push(tokio::spawn(async move {
             refresh_ssh_connectivity(
                 validator_idx,
                 node_idx,
@@ -4194,7 +4375,7 @@ async fn refresh_validator_fields(
                 ui_state_clone,
             )
             .await;
-        });
+        }));
 
         // Refresh RPC health
         let ui_state_clone = ui_state.clone();
@@ -4203,7 +4384,7 @@ async fn refresh_validator_fields(
         let ssh_key_clone = ssh_key.clone();
 
         let log_sender_clone = log_sender.clone();
-        tokio::spawn(async move {
+        node_task_handles.push(tokio::spawn(async move {
             refresh_rpc_health(
                 validator_idx,
                 node_idx,
@@ -4214,18 +4395,25 @@ async fn refresh_validator_fields(
                 log_sender_clone,
             )
             .await;
-        });
+        }));
 
         // Refresh swap readiness
         let app_state_clone = app_state.clone();
         let ui_state_clone = ui_state.clone();
+        let log_sender_clone = log_sender.clone();
 
-        tokio::spawn(async move {
+        node_task_handles.push(tokio::spawn(async move {
             // Small delay to ensure UI shows loading state
             tokio::time::sleep(Duration::from_millis(50)).await;
 
-            refresh_swap_readiness(app_state_clone, ui_state_clone, validator_idx, node_idx).await;
-        });
+            refresh_swap_readiness(app_state_clone, ui_state_clone, validator_idx, node_idx, log_sender_clone).await;
+        }));
+    }
+
+    // Wait for every per-node refresh task to finish before returning so the
+    // caller's `is_refreshing` flag accurately reflects in-flight work.
+    for handle in node_task_handles {
+        let _ = handle.await;
     }
 }
 
@@ -4238,6 +4426,21 @@ async fn refresh_ssh_connectivity(
     ssh_key: String,
     ui_state: Arc<RwLock<UiState>>,
 ) {
+    // Skip the periodic SSH "true" ping against the primary. The auto-failover
+    // decision doesn't read this signal (it's driven entirely by vote-account
+    // status against the cluster RPC). After an external role swap, the new
+    // standby (former primary) gets re-classified within 10 s by the
+    // identity-check flip logic, and from that point on this function runs
+    // on it every tick. So we don't miss reachability detection on the
+    // demoted node, we just avoid pinging the actively-voting primary.
+    if node.status == crate::types::NodeStatus::Active {
+        clear_field_refresh_flags(&ui_state, validator_idx, node_idx, |f| {
+            f.ssh_connectivity_refreshing = false;
+        })
+        .await;
+        return;
+    }
+
     // Check SSH connectivity
     let is_healthy = match ssh_pool.execute_command(&node.node, &ssh_key, "true").await {
         Ok(_) => true,
@@ -4287,6 +4490,76 @@ async fn refresh_rpc_health(
     log_sender: tokio::sync::mpsc::UnboundedSender<LogMessage>,
 ) {
     use crate::validator_rpc::{get_health, get_rpc_port};
+
+    // Skip the primary (active) validator. Vote-account status against the
+    // cluster already provides liveness information for the primary, so a
+    // periodic direct getHealth here would only add RPC load to the
+    // production validator without telling us anything new.
+    if node.status == crate::types::NodeStatus::Active {
+        let _ = log_sender.send(LogMessage {
+            host: node.node.label.clone(),
+            message: "[primary] RPC health: tracked via cluster vote-account status".to_string(),
+            timestamp: Instant::now(),
+            level: LogLevel::Info,
+        });
+
+        // Even though we are not running getHealth ourselves, we still need
+        // to populate `rpc_health_data` so the UI's Node Health column
+        // shows a meaningful value (otherwise it sits at the default
+        // is_healthy=false and the operator sees ❌ Unhealthy on the
+        // primary forever). Derive liveness from the cluster vote-account
+        // status we already fetch every tick in refresh_vote_data_for_alerts.
+        let cluster_is_voting = {
+            let st = ui_state.read().await;
+            st.vote_data
+                .get(validator_idx)
+                .and_then(|v| v.as_ref())
+                .map(|v| v.is_voting)
+        };
+
+        {
+            let mut st = ui_state.write().await;
+            if let Some(pair) = st.rpc_health_data.get_mut(validator_idx) {
+                let rpc_status = if node_idx == 0 {
+                    &mut pair.node_0
+                } else {
+                    &mut pair.node_1
+                };
+                match cluster_is_voting {
+                    Some(true) => {
+                        rpc_status.is_healthy = true;
+                        rpc_status.error_message = None;
+                        rpc_status.failure_start = None;
+                    }
+                    Some(false) => {
+                        rpc_status.is_healthy = false;
+                        rpc_status.error_message = Some(
+                            "Primary not voting per cluster vote-account status".to_string(),
+                        );
+                        if rpc_status.failure_start.is_none() {
+                            rpc_status.failure_start = Some(Instant::now());
+                        }
+                    }
+                    None => {
+                        // No vote data yet (very first ticks after startup).
+                        // Leave is_healthy unchanged but record that we
+                        // touched the row so the UI doesn't keep spinning.
+                    }
+                }
+                rpc_status.last_check = Some(Instant::now());
+            }
+
+            if let Some(refresh_state) = st.field_refresh_states.get_mut(validator_idx) {
+                let target = if node_idx == 0 {
+                    &mut refresh_state.node_0
+                } else {
+                    &mut refresh_state.node_1
+                };
+                target.rpc_health_refreshing = false;
+            }
+        }
+        return;
+    }
 
     // Get RPC port based on validator type
     // TODO: Extract command line from ps output to detect custom RPC ports
@@ -4360,7 +4633,48 @@ async fn refresh_node_status_and_identity(
     ssh_pool: Arc<crate::ssh::AsyncSshPool>,
     ssh_key: String,
     ui_state: Arc<RwLock<UiState>>,
+    log_sender: tokio::sync::mpsc::UnboundedSender<LogMessage>,
 ) {
+    // Asymmetric cadence:
+    // - When this node is cached as Active (the "primary" side of the pair)
+    //   we throttle to PRIMARY_SLOW_CHECK_INTERVAL (10 min). The primary
+    //   doesn't need frequent checks because:
+    //     * if it stops voting we detect via cluster delinquency in 30 s, and
+    //     * if the OTHER node (currently Standby, checked every 10 s) ever
+    //       sees its own loaded identity equal validator_pair.identity_pubkey,
+    //       that means a role swap happened and we re-classify accordingly.
+    // - When this node is cached as Standby (or Unknown) we run every 10 s.
+    //   That's the side from which role swaps are detected.
+    // The flip logic below ("sibling_indices_to_flip") ensures that when a
+    // standby flips to Active, the previously-throttled primary's throttle
+    // is cleared so the next tick re-checks it at backup cadence.
+    if should_throttle_primary_check(
+        &node.status,
+        validator_idx,
+        node_idx,
+        "node_status_and_identity",
+        PRIMARY_SLOW_CHECK_INTERVAL,
+    ) {
+        clear_field_refresh_flags(&ui_state, validator_idx, node_idx, |f| {
+            f.status_refreshing = false;
+            f.identity_refreshing = false;
+        })
+        .await;
+        return;
+    }
+
+    // Heartbeat: emit a single log line when the primary's 10-min check
+    // actually runs, so the cadence is visible in the log file. Backup
+    // nodes run this check every 10 s and don't need the heartbeat.
+    if node.status == crate::types::NodeStatus::Active {
+        let _ = log_sender.send(LogMessage {
+            host: node.node.label.clone(),
+            message: "[primary] node status/identity refresh (10 min cadence)".to_string(),
+            timestamp: Instant::now(),
+            level: LogLevel::Info,
+        });
+    }
+
     // Use the same logic as startup.rs to extract identity and status
     // First, get the solana CLI path
     let solana_cli = if let Some(ref cli) = node.solana_cli_executable {
@@ -4596,20 +4910,69 @@ async fn refresh_node_status_and_identity(
     };
 
     // Update UI state with the new status and identity
+    let mut sibling_indices_to_flip: Vec<usize> = Vec::new();
+    let mut flipped_to_active_log: Option<(String, String, String)> = None;
     {
         let mut ui_state_write = ui_state.write().await;
 
         // Update the validator status in UI state
         if let Some(validator_status) = ui_state_write.validator_statuses.get_mut(validator_idx) {
+            let old_status = validator_status
+                .nodes_with_status
+                .get(node_idx)
+                .map(|n| n.status.clone())
+                .unwrap_or(crate::types::NodeStatus::Unknown);
+
             if let Some(node_with_status) = validator_status.nodes_with_status.get_mut(node_idx) {
                 // Update status
-                node_with_status.status = _status;
+                node_with_status.status = _status.clone();
 
                 // Update identity
                 node_with_status.current_identity = current_identity;
 
                 // Update sync status
                 node_with_status.sync_status = sync_status;
+            }
+
+            // If this node just transitioned to Active, optimistically mark
+            // every sibling node in the pair as Standby and remember their
+            // indices so we can clear their throttle entries (outside the
+            // ui_state lock) below. A validator pair has at most one Active
+            // at a time; preserving any sibling's stale "Active" classification
+            // would leave it throttled to the 10-min primary cadence and stop
+            // SSH/getHealth checks from running on it - which is exactly the
+            // bug that motivated this design.
+            let flipped_to_active = _status == crate::types::NodeStatus::Active
+                && old_status != crate::types::NodeStatus::Active;
+
+            if flipped_to_active {
+                let this_label = validator_status
+                    .nodes_with_status
+                    .get(node_idx)
+                    .map(|n| n.node.label.clone())
+                    .unwrap_or_default();
+                let mut sibling_labels: Vec<String> = Vec::new();
+                for (sibling_idx, sibling) in validator_status
+                    .nodes_with_status
+                    .iter_mut()
+                    .enumerate()
+                {
+                    if sibling_idx == node_idx {
+                        continue;
+                    }
+                    if sibling.status == crate::types::NodeStatus::Active {
+                        sibling.status = crate::types::NodeStatus::Standby;
+                        sibling_labels.push(sibling.node.label.clone());
+                    }
+                    sibling_indices_to_flip.push(sibling_idx);
+                }
+                if !sibling_labels.is_empty() {
+                    flipped_to_active_log = Some((
+                        this_label,
+                        format!("{:?}", old_status),
+                        sibling_labels.join(", "),
+                    ));
+                }
             }
         }
 
@@ -4624,6 +4987,27 @@ async fn refresh_node_status_and_identity(
             field_state.identity_refreshing = false;
         }
     }
+
+    // Outside the ui_state lock: clear the throttle entries on the siblings
+    // so the next tick re-checks them at backup cadence rather than waiting
+    // out the 10-min primary throttle window.
+    for sibling_idx in &sibling_indices_to_flip {
+        clear_throttle_timestamps_for_node(validator_idx, *sibling_idx);
+    }
+
+    // Emit a high-visibility log when we detect an external role swap so the
+    // operator can correlate this with whatever they just did on the nodes.
+    if let Some((new_active_label, prev_status, demoted_labels)) = flipped_to_active_log {
+        let _ = log_sender.send(LogMessage {
+            host: new_active_label.clone(),
+            message: format!(
+                "Role swap detected: {} is now Active (was {}); marking sibling(s) [{}] as Standby and re-checking next tick",
+                new_active_label, prev_status, demoted_labels
+            ),
+            timestamp: Instant::now(),
+            level: LogLevel::Warning,
+        });
+    }
 }
 
 /// Refresh node version
@@ -4634,7 +5018,37 @@ async fn refresh_node_version(
     ssh_pool: Arc<crate::ssh::AsyncSshPool>,
     ssh_key: String,
     ui_state: Arc<RwLock<UiState>>,
+    log_sender: tokio::sync::mpsc::UnboundedSender<LogMessage>,
 ) {
+    // The validator binary version changes only when the operator deploys a
+    // new build, so polling it every 10 seconds is wasteful on the primary.
+    // Throttle to PRIMARY_SLOW_CHECK_INTERVAL on the primary; backup nodes
+    // continue to refresh at the normal cadence.
+    if should_throttle_primary_check(
+        &node.status,
+        validator_idx,
+        node_idx,
+        "node_version",
+        PRIMARY_SLOW_CHECK_INTERVAL,
+    ) {
+        clear_field_refresh_flags(&ui_state, validator_idx, node_idx, |f| {
+            f.version_refreshing = false;
+        })
+        .await;
+        return;
+    }
+
+    // Heartbeat for the primary's 10-minute version check. See the matching
+    // comment in refresh_node_status_and_identity.
+    if node.status == crate::types::NodeStatus::Active {
+        let _ = log_sender.send(LogMessage {
+            host: node.node.label.clone(),
+            message: "[primary] node version refresh (10 min cadence)".to_string(),
+            timestamp: Instant::now(),
+            level: LogLevel::Info,
+        });
+    }
+
     // Extract version based on validator type and using proper executable paths
     let (_validator_type, _version) = match node.validator_type {
         crate::types::ValidatorType::Firedancer => {
@@ -4736,7 +5150,55 @@ async fn refresh_swap_readiness(
     ui_state: Arc<RwLock<UiState>>,
     validator_idx: usize,
     node_idx: usize,
+    log_sender: tokio::sync::mpsc::UnboundedSender<LogMessage>,
 ) {
+    // Swap readiness on the primary only matters when the operator is about
+    // to swap, and execute_emergency_failover re-checks it live anyway, so a
+    // 10 second poll against the production primary is wasted SSH traffic.
+    // Throttle to PRIMARY_SLOW_CHECK_INTERVAL on the primary; backup nodes
+    // continue to refresh at the normal cadence because pre-swap readiness
+    // on the standby is genuinely time-sensitive.
+    let primary_status = {
+        let ui_read = ui_state.read().await;
+        ui_read
+            .validator_statuses
+            .get(validator_idx)
+            .and_then(|vs| vs.nodes_with_status.get(node_idx))
+            .map(|n| n.status.clone())
+    };
+    if let Some(status) = primary_status {
+        if should_throttle_primary_check(
+            &status,
+            validator_idx,
+            node_idx,
+            "swap_readiness",
+            PRIMARY_SLOW_CHECK_INTERVAL,
+        ) {
+            clear_field_refresh_flags(&ui_state, validator_idx, node_idx, |f| {
+                f.swap_readiness_refreshing = false;
+            })
+            .await;
+            return;
+        }
+
+        // Heartbeat for the primary's 10-minute swap-readiness check. See
+        // the matching comment in refresh_node_status_and_identity.
+        if status == crate::types::NodeStatus::Active {
+            let host_label = app_state
+                .validator_statuses
+                .get(validator_idx)
+                .and_then(|vs| vs.nodes_with_status.get(node_idx))
+                .map(|n| n.node.label.clone())
+                .unwrap_or_else(|| format!("validator-{}", validator_idx));
+            let _ = log_sender.send(LogMessage {
+                host: host_label,
+                message: "[primary] swap readiness refresh (10 min cadence)".to_string(),
+                timestamp: Instant::now(),
+                level: LogLevel::Info,
+            });
+        }
+    }
+
     // Set refreshing state
     {
         let mut ui_write = ui_state.write().await;
@@ -4860,4 +5322,436 @@ pub async fn show_enhanced_status_ui(app_state: &AppState) -> Result<()> {
     }
 
     Ok(())
+}
+
+
+#[cfg(test)]
+mod throttle_tests {
+    //! Unit tests for `should_throttle_primary_check`.
+    //!
+    //! The helper backs a process-local timestamp map (`PRIMARY_CHECK_TIMESTAMPS`),
+    //! so each test must use a unique `check_kind` string to avoid interfering
+    //! with siblings that run in the same test binary. Tests are otherwise
+    //! independent and ordering-agnostic.
+
+    use super::{clear_throttle_timestamps_for_node, should_throttle_primary_check};
+    use crate::types::NodeStatus;
+    use std::time::Duration;
+
+    /// Reasonably small interval for tests that need to assert the post-expiry
+    /// behaviour without making the test suite slow.
+    const TEST_INTERVAL: Duration = Duration::from_millis(50);
+
+    #[test]
+    fn returns_false_for_standby_node() {
+        // Backup (standby) nodes are never throttled, regardless of recency.
+        assert!(!should_throttle_primary_check(
+            &NodeStatus::Standby,
+            0,
+            1,
+            "test_returns_false_for_standby",
+            TEST_INTERVAL,
+        ));
+        assert!(!should_throttle_primary_check(
+            &NodeStatus::Standby,
+            0,
+            1,
+            "test_returns_false_for_standby",
+            TEST_INTERVAL,
+        ));
+    }
+
+    #[test]
+    fn returns_false_for_unknown_node() {
+        // During startup nodes may still be Unknown; we must not silently
+        // skip checks for them.
+        assert!(!should_throttle_primary_check(
+            &NodeStatus::Unknown,
+            0,
+            0,
+            "test_returns_false_for_unknown",
+            TEST_INTERVAL,
+        ));
+    }
+
+    #[test]
+    fn first_call_for_active_runs() {
+        // The very first call after process start for a given (validator, node,
+        // check_kind) tuple must proceed; otherwise the primary would never
+        // get its first slow-check refresh.
+        assert!(!should_throttle_primary_check(
+            &NodeStatus::Active,
+            0,
+            0,
+            "test_first_call_for_active_runs",
+            TEST_INTERVAL,
+        ));
+    }
+
+    #[test]
+    fn second_call_within_interval_throttles() {
+        let check_kind = "test_second_call_within_interval_throttles";
+        // First call records the timestamp and proceeds.
+        assert!(!should_throttle_primary_check(
+            &NodeStatus::Active,
+            0,
+            0,
+            check_kind,
+            TEST_INTERVAL,
+        ));
+        // Immediate second call must be throttled.
+        assert!(should_throttle_primary_check(
+            &NodeStatus::Active,
+            0,
+            0,
+            check_kind,
+            TEST_INTERVAL,
+        ));
+    }
+
+    #[test]
+    fn call_after_interval_runs_again() {
+        let check_kind = "test_call_after_interval_runs_again";
+        assert!(!should_throttle_primary_check(
+            &NodeStatus::Active,
+            0,
+            0,
+            check_kind,
+            TEST_INTERVAL,
+        ));
+        // Wait past the interval and confirm the next call proceeds and
+        // resets the timer.
+        std::thread::sleep(TEST_INTERVAL + Duration::from_millis(25));
+        assert!(!should_throttle_primary_check(
+            &NodeStatus::Active,
+            0,
+            0,
+            check_kind,
+            TEST_INTERVAL,
+        ));
+        // And the timer is reset, so an immediate follow-up throttles again.
+        assert!(should_throttle_primary_check(
+            &NodeStatus::Active,
+            0,
+            0,
+            check_kind,
+            TEST_INTERVAL,
+        ));
+    }
+
+    #[test]
+    fn independent_per_check_kind() {
+        // Throttling one check_kind on a node must not throttle a different
+        // check_kind on the same node. Each kind has its own timer.
+        let kind_a = "test_independent_per_check_kind_a";
+        let kind_b = "test_independent_per_check_kind_b";
+        assert!(!should_throttle_primary_check(
+            &NodeStatus::Active,
+            0,
+            0,
+            kind_a,
+            TEST_INTERVAL,
+        ));
+        // kind_b's first call must still run even though kind_a just ran.
+        assert!(!should_throttle_primary_check(
+            &NodeStatus::Active,
+            0,
+            0,
+            kind_b,
+            TEST_INTERVAL,
+        ));
+        // And kind_a should now be throttled.
+        assert!(should_throttle_primary_check(
+            &NodeStatus::Active,
+            0,
+            0,
+            kind_a,
+            TEST_INTERVAL,
+        ));
+    }
+
+    #[test]
+    fn independent_per_node() {
+        // Throttling on one node must not affect throttling on a different
+        // node within the same validator pair.
+        let check_kind = "test_independent_per_node";
+        assert!(!should_throttle_primary_check(
+            &NodeStatus::Active,
+            42,
+            0,
+            check_kind,
+            TEST_INTERVAL,
+        ));
+        // Different node index, same validator: must still run.
+        assert!(!should_throttle_primary_check(
+            &NodeStatus::Active,
+            42,
+            1,
+            check_kind,
+            TEST_INTERVAL,
+        ));
+        // Different validator index entirely: must still run.
+        assert!(!should_throttle_primary_check(
+            &NodeStatus::Active,
+            43,
+            0,
+            check_kind,
+            TEST_INTERVAL,
+        ));
+        // But the original (42, 0) is now throttled.
+        assert!(should_throttle_primary_check(
+            &NodeStatus::Active,
+            42,
+            0,
+            check_kind,
+            TEST_INTERVAL,
+        ));
+    }
+
+    #[test]
+    fn clear_throttle_timestamps_for_node_unthrottles_only_that_node() {
+        // Production behaviour: when a sibling node flips to Active, we call
+        // clear_throttle_timestamps_for_node(validator_idx, this_node_idx)
+        // so the next tick re-checks THIS node regardless of any throttle
+        // window we are currently inside. Other nodes' throttles must be
+        // untouched.
+        let kind_a = "test_clear_throttle_a";
+        let kind_b = "test_clear_throttle_b";
+
+        // Establish throttle entries for (validator=99, node=0) under two
+        // different check_kinds, and one for the sibling (validator=99,
+        // node=1) that must NOT be cleared.
+        assert!(!should_throttle_primary_check(
+            &NodeStatus::Active,
+            99,
+            0,
+            kind_a,
+            TEST_INTERVAL,
+        ));
+        assert!(!should_throttle_primary_check(
+            &NodeStatus::Active,
+            99,
+            0,
+            kind_b,
+            TEST_INTERVAL,
+        ));
+        assert!(!should_throttle_primary_check(
+            &NodeStatus::Active,
+            99,
+            1,
+            kind_a,
+            TEST_INTERVAL,
+        ));
+
+        // Confirm everything is now throttled (within interval).
+        assert!(should_throttle_primary_check(
+            &NodeStatus::Active,
+            99,
+            0,
+            kind_a,
+            TEST_INTERVAL,
+        ));
+        assert!(should_throttle_primary_check(
+            &NodeStatus::Active,
+            99,
+            0,
+            kind_b,
+            TEST_INTERVAL,
+        ));
+        assert!(should_throttle_primary_check(
+            &NodeStatus::Active,
+            99,
+            1,
+            kind_a,
+            TEST_INTERVAL,
+        ));
+
+        // Clear timestamps for (99, 0). All check_kinds for that node
+        // should now be unthrottled; the sibling (99, 1) must stay
+        // throttled because it was not the subject of the clear.
+        clear_throttle_timestamps_for_node(99, 0);
+
+        assert!(
+            !should_throttle_primary_check(
+                &NodeStatus::Active,
+                99,
+                0,
+                kind_a,
+                TEST_INTERVAL,
+            ),
+            "after clear_throttle_timestamps_for_node(99, 0), kind_a on (99, 0) must run"
+        );
+        assert!(
+            !should_throttle_primary_check(
+                &NodeStatus::Active,
+                99,
+                0,
+                kind_b,
+                TEST_INTERVAL,
+            ),
+            "after clear_throttle_timestamps_for_node(99, 0), kind_b on (99, 0) must run"
+        );
+        assert!(
+            should_throttle_primary_check(
+                &NodeStatus::Active,
+                99,
+                1,
+                kind_a,
+                TEST_INTERVAL,
+            ),
+            "clear_throttle_timestamps_for_node(99, 0) must not affect the sibling (99, 1)"
+        );
+    }
+}
+
+
+#[cfg(test)]
+mod refresh_sync_tests {
+    //! Regression tests for the refresh-pipeline sequencing fix.
+    //!
+    //! `refresh_validator_fields` used to spawn the per-node check tasks and
+    //! return immediately, causing `refresh_all_fields` to clear
+    //! `state.is_refreshing` while the per-node work was still running. The
+    //! master 10 s tick gates on `is_refreshing`, so the early-clear let the
+    //! next tick race in and start a second concurrent cycle, producing the
+    //! duplicate log entries (and bursts on missed ticks).
+    //!
+    //! The fix collects each spawned `JoinHandle` and awaits them all before
+    //! returning. These tests verify two properties we depend on:
+    //!
+    //! 1. Awaiting collected `JoinHandle`s only returns after the underlying
+    //!    tasks have actually completed (so `is_refreshing` correctly
+    //!    represents in-flight work).
+    //! 2. `tokio::time::interval` with `MissedTickBehavior::Skip` does not
+    //!    burst-fire when ticks were missed (so even if the gate ever races,
+    //!    we don't get a flurry of catch-up iterations).
+    //!
+    //! These are intentionally narrow tests against the primitives we use; a
+    //! true end-to-end test of `refresh_validator_fields` would require
+    //! mocking AppState/UiState/SSH, which is more setup than the value of
+    //! the assertion.
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    use tokio::time::{interval, MissedTickBehavior};
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn awaiting_collected_handles_blocks_until_all_tasks_finish() {
+        // Mirror of the new pattern in `refresh_validator_fields`: spawn many
+        // tasks, collect their handles, then await every one. The assertion
+        // is the contract we depend on: the await loop must not return until
+        // every spawned task has run to completion.
+        let counter = Arc::new(AtomicUsize::new(0));
+        let task_count = 5;
+        let per_task_work = Duration::from_millis(50);
+
+        let mut handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+        for i in 0..task_count {
+            let counter = counter.clone();
+            // Stagger the sleeps so the slowest task finishes last; we
+            // require the await loop to wait for that one too, not just the
+            // first to complete.
+            let delay = per_task_work + Duration::from_millis(10 * i as u64);
+            handles.push(tokio::spawn(async move {
+                tokio::time::sleep(delay).await;
+                counter.fetch_add(1, Ordering::SeqCst);
+            }));
+        }
+
+        // Immediately after spawning: the tasks have not had time to finish.
+        // (They're sleeping for >= 50 ms each.)
+        assert!(
+            counter.load(Ordering::SeqCst) < task_count,
+            "tasks should still be running immediately after spawn"
+        );
+
+        let started_awaiting = Instant::now();
+        for h in handles {
+            let _ = h.await;
+        }
+        let awaited_for = started_awaiting.elapsed();
+
+        // After the await loop returns: every task must have incremented the
+        // counter, and the elapsed time must be at least the slowest task's
+        // delay. Both halves of the property are needed to catch a future
+        // regression where the loop accidentally moved to fire-and-forget.
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            task_count,
+            "all spawned tasks must have completed by the time awaits return"
+        );
+        let slowest_delay = per_task_work + Duration::from_millis(10 * (task_count - 1) as u64);
+        assert!(
+            awaited_for >= slowest_delay,
+            "await loop returned too quickly ({}ms); slowest task needed at least {}ms",
+            awaited_for.as_millis(),
+            slowest_delay.as_millis()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn interval_with_missed_tick_behavior_skip_does_not_burst() {
+        // Mirror of the configuration applied to the master 10 s tick: a
+        // tokio::time::interval with MissedTickBehavior::Skip must not
+        // burst-fire to catch up on missed ticks. This is the second half
+        // of the duplicate-log fix.
+        //
+        // Instead of asserting an exact wait duration (which is fragile
+        // against tokio internals and machine load), we compare the
+        // behaviour against the default Burst setting: after the same
+        // simulated delay the number of immediately-firing catch-up ticks
+        // must be strictly smaller with Skip than with Burst.
+        async fn count_immediate_catchup_ticks(
+            behavior: MissedTickBehavior,
+            period: Duration,
+            delay: Duration,
+            max_polls: usize,
+        ) -> usize {
+            let mut iv = interval(period);
+            iv.set_missed_tick_behavior(behavior);
+            // Consume the initial tick that fires at t=0.
+            iv.tick().await;
+            // Block longer than several periods to build up missed ticks.
+            tokio::time::sleep(delay).await;
+
+            let mut immediate = 0;
+            for _ in 0..max_polls {
+                let started = Instant::now();
+                iv.tick().await;
+                // Consider anything under one quarter-period as "immediate"
+                // (catch-up firing) vs. an actually-spaced tick.
+                if started.elapsed() < period / 4 {
+                    immediate += 1;
+                } else {
+                    break;
+                }
+            }
+            immediate
+        }
+
+        let period = Duration::from_millis(20);
+        let delay = Duration::from_millis(120);
+
+        let burst_count =
+            count_immediate_catchup_ticks(MissedTickBehavior::Burst, period, delay, 10).await;
+        let skip_count =
+            count_immediate_catchup_ticks(MissedTickBehavior::Skip, period, delay, 10).await;
+
+        // The exact counts depend on machine timing, but the qualitative
+        // property is what matters: Burst floods the loop with catch-up
+        // ticks; Skip absorbs them and only fires once.
+        assert!(
+            skip_count < burst_count,
+            "Skip should fire fewer back-to-back catch-up ticks than Burst, \
+             but observed skip={} >= burst={}",
+            skip_count,
+            burst_count,
+        );
+        assert!(
+            skip_count <= 1,
+            "Skip should fire at most one immediate catch-up tick, observed {}",
+            skip_count,
+        );
+    }
 }

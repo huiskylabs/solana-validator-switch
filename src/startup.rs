@@ -246,6 +246,10 @@ pub async fn run_startup_checklist_with_config(
         if let (Some(config), Some((ssh_pool, detected_ssh_keys)), Some(validator_statuses)) =
             (config, ssh_pool_and_keys, validator_statuses)
         {
+            logger.log_section("Startup Complete")?;
+            logger.log_success("Startup checks completed successfully")?;
+            logger.log("Entering interactive mode")?;
+
             // Create metadata cache
             let metadata_cache =
                 Arc::new(Mutex::new(crate::validator_metadata::MetadataCache::new()));
@@ -1815,15 +1819,19 @@ async fn detect_node_status_and_executable(
         }
     }
 
-    match crate::validator_rpc::get_identity(
-        ssh_pool,
-        node,
-        &ssh_key,
-        crate::validator_rpc::get_rpc_port(validator_type.clone(), command_line.as_deref()),
+    let identity_check = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        crate::validator_rpc::get_identity(
+            ssh_pool,
+            node,
+            &ssh_key,
+            crate::validator_rpc::get_rpc_port(validator_type.clone(), command_line.as_deref()),
+        ),
     )
-    .await
-    {
-        Ok(identity) => {
+    .await;
+
+    match identity_check {
+        Ok(Ok(identity)) => {
             if !identity.is_empty() {
                 current_identity = Some(identity.clone());
                 // logger.log(&format!("Set current_identity to: {}", identity)).ok();
@@ -1884,7 +1892,24 @@ async fn detect_node_status_and_executable(
                 swap_issues,
             ))
         }
-        Err(_e) => {
+        Ok(Err(_e)) => {
+            // logger.log_error("RPC identity check", &format!("Failed for node {}: {:?}", node.label, e)).ok();
+            Ok((
+                crate::types::NodeStatus::Unknown,
+                validator_type.clone(),
+                agave_validator_executable.clone(),
+                fdctl_executable.clone(),
+                firedancer_config_path.clone(),
+                solana_cli_executable.clone(),
+                version.clone(),
+                sync_status.clone(),
+                current_identity.clone(),
+                ledger_path.clone(),
+                swap_ready,
+                swap_issues.clone(),
+            ))
+        }
+        Err(_) => {
             // logger.log_error("RPC identity check", &format!("Failed for node {}: {:?}", node.label, e)).ok();
             Ok((
                 crate::types::NodeStatus::Unknown,
@@ -2420,22 +2445,34 @@ async fn detect_node_status_and_executable_with_progress(
         }
     }
 
-    match crate::validator_rpc::get_identity(
-        ssh_pool,
-        node,
-        &ssh_key,
-        crate::validator_rpc::get_rpc_port(validator_type.clone(), command_line.as_deref()),
+    let identity_check = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        crate::validator_rpc::get_identity(
+            ssh_pool,
+            node,
+            &ssh_key,
+            crate::validator_rpc::get_rpc_port(validator_type.clone(), command_line.as_deref()),
+        ),
     )
-    .await
-    {
-        Ok(identity) => {
+    .await;
+
+    match identity_check {
+        Ok(Ok(identity)) => {
             if !identity.is_empty() {
                 current_identity = Some(identity.clone());
+                logger.log_success(&format!(
+                    "Detected active identity for {}: {}",
+                    node.label, identity
+                ))?;
                 // logger.log(&format!("Set current_identity to: {}", identity)).ok();
 
                 // Check if this identity matches the validator's funded identity
                 // logger.log(&format!("Comparing identity {} with validator identity {}", identity, validator_pair.identity_pubkey)).ok();
                 if identity == validator_pair.identity_pubkey {
+                    logger.log_success(&format!(
+                        "Identity detected for {}: {} (ACTIVE)",
+                        node.label, identity
+                    ))?;
                     // logger.log_success(&format!("Node {} is ACTIVE (identity matches)", node.label)).ok();
                     // Skip tower file check during startup - will be done at switch time
                     return Ok((
@@ -2450,6 +2487,10 @@ async fn detect_node_status_and_executable_with_progress(
                         swap_issues,
                     ));
                 } else {
+                    logger.log_success(&format!(
+                        "Identity detected for {}: {} (STANDBY)",
+                        node.label, identity
+                    ))?;
                     // logger.log(&format!("Node {} is STANDBY (identity {} does not match {})", node.label, identity, validator_pair.identity_pubkey)).ok();
                     // For standby nodes, swap_ready and swap_issues are already set correctly (no tower needed)
                     return Ok((
@@ -2466,8 +2507,17 @@ async fn detect_node_status_and_executable_with_progress(
                 }
             }
         }
-        Err(_e) => {
-            // logger.log_error("RPC identity check", &format!("Failed for node {}: {:?}", node.label, e)).ok();
+        Ok(Err(e)) => {
+            logger.log_warning(&format!(
+                "Identity RPC check failed for {}: {}",
+                node.label, e
+            ))?;
+        }
+        Err(_) => {
+            logger.log_warning(&format!(
+                "Identity RPC check timed out for {} after 20s",
+                node.label
+            ))?;
         }
     }
 
@@ -2475,6 +2525,10 @@ async fn detect_node_status_and_executable_with_progress(
     progress_bar.suspend(|| {
         println!("      ❌ Identity: Unable to determine");
     });
+    logger.log_warning(&format!(
+        "Identity unavailable for {} - marking node status as UNKNOWN",
+        node.label
+    ))?;
     Ok((
         crate::types::NodeStatus::Unknown,
         validator_type,

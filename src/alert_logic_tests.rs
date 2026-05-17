@@ -14,6 +14,7 @@ mod alert_logic_tests {
                 bot_token: "test_token".to_string(),
                 chat_id: "test_chat".to_string(),
             }),
+            telegram_low_priority: None,
             auto_failover_enabled: false,
         }
     }

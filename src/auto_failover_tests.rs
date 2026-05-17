@@ -10,6 +10,7 @@ mod tests {
             ssh_failure_threshold_seconds: 1800,
             rpc_failure_threshold_seconds: 1800,
             telegram: None,
+            telegram_low_priority: None,
             auto_failover_enabled: true,
         };
 
@@ -25,6 +26,7 @@ mod tests {
             ssh_failure_threshold_seconds: 1800,
             rpc_failure_threshold_seconds: 1800,
             telegram: None,
+            telegram_low_priority: None,
             auto_failover_enabled: false,
         };
 

@@ -67,6 +67,7 @@ impl ConfigManager {
         Config {
             version: "1.0.0".to_string(),
             validators: Vec::new(),
+            verbose_logging: false,
             alert_config: None,
         }
     }

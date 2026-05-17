@@ -8,6 +8,10 @@
 
 version: "1.0.0"
 
+# When true, SVS writes extra runtime logs for vote-fetch and low-priority alert delivery.
+# Defaults to false when omitted.
+verbose_logging: false
+
 validators:
   # You can define multiple validator pairs if you manage multiple validators
   # Each validator pair shares the same vote account and identity
@@ -75,7 +79,7 @@ alert_config:
   enabled: true
   delinquency_threshold_seconds: 30 # CRITICAL: Alert after 30 seconds without voting
   ssh_failure_threshold_seconds: 1800 # LOW PRIORITY: Alert after 30 minutes of SSH failures
-  rpc_failure_threshold_seconds: 1800 # LOW PRIORITY: Alert after 30 minutes of RPC failures
+  rpc_failure_threshold_seconds: 30 # LOW PRIORITY: Alert after 30 seconds of RPC failures
 
   # Note: Alert cooldown periods to prevent spam:
   # - Delinquency alerts: 15-minute cooldown (high severity)

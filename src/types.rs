@@ -15,13 +15,19 @@ fn default_ssh_failure_threshold() -> u64 {
 }
 
 fn default_rpc_failure_threshold() -> u64 {
-    1800 // 30 minutes of RPC failures before alert
+    30 // 30 seconds of RPC failures before low-priority alert
+}
+
+fn default_verbose_logging() -> bool {
+    false
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub version: String,
     pub validators: Vec<ValidatorPair>,
+    #[serde(default = "default_verbose_logging")]
+    pub verbose_logging: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alert_config: Option<AlertConfig>,
 }
@@ -38,6 +44,8 @@ pub struct AlertConfig {
     pub rpc_failure_threshold_seconds: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub telegram: Option<TelegramConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub telegram_low_priority: Option<TelegramConfig>,
     #[serde(default)]
     pub auto_failover_enabled: bool,
 }

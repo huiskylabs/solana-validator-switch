@@ -232,7 +232,24 @@ impl AlertManager {
             return Ok(());
         }
 
-        if let Some(telegram) = &self.config.telegram {
+        // Successful planned switches are informational: the operator
+        // intentionally triggered the swap, so we route them to the
+        // low-priority telegram channel (falling back to the main channel if
+        // a dedicated low-priority bot is not configured).
+        //
+        // Failures still go to the high-priority channel because they may
+        // require manual intervention — the operator needs to see them
+        // alongside other high-severity alerts.
+        let telegram = if success {
+            self.config
+                .telegram_low_priority
+                .as_ref()
+                .or(self.config.telegram.as_ref())
+        } else {
+            self.config.telegram.as_ref()
+        };
+
+        if let Some(telegram) = telegram {
             let message = if success {
                 let time_str = if let Some(time) = total_time {
                     format!(" in {}ms", time.as_millis())

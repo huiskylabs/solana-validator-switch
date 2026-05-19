@@ -234,9 +234,23 @@ impl AsyncSshPool {
         }
 
         // Timeout for validator commands (set-identity, etc.)
-        let output = timeout(Duration::from_secs(60), cmd.output())
-            .await
-            .map_err(|_| anyhow!("Command timed out after 60s"))??;
+        let output = match timeout(Duration::from_secs(60), cmd.output()).await {
+            Ok(Ok(output)) => output,
+            Ok(Err(e)) => {
+                // Session-level failure (e.g. "the remote process has
+                // terminated"). Drop the cached session so the next call
+                // reconnects from scratch instead of reusing the dead
+                // handle for every subsequent poll.
+                let key = Self::get_connection_key(node, ssh_key_path);
+                self.remove_session(&key).await;
+                return Err(anyhow!("Failed to execute command: {}", e));
+            }
+            Err(_) => {
+                let key = Self::get_connection_key(node, ssh_key_path);
+                self.remove_session(&key).await;
+                return Err(anyhow!("Command timed out after 60s"));
+            }
+        };
 
         // For commands with args, always return stdout content if available
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -278,44 +292,48 @@ impl AsyncSshPool {
 
         // Use longer timeout for shell commands, shorter for direct commands
         let timeout_secs = if needs_shell { 60 } else { 30 };
+        let timeout_dur = Duration::from_secs(timeout_secs);
 
-        let output = if needs_shell {
+        // Run the command and capture the raw result. We deliberately do not
+        // collapse the timeout / openssh errors here so we can drop the
+        // cached SSH session on session-level failures (see the match below):
+        // without that, a session whose remote process died would stay in
+        // the pool and every subsequent execute_command call would reuse it
+        // and fail the same way for hours.
+        let output_result = if needs_shell {
             match shell_type {
-                RemoteShellType::Bash => timeout(
-                    Duration::from_secs(timeout_secs),
-                    session.command("bash").arg("-c").arg(command).output(),
-                )
-                .await
-                .map_err(|_| anyhow!("Command timed out after {}s", timeout_secs))?
-                .map_err(|e| anyhow!("Failed to execute command: {}", e))?,
-                RemoteShellType::PowerShell => timeout(
-                    Duration::from_secs(timeout_secs),
-                    session
-                        .command("powershell")
-                        .arg("-Command")
-                        .arg(command)
-                        .output(),
-                )
-                .await
-                .map_err(|_| anyhow!("Command timed out after {}s", timeout_secs))?
-                .map_err(|e| anyhow!("Failed to execute command: {}", e))?,
-                RemoteShellType::PowerShellCore => timeout(
-                    Duration::from_secs(timeout_secs),
-                    session.command("pwsh").arg("-c").arg(command).output(),
-                )
-                .await
-                .map_err(|_| anyhow!("Command timed out after {}s", timeout_secs))?
-                .map_err(|e| anyhow!("Failed to execute command: {}", e))?,
+                RemoteShellType::Bash => {
+                    timeout(timeout_dur, session.command("bash").arg("-c").arg(command).output()).await
+                }
+                RemoteShellType::PowerShell => {
+                    timeout(
+                        timeout_dur,
+                        session.command("powershell").arg("-Command").arg(command).output(),
+                    )
+                    .await
+                }
+                RemoteShellType::PowerShellCore => {
+                    timeout(timeout_dur, session.command("pwsh").arg("-c").arg(command).output()).await
+                }
             }
         } else {
             // Execute directly for better performance
-            timeout(
-                Duration::from_secs(timeout_secs),
-                session.command(command).output(),
-            )
-            .await
-            .map_err(|_| anyhow!("Command timed out after {}s", timeout_secs))?
-            .map_err(|e| anyhow!("Failed to execute command: {}", e))?
+            timeout(timeout_dur, session.command(command).output()).await
+        };
+
+        let output = match output_result {
+            Ok(Ok(out)) => out,
+            Ok(Err(e)) => {
+                // Session-level failure (e.g. "the remote process has
+                // terminated"). Drop the cached session so the next call
+                // reconnects from scratch instead of reusing the dead handle.
+                self.remove_session(&key).await;
+                return Err(anyhow!("Failed to execute command: {}", e));
+            }
+            Err(_) => {
+                self.remove_session(&key).await;
+                return Err(anyhow!("Command timed out after {}s", timeout_secs));
+            }
         };
 
         // For commands with 2>&1, stderr is redirected to stdout, so we should always return stdout

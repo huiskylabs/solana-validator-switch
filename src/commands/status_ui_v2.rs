@@ -105,14 +105,68 @@ async fn refresh_vote_data_for_alerts(
                 new_vote_data.push(Some(data));
             }
             Err(e) => {
-                // Update RPC failure
-                if let Ok(mut state) = ui_state.try_write() {
-                    state.rpc_failure_tracker[idx].record_failure(e.to_string());
+                let error_message = e.to_string();
+
+                // Update vote-account RPC failure tracking and possibly send
+                // low-priority alert. This path means we cannot currently
+                // establish fresh on-chain vote status; it must not become a
+                // high-priority delinquency alert based on stale cached vote
+                // timestamps.
+                let (should_alert_rpc, consecutive_failures, seconds_since_first) =
+                    if let Ok(mut state) = ui_state.try_write() {
+                        state.rpc_failure_tracker[idx].record_failure(error_message.clone());
+                        let tracker = &state.rpc_failure_tracker[idx];
+                        let consecutive = tracker.consecutive_failures;
+                        let seconds = tracker.seconds_since_first_failure().unwrap_or(0);
+                        let threshold = app_state
+                            .config
+                            .alert_config
+                            .as_ref()
+                            .map(|c| c.rpc_failure_threshold_seconds)
+                            .unwrap_or(30);
+
+                        let should_alert = seconds >= threshold
+                            && ALERT_TRACKER
+                                .get()
+                                .map(|m| {
+                                    let mut tracker = m.lock().unwrap();
+                                    tracker.rpc_failure_tracker.should_send_alert(idx)
+                                })
+                                .unwrap_or(false);
+
+                        (should_alert, consecutive, seconds)
+                    } else {
+                        (false, 0, 0)
+                    };
+
+                if should_alert_rpc {
+                    if let Some(alert_mgr) = alert_manager.as_ref() {
+                        if let Err(send_err) = alert_mgr
+                            .send_rpc_failure_alert_low_priority(
+                                &validator_pair.identity_pubkey,
+                                "Vote Account RPC Endpoint",
+                                consecutive_failures,
+                                seconds_since_first,
+                                &error_message,
+                            )
+                            .await
+                        {
+                            let _ = log_sender.send(LogMessage {
+                                host: validator_log_host(&app_state, idx),
+                                message: format!(
+                                    "Failed to send LOW-PRIORITY vote-account RPC failure alert: {}",
+                                    send_err
+                                ),
+                                timestamp: Instant::now(),
+                                level: LogLevel::Error,
+                            });
+                        }
+                    }
                 }
 
                 let _ = log_sender.send(LogMessage {
                     host: validator_log_host(&app_state, idx),
-                        message: format!("[{}] Failed to fetch vote data: {}", node_label, e),
+                        message: format!("[{}] Failed to fetch vote data: {}", node_label, error_message),
                     timestamp: Instant::now(),
                     level: LogLevel::Error,
                 });
@@ -441,7 +495,37 @@ async fn refresh_vote_data_for_alerts(
                     });
 
                     if seconds_since_vote >= threshold {
-                        if tracker.delinquency_tracker.should_send_alert(idx) {
+                        let vote_rpc_failures = state.rpc_failure_tracker[idx].consecutive_failures;
+
+                        if vote_rpc_failures > 0 {
+                            // The cluster RPC fetch path is currently failing, so this
+                            // `seconds_since_vote` value is based on stale cached vote
+                            // data. Do NOT turn that into a high-priority delinquency
+                            // alert; the real problem is cluster-RPC reachability and
+                            // is handled by the low-priority RPC-failure alert path.
+                            let last_error = state.rpc_failure_tracker[idx]
+                                .last_error
+                                .as_deref()
+                                .unwrap_or("unknown error");
+                            let _ = log_sender.send(LogMessage {
+                                host: validator_log_host(&app_state, idx),
+                                message: format!(
+                                    "Delinquency alert suppressed: vote-account RPC has {} consecutive failure(s); stale vote data cannot prove delinquency (last error: {})",
+                                    vote_rpc_failures, last_error
+                                ),
+                                timestamp: Instant::now(),
+                                level: LogLevel::Warning,
+                            });
+                            continue;
+                        }
+
+                        if should_send_high_priority_delinquency_alert(
+                            vote_rpc_failures,
+                            seconds_since_vote,
+                            threshold,
+                            &mut tracker.delinquency_tracker,
+                            idx,
+                        ) {
                             // proceed to enqueue alert
                         } else {
                             // Alert suppressed due to cooldown - log suppression with remaining time
@@ -998,6 +1082,28 @@ pub(crate) fn should_send_get_health_low_priority_alert(
     seconds_since_first: u64,
 ) -> bool {
     if seconds_since_first < 30 {
+        return false;
+    }
+    tracker.should_send_alert(idx)
+}
+
+/// Decide whether a high-priority delinquency alert is allowed to use the
+/// current `last_vote_slot_times` entry.
+///
+/// If the cluster vote-account fetch is currently failing, the last-vote
+/// timestamp is stale: it tells us when the last *successful fetch* saw a new
+/// vote, not that the validator actually stopped voting. Treating that stale
+/// timestamp as real delinquency caused false high-priority alerts during
+/// api.mainnet-beta outages. High-priority delinquency is only trustworthy
+/// when the cluster RPC fetch path is healthy right now.
+pub(crate) fn should_send_high_priority_delinquency_alert(
+    vote_rpc_failures: u32,
+    seconds_since_vote: u64,
+    threshold: u64,
+    tracker: &mut crate::alert::AlertTracker,
+    idx: usize,
+) -> bool {
+    if vote_rpc_failures > 0 || seconds_since_vote < threshold {
         return false;
     }
     tracker.should_send_alert(idx)
@@ -5752,6 +5858,62 @@ mod refresh_sync_tests {
             skip_count <= 1,
             "Skip should fire at most one immediate catch-up tick, observed {}",
             skip_count,
+        );
+    }
+}
+
+#[cfg(test)]
+mod delinquency_gate_tests {
+    use super::should_send_high_priority_delinquency_alert;
+    use crate::alert::AlertTracker;
+
+    #[test]
+    fn high_priority_delinquency_is_suppressed_when_vote_rpc_is_failing() {
+        let mut tracker = AlertTracker::with_cooldown(1, 1800);
+
+        assert!(
+            !should_send_high_priority_delinquency_alert(1, 31, 30, &mut tracker, 0),
+            "cluster RPC failure means vote timestamps are stale, so high-priority delinquency must be suppressed"
+        );
+    }
+
+    #[test]
+    fn high_priority_delinquency_is_allowed_when_rpc_is_healthy_and_threshold_met() {
+        let mut tracker = AlertTracker::with_cooldown(1, 1800);
+
+        assert!(should_send_high_priority_delinquency_alert(
+            0,
+            31,
+            30,
+            &mut tracker,
+            0
+        ));
+    }
+
+    #[test]
+    fn high_priority_delinquency_is_suppressed_below_threshold_even_when_rpc_is_healthy() {
+        let mut tracker = AlertTracker::with_cooldown(1, 1800);
+
+        assert!(
+            !should_send_high_priority_delinquency_alert(0, 29, 30, &mut tracker, 0),
+            "below threshold should not alert even with healthy cluster RPC"
+        );
+    }
+
+    #[test]
+    fn high_priority_delinquency_respects_alert_cooldown() {
+        let mut tracker = AlertTracker::with_cooldown(1, 1800);
+
+        assert!(should_send_high_priority_delinquency_alert(
+            0,
+            31,
+            30,
+            &mut tracker,
+            0
+        ));
+        assert!(
+            !should_send_high_priority_delinquency_alert(0, 32, 30, &mut tracker, 0),
+            "second alert within cooldown should be suppressed"
         );
     }
 }

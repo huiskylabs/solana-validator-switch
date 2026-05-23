@@ -172,9 +172,14 @@ async fn fetch_firedancer_config_via_ssh(
 ) -> Result<String> {
     let mut last_read_error: Option<String> = None;
 
+    // `sudo -n` (non-interactive) makes sudo fail fast instead of hanging on
+    // a password prompt when the operator doesn't have NOPASSWD sudo. Without
+    // `-n` an unprivileged invocation blocks on stdin until the SSH command
+    // hits its timeout, which surfaces a confusing "timed out" instead of
+    // "permission denied".
     for (command, args) in [
         ("cat", vec![config_path]),
-        ("sudo", vec!["cat", config_path]),
+        ("sudo", vec!["-n", "cat", config_path]),
     ] {
         match ssh_pool
             .execute_command_with_args(node, ssh_key, command, &args)

@@ -98,6 +98,32 @@ pub async fn run_startup_checklist_with_config(
     )
     .await?;
 
+    // Sanity-check the alert-cadence config. If operators raise
+    // `vote_account_poll_interval_seconds` above `delinquency_threshold_seconds`
+    // to dodge public-RPC 429s, the high-priority delinquency detection latency
+    // is bounded below by the poll interval rather than the threshold — i.e.
+    // alerts may take roughly poll_interval seconds to fire, not threshold
+    // seconds. Surface this loudly so it can't be a silent footgun.
+    if let Some(ref cfg) = config {
+        if let Some(ref alert_cfg) = cfg.alert_config {
+            if alert_cfg.enabled
+                && alert_cfg.vote_account_poll_interval_seconds
+                    > alert_cfg.delinquency_threshold_seconds
+            {
+                let msg = format!(
+                    "alert_config.vote_account_poll_interval_seconds = {} exceeds delinquency_threshold_seconds = {}; high-priority delinquency detection latency may approach poll-interval seconds rather than threshold seconds.",
+                    alert_cfg.vote_account_poll_interval_seconds,
+                    alert_cfg.delinquency_threshold_seconds,
+                );
+                progress_bar.suspend(|| {
+                    eprintln!("⚠️  {}", msg.yellow());
+                });
+                logger.log(&format!("WARN: {}", msg))?;
+                validation.warnings.push(msg);
+            }
+        }
+    }
+
     // Only continue with SSH and other validation if config is valid
     let ssh_pool_and_keys = if validation.config_valid {
         progress_bar.set_position(30);

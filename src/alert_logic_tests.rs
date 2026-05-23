@@ -11,6 +11,7 @@ mod alert_logic_tests {
             ssh_failure_threshold_seconds: 1800, // 30 minutes - very loose threshold
             rpc_failure_threshold_seconds: 1800, // 30 minutes - very loose threshold
             vote_account_poll_interval_seconds: 10,
+            node_status_poll_interval_seconds: 10,
             telegram: Some(TelegramConfig {
                 bot_token: "test_token".to_string(),
                 chat_id: "test_chat".to_string(),

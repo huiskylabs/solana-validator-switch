@@ -1517,26 +1517,17 @@ impl EnhancedStatusApp {
     pub fn spawn_background_tasks(&self) {
         let vote_account_poll_interval_seconds =
             vote_account_poll_interval_seconds(self.app_state.config.alert_config.as_ref());
-        // Unified UI refresh task still runs every 10 seconds. The cluster
-        // vote-account fetch is gated inside the loop by the configurable
-        // vote_account_poll_interval_seconds so operators can reduce public
-        // RPC pressure without slowing down local UI refreshes.
-        let ui_state_for_refresh = Arc::clone(&self.ui_state);
-        let app_state_for_refresh = Arc::clone(&self.app_state);
-        let log_sender = self.log_sender.clone();
+        let node_status_poll_interval_seconds =
+            node_status_poll_interval_seconds(self.app_state.config.alert_config.as_ref());
 
+        let ui_state_for_vote_refresh = Arc::clone(&self.ui_state);
+        let app_state_for_vote_refresh = Arc::clone(&self.app_state);
+        let log_sender_for_vote_refresh = self.log_sender.clone();
         tokio::spawn(async move {
-            let mut interval = interval(Duration::from_secs(10));
-            // Don't try to "catch up" on missed ticks. If the previous refresh
-            // took longer than 10 s (e.g. a slow backup SSH check), we want
-            // the next tick to fire on the next normally-scheduled boundary,
-            // not burst-fire several iterations back-to-back. Without this,
-            // a single slow cycle produces a flurry of overlapping refreshes
-            // and duplicate log entries.
+            let mut interval = interval(Duration::from_secs(vote_account_poll_interval_seconds));
             interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-            // Initialize alert manager if alerts are configured
-            let alert_manager = app_state_for_refresh
+            let alert_manager = app_state_for_vote_refresh
                 .config
                 .alert_config
                 .as_ref()
@@ -1545,16 +1536,39 @@ impl EnhancedStatusApp {
 
             loop {
                 interval.tick().await;
+                refresh_vote_data_for_alerts(
+                    app_state_for_vote_refresh.clone(),
+                    ui_state_for_vote_refresh.clone(),
+                    log_sender_for_vote_refresh.clone(),
+                    alert_manager.clone(),
+                )
+                .await;
+            }
+        });
+
+        let ui_state_for_node_refresh = Arc::clone(&self.ui_state);
+        let app_state_for_node_refresh = Arc::clone(&self.app_state);
+        let log_sender_for_node_refresh = self.log_sender.clone();
+        tokio::spawn(async move {
+            let mut interval = interval(Duration::from_secs(node_status_poll_interval_seconds));
+            // Don't try to "catch up" on missed ticks. If the previous refresh
+            // took longer than the configured interval, wait for the next
+            // normally-scheduled boundary instead of burst-firing duplicate
+            // direct validator checks.
+            interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+            loop {
+                interval.tick().await;
 
                 // Skip if already refreshing
-                if let Ok(state) = ui_state_for_refresh.try_read() {
+                if let Ok(state) = ui_state_for_node_refresh.try_read() {
                     if state.is_refreshing {
                         continue;
                     }
                 }
 
                 // Mark as refreshing
-                if let Ok(mut state) = ui_state_for_refresh.try_write() {
+                if let Ok(mut state) = ui_state_for_node_refresh.try_write() {
                     state.last_refresh_time = Instant::now();
                     state.is_refreshing = true;
 
@@ -1577,45 +1591,18 @@ impl EnhancedStatusApp {
                     }
                 }
 
-                // Fetch vote data for all validators (needed for alerts), but
-                // only at the configurable cluster-RPC polling cadence. The
-                // UI field refresh below still happens every 10 seconds.
-                let should_poll_vote_accounts = if let Ok(state) = ui_state_for_refresh.try_read() {
-                    state.last_vote_refresh.elapsed().as_secs() >= vote_account_poll_interval_seconds
-                } else {
-                    false
-                };
-
-                if should_poll_vote_accounts {
-                    let ui_state_vote = ui_state_for_refresh.clone();
-                    let app_state_vote = app_state_for_refresh.clone();
-                    let log_sender_vote = log_sender.clone();
-                    let alert_manager_vote = alert_manager.clone();
-
-                    tokio::spawn(async move {
-                        refresh_vote_data_for_alerts(
-                            app_state_vote,
-                            ui_state_vote,
-                            log_sender_vote,
-                            alert_manager_vote,
-                        )
-                        .await;
-                    });
-                }
-
-                // Do the UI field refresh
-                let ui_state_clone = ui_state_for_refresh.clone();
-                let app_state_clone = app_state_for_refresh.clone();
-
-                let log_sender_clone = log_sender.clone();
+                let ui_state_clone = ui_state_for_node_refresh.clone();
+                let app_state_clone = app_state_for_node_refresh.clone();
+                let log_sender_clone = log_sender_for_node_refresh.clone();
                 tokio::spawn(async move {
                     refresh_all_fields(app_state_clone, ui_state_clone, log_sender_clone).await;
                 });
             }
         });
 
-        // That's it! Just one background refresh task
-        // All other tasks (vote data alerts, catchup status, ssh health) are removed
+        // Two background tasks run independently:
+        // - vote-account polling hits the configured cluster RPC
+        // - node-status polling hits validators directly over SSH/local RPC
     }
 }
 
@@ -3172,9 +3159,16 @@ fn vote_account_poll_interval_seconds(alert_config: Option<&crate::types::AlertC
         .max(1)
 }
 
-fn vote_account_refresh_text(last_vote_refresh: Instant, poll_interval_seconds: u64) -> String {
+fn node_status_poll_interval_seconds(alert_config: Option<&crate::types::AlertConfig>) -> u64 {
+    alert_config
+        .map(|c| c.node_status_poll_interval_seconds)
+        .unwrap_or(10)
+        .max(1)
+}
+
+fn status_refresh_text(last_status_refresh: Instant, poll_interval_seconds: u64) -> String {
     let poll_interval_seconds = poll_interval_seconds.max(1);
-    let elapsed = last_vote_refresh.elapsed().as_secs();
+    let elapsed = last_status_refresh.elapsed().as_secs();
     if elapsed < poll_interval_seconds {
         let remaining = poll_interval_seconds - elapsed;
         format!("(R)efresh (in {}s)", remaining)
@@ -3184,12 +3178,12 @@ fn vote_account_refresh_text(last_vote_refresh: Instant, poll_interval_seconds: 
 }
 
 fn draw_footer(f: &mut ratatui::Frame, area: Rect, ui_state: &UiState, app_state: &AppState) {
-    // Show countdown to the next cluster vote-account poll. Local UI fields
-    // still refresh every 10s, but this footer is the operator-facing timer
-    // for the expensive configurable external RPC check.
+    // Show countdown to the next direct validator-status refresh (SSH/local
+    // RPC checks). Cluster vote-account polling has its own independent
+    // cadence and does not drive the visible status-view refresh timer.
     let poll_interval_seconds =
-        vote_account_poll_interval_seconds(app_state.config.alert_config.as_ref());
-    let refresh_text = vote_account_refresh_text(ui_state.last_vote_refresh, poll_interval_seconds);
+        node_status_poll_interval_seconds(app_state.config.alert_config.as_ref());
+    let refresh_text = status_refresh_text(ui_state.last_refresh_time, poll_interval_seconds);
 
     // Add Tab option if multiple validators
     let help_text = if app_state.validator_statuses.len() > 1 {
@@ -5079,7 +5073,7 @@ mod delinquency_gate_tests {
 
 #[cfg(test)]
 mod vote_account_poll_interval_tests {
-    use super::{vote_account_poll_interval_seconds, vote_account_refresh_text};
+    use super::{node_status_poll_interval_seconds, status_refresh_text, vote_account_poll_interval_seconds};
     use crate::types::AlertConfig;
     use std::time::{Duration, Instant};
 
@@ -5090,6 +5084,7 @@ mod vote_account_poll_interval_tests {
             ssh_failure_threshold_seconds: 1800,
             rpc_failure_threshold_seconds: 30,
             vote_account_poll_interval_seconds: interval,
+            node_status_poll_interval_seconds: interval,
             telegram: None,
             telegram_low_priority: None,
             auto_failover_enabled: false,
@@ -5113,15 +5108,33 @@ mod vote_account_poll_interval_tests {
         assert_eq!(vote_account_poll_interval_seconds(Some(&config)), 1);
     }
 
+
     #[test]
-    fn vote_account_refresh_text_uses_configured_interval() {
-        let last_refresh = Instant::now() - Duration::from_secs(5);
-        assert_eq!(vote_account_refresh_text(last_refresh, 20), "(R)efresh (in 15s)");
+    fn node_status_poll_interval_defaults_to_previous_ten_seconds() {
+        assert_eq!(node_status_poll_interval_seconds(None), 10);
     }
 
     #[test]
-    fn vote_account_refresh_text_shows_plain_refresh_after_interval_elapsed() {
+    fn node_status_poll_interval_uses_configured_value() {
+        let config = alert_config_with_poll_interval(20);
+        assert_eq!(node_status_poll_interval_seconds(Some(&config)), 20);
+    }
+
+    #[test]
+    fn node_status_poll_interval_clamps_zero_to_one() {
+        let config = alert_config_with_poll_interval(0);
+        assert_eq!(node_status_poll_interval_seconds(Some(&config)), 1);
+    }
+
+    #[test]
+    fn status_refresh_text_uses_configured_interval() {
+        let last_refresh = Instant::now() - Duration::from_secs(5);
+        assert_eq!(status_refresh_text(last_refresh, 20), "(R)efresh (in 15s)");
+    }
+
+    #[test]
+    fn status_refresh_text_shows_plain_refresh_after_interval_elapsed() {
         let last_refresh = Instant::now() - Duration::from_secs(20);
-        assert_eq!(vote_account_refresh_text(last_refresh, 20), "(R)efresh");
+        assert_eq!(status_refresh_text(last_refresh, 20), "(R)efresh");
     }
 }

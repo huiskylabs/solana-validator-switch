@@ -3,7 +3,8 @@ mod status_ui_alert_tests {
     use crate::commands::status_ui_v2::{build_verbose_log_message, LogLevel};
     use crate::alert::AlertTracker;
     use crate::commands::status_ui_v2::{
-        classify_get_health_low_priority_state, should_send_get_health_low_priority_alert,
+        classify_get_health_low_priority_state, get_health_low_priority_alert_decision,
+        should_send_get_health_low_priority_alert,
     };
     use crate::types::{AlertConfig, Config, FailureTracker, NodeHealthStatus};
     use std::time::{Duration, Instant};
@@ -371,6 +372,44 @@ validators: []
             0,
             30,
         ));
+    }
+
+
+
+    #[test]
+    fn test_get_health_alert_decision_routes_standby_unhealthy_to_low_priority() {
+        let mut cooldown_tracker = AlertTracker::with_cooldown(1, 1800);
+        let failure_start = Instant::now() - Duration::from_secs(30);
+
+        assert_eq!(
+            get_health_low_priority_alert_decision(
+                &crate::types::NodeStatus::Standby,
+                false,
+                Some("RPC error: Node is behind by 12 slots"),
+                Some(failure_start),
+                &mut cooldown_tracker,
+                0,
+            ),
+            Some(("Unhealthy", 30))
+        );
+    }
+
+    #[test]
+    fn test_get_health_alert_decision_never_routes_active_node() {
+        let mut cooldown_tracker = AlertTracker::with_cooldown(1, 1800);
+        let failure_start = Instant::now() - Duration::from_secs(30);
+
+        assert_eq!(
+            get_health_low_priority_alert_decision(
+                &crate::types::NodeStatus::Active,
+                false,
+                Some("RPC error: Node is behind by 12 slots"),
+                Some(failure_start),
+                &mut cooldown_tracker,
+                0,
+            ),
+            None
+        );
     }
 
     // Test infrastructure alert thresholds

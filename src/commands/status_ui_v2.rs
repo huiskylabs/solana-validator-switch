@@ -256,43 +256,53 @@ async fn refresh_vote_data_for_alerts(
                                     level: if is_healthy { LogLevel::Info } else { LogLevel::Warning },
                                 });
 
-                                // If standby and unhealthy -> send low-priority alert
+                                // If standby getHealth reports unhealthy, route through the
+                                // dedicated low-priority getHealth alert API.
                                 if !is_healthy && node_status == crate::types::NodeStatus::Standby {
                                     if let Some(am) = alert_mgr.as_ref() {
-                                        // Throttle using delinquency tracker for now
-                                        let _ = ALERT_TRACKER.get_or_init(|| {
+                                        let tracker_mutex = ALERT_TRACKER.get_or_init(|| {
                                             Mutex::new(ComprehensiveAlertTracker::new(validator_count, 2))
                                         });
-                                        let tracker_mutex = ALERT_TRACKER.get().unwrap();
-                                        // Decide whether to alert under the std::sync::Mutex
-                                        // guard; drop the guard before any .await so the
-                                        // future stays Send and we don't risk holding a
-                                        // sync lock across a network call.
-                                        let (should_send, remaining_seconds) = {
+                                        let (decision, remaining_seconds) = {
                                             let mut tracker = tracker_mutex.lock().unwrap();
-                                            if tracker.delinquency_tracker.should_send_alert(vidx) {
-                                                (true, 0u64)
+                                            let decision = get_health_low_priority_alert_decision(
+                                                &node_status,
+                                                is_healthy,
+                                                None,
+                                                Some(Instant::now() - Duration::from_secs(30)),
+                                                &mut tracker.rpc_failure_tracker,
+                                                vidx,
+                                            );
+                                            let remaining = if decision.is_none() {
+                                                tracker.rpc_failure_tracker.seconds_until_next_alert(vidx).unwrap_or(0)
                                             } else {
-                                                (
-                                                    false,
-                                                    tracker.delinquency_tracker.seconds_until_next_alert(vidx).unwrap_or(0),
-                                                )
-                                            }
+                                                0
+                                            };
+                                            (decision, remaining)
                                         };
-                                        if should_send {
+                                        if let Some((health_state, seconds_since_first)) = decision {
                                             let identity = validator_identity_for_task.clone();
-                                            let res = am.send_backup_delinquency_alert(&identity, &node.label, 0, 0).await;
+                                            let res = am
+                                                .send_get_health_alert_low_priority(
+                                                    &identity,
+                                                    &node.label,
+                                                    "backup",
+                                                    health_state,
+                                                    seconds_since_first,
+                                                    None,
+                                                )
+                                                .await;
                                             if let Err(e) = res {
                                                 let _ = log_sender.send(LogMessage {
                                                     host: host_tag.clone(),
-                                                    message: format!("Failed to send LOW-PRIORITY backup health alert: {}", e),
+                                                    message: format!("Failed to send LOW-PRIORITY getHealth alert: {}", e),
                                                     timestamp: Instant::now(),
                                                     level: LogLevel::Error,
                                                 });
                                             } else {
                                                 let _ = log_sender.send(LogMessage {
                                                     host: host_tag.clone(),
-                                                    message: "LOW-PRIORITY backup health alert sent".to_string(),
+                                                    message: "LOW-PRIORITY getHealth alert sent".to_string(),
                                                     timestamp: Instant::now(),
                                                     level: LogLevel::Warning,
                                                 });
@@ -300,7 +310,7 @@ async fn refresh_vote_data_for_alerts(
                                         } else {
                                             let _ = log_sender.send(LogMessage {
                                                 host: host_tag.clone(),
-                                                message: format!("Backup health alert suppressed by cooldown: {}s remaining", remaining_seconds),
+                                                message: format!("getHealth alert suppressed by cooldown/threshold: {}s remaining", remaining_seconds),
                                                 timestamp: Instant::now(),
                                                 level: LogLevel::Info,
                                             });
@@ -309,75 +319,90 @@ async fn refresh_vote_data_for_alerts(
                                 }
                             }
                             Err(e) => {
-                                // Update rpc health failure state and possibly send low-priority alert after 30s
-                                if let Ok(mut st) = ui_state_local.try_write() {
-                                    if let Some(pair) = st.rpc_health_data.get_mut(vidx) {
-                                        let rpc_status = if nidx == 0 { &mut pair.node_0 } else { &mut pair.node_1 };
-                                        rpc_status.is_healthy = false;
-                                        rpc_status.last_check = Some(Instant::now());
-                                        rpc_status.error_message = Some(e.to_string());
-                                        if rpc_status.failure_start.is_none() {
-                                            rpc_status.failure_start = Some(Instant::now());
+                                // Update rpc health failure state and possibly send low-priority getHealth alert after 30s.
+                                let error_text = e.to_string();
+                                let failure_start = {
+                                    let mut start = None;
+                                    if let Ok(mut st) = ui_state_local.try_write() {
+                                        if let Some(pair) = st.rpc_health_data.get_mut(vidx) {
+                                            let rpc_status = if nidx == 0 { &mut pair.node_0 } else { &mut pair.node_1 };
+                                            rpc_status.is_healthy = false;
+                                            rpc_status.last_check = Some(Instant::now());
+                                            rpc_status.error_message = Some(error_text.clone());
+                                            if rpc_status.failure_start.is_none() {
+                                                rpc_status.failure_start = Some(Instant::now());
+                                            }
+                                            start = rpc_status.failure_start;
                                         }
+                                    }
+                                    start
+                                };
 
-                                        // Check duration
-                                        if let Some(start) = rpc_status.failure_start {
-                                            let elapsed = start.elapsed().as_secs();
-                                            let threshold = 30u64;
+                                if let Some(start) = failure_start {
+                                    let elapsed = start.elapsed().as_secs();
+                                    let _ = log_sender.send(LogMessage {
+                                        host: host_tag.clone(),
+                                        message: format!("getHealth -> Unreachable: {} ({}s)", error_text, elapsed),
+                                        timestamp: Instant::now(),
+                                        level: LogLevel::Error,
+                                    });
+
+                                    if let Some(am) = alert_mgr.as_ref() {
+                                        let tracker_mutex = ALERT_TRACKER.get_or_init(|| {
+                                            Mutex::new(ComprehensiveAlertTracker::new(validator_count, 2))
+                                        });
+                                        let (decision, remaining_rpc) = {
+                                            let mut tracker = tracker_mutex.lock().unwrap();
+                                            let decision = get_health_low_priority_alert_decision(
+                                                &node_status,
+                                                false,
+                                                Some(&error_text),
+                                                Some(start),
+                                                &mut tracker.rpc_failure_tracker,
+                                                vidx,
+                                            );
+                                            let remaining = if decision.is_none() {
+                                                tracker.rpc_failure_tracker.seconds_until_next_alert(vidx).unwrap_or(0)
+                                            } else {
+                                                0
+                                            };
+                                            (decision, remaining)
+                                        };
+
+                                        if let Some((health_state, seconds_since_first)) = decision {
+                                            let identity = validator_identity_for_task.clone();
+                                            let res = am
+                                                .send_get_health_alert_low_priority(
+                                                    &identity,
+                                                    &node.label,
+                                                    "backup",
+                                                    health_state,
+                                                    seconds_since_first,
+                                                    Some(&error_text),
+                                                )
+                                                .await;
+                                            if let Err(e) = res {
+                                                let _ = log_sender.send(LogMessage {
+                                                    host: host_tag.clone(),
+                                                    message: format!("Failed to send LOW-PRIORITY getHealth alert: {}", e),
+                                                    timestamp: Instant::now(),
+                                                    level: LogLevel::Error,
+                                                });
+                                            } else {
+                                                let _ = log_sender.send(LogMessage {
+                                                    host: host_tag.clone(),
+                                                    message: "LOW-PRIORITY getHealth alert sent".to_string(),
+                                                    timestamp: Instant::now(),
+                                                    level: LogLevel::Warning,
+                                                });
+                                            }
+                                        } else {
                                             let _ = log_sender.send(LogMessage {
                                                 host: host_tag.clone(),
-                                                message: format!("getHealth -> Unreachable: {} ({}s)", e, elapsed),
+                                                message: format!("getHealth alert suppressed by cooldown/threshold: {}s remaining", remaining_rpc),
                                                 timestamp: Instant::now(),
-                                                level: LogLevel::Error,
+                                                level: LogLevel::Info,
                                             });
-
-                                            if elapsed >= threshold {
-                                                if let Some(am) = alert_mgr.as_ref() {
-                                                    // Throttle RPC failure alerts under
-                                                    // std::sync::Mutex; drop guard before .await.
-                                                    let _ = ALERT_TRACKER.get_or_init(|| {
-                                                        Mutex::new(ComprehensiveAlertTracker::new(validator_count, 2))
-                                                    });
-                                                    let tracker_mutex = ALERT_TRACKER.get().unwrap();
-                                                    let (should_send_rpc, remaining_rpc) = {
-                                                        let mut tracker = tracker_mutex.lock().unwrap();
-                                                        if tracker.rpc_failure_tracker.should_send_alert(vidx) {
-                                                            (true, 0u64)
-                                                        } else {
-                                                            (
-                                                                false,
-                                                                tracker.rpc_failure_tracker.seconds_until_next_alert(vidx).unwrap_or(0),
-                                                            )
-                                                        }
-                                                    };
-                                                    if should_send_rpc {
-                                                        let identity = validator_identity_for_task.clone();
-                                                        let res = am.send_rpc_failure_alert_low_priority(&identity, &node.label, 1, elapsed, &e.to_string()).await;
-                                                        if let Err(e) = res {
-                                                            let _ = log_sender.send(LogMessage {
-                                                                host: host_tag.clone(),
-                                                                message: format!("Failed to send LOW-PRIORITY RPC failure alert: {}", e),
-                                                                timestamp: Instant::now(),
-                                                                level: LogLevel::Error,
-                                                            });
-                                                        } else {
-                                                            let _ = log_sender.send(LogMessage {
-                                                                host: host_tag.clone(),
-                                                                message: "LOW-PRIORITY RPC failure alert sent".to_string(),
-                                                                timestamp: Instant::now(),
-                                                                level: LogLevel::Warning,
-                                                            });
-                                                        }
-                                                    } else {
-                                                        let _ = log_sender.send(LogMessage {
-                                                            host: host_tag.clone(),
-                                                            message: format!("RPC failure alert suppressed by cooldown: {}s remaining", remaining_rpc),
-                                                            timestamp: Instant::now(),
-                                                            level: LogLevel::Info,
-                                                        });
-                                                    }
-                                                }
-                                            }
                                         }
                                     }
                                 }
@@ -1102,7 +1127,6 @@ pub(crate) fn classify_get_health_low_priority_state(
 /// * the failure has persisted for at least 30 seconds (so we don't spam on
 ///   transient blips), and
 /// * the per-validator alert cooldown allows another send.
-#[allow(dead_code)] // Test-facing helper; production call sites land in a follow-up refactor.
 pub(crate) fn should_send_get_health_low_priority_alert(
     tracker: &mut crate::alert::AlertTracker,
     idx: usize,
@@ -1112,6 +1136,29 @@ pub(crate) fn should_send_get_health_low_priority_alert(
         return false;
     }
     tracker.should_send_alert(idx)
+}
+
+/// Shared routing decision for standby getHealth low-priority alerts.
+///
+/// Returns the alert state (`Unhealthy` or `Unreachable`) plus the failure
+/// duration when the standby node should alert now. Active nodes never alert
+/// through this path; active validator liveness is tracked by cluster
+/// vote-account status instead.
+pub(crate) fn get_health_low_priority_alert_decision(
+    node_status: &crate::types::NodeStatus,
+    is_healthy: bool,
+    error: Option<&str>,
+    failure_start: Option<Instant>,
+    tracker: &mut crate::alert::AlertTracker,
+    idx: usize,
+) -> Option<(&'static str, u64)> {
+    let state = classify_get_health_low_priority_state(node_status, is_healthy, error)?;
+    let seconds_since_first = failure_start.map(|start| start.elapsed().as_secs()).unwrap_or(0);
+    if should_send_get_health_low_priority_alert(tracker, idx, seconds_since_first) {
+        Some((state, seconds_since_first))
+    } else {
+        None
+    }
 }
 
 /// Decide whether a high-priority delinquency alert is allowed to use the

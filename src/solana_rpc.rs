@@ -2,7 +2,14 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
+use std::collections::HashSet;
 use std::str::FromStr;
+use std::sync::{Mutex, OnceLock};
+
+/// Per-pubkey memo of "we already logged that VoteState deserialize failed for
+/// this validator." Prevents the fallback warning from being emitted on every
+/// poll once the cluster has rolled out a newer vote-state format.
+static FALLBACK_LOGGED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VoteAccountInfo {
@@ -192,6 +199,21 @@ pub async fn fetch_vote_account_data(
         // data decoding on our side. One entry is enough to drive delinquency
         // detection in status_ui_v2; the richer UI columns (latency over the
         // last 31 votes, missed-vote window, etc.) simply degrade.
+
+        // Emit a single eprintln per pubkey per process so operators can
+        // correlate a "weird latency / TVC went blank" report with the actual
+        // root cause (cluster rolled out a vote state format the SDK doesn't
+        // know about) without spamming the channel every poll.
+        let logged = FALLBACK_LOGGED.get_or_init(|| Mutex::new(HashSet::new()));
+        let mut seen = logged.lock().unwrap();
+        if seen.insert(vote_pubkey_str.to_string()) {
+            eprintln!(
+                "⚠️  vote state deserialize failed for {}; falling back to vote_info.last_vote (likely VoteStateV4+). Delinquency detection still works; latency / missed-vote columns will degrade.",
+                vote_pubkey_str,
+            );
+        }
+        drop(seen);
+
         recent_votes.push(RecentVote {
             slot: vote_info.last_vote,
             confirmation_count: 1,

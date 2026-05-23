@@ -18,6 +18,10 @@ fn default_rpc_failure_threshold() -> u64 {
     30 // 30 seconds of RPC failures before low-priority alert
 }
 
+fn default_vote_account_poll_interval() -> u64 {
+    10 // Preserve previous cluster vote-account polling cadence by default
+}
+
 fn default_verbose_logging() -> bool {
     false
 }
@@ -42,6 +46,8 @@ pub struct AlertConfig {
     pub ssh_failure_threshold_seconds: u64,
     #[serde(default = "default_rpc_failure_threshold")]
     pub rpc_failure_threshold_seconds: u64,
+    #[serde(default = "default_vote_account_poll_interval")]
+    pub vote_account_poll_interval_seconds: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub telegram: Option<TelegramConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]

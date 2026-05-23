@@ -86,7 +86,11 @@ async fn refresh_vote_data_for_alerts(
 
         match fetch_vote_account_data(&validator_pair.rpc, &validator_pair.vote_pubkey).await {
             Ok(data) => {
-                // Update RPC success
+                // Update RPC success. We intentionally do NOT clear
+                // last_vote_rpc_failure_times here: a successful fetch of the
+                // same old vote slot does not prove the validator voted after
+                // the RPC outage. The taint is cleared later only when this
+                // fetch observes a NEW vote slot.
                 if let Ok(mut state) = ui_state.try_write() {
                     state.rpc_failure_tracker[idx].record_success();
                 }
@@ -115,6 +119,9 @@ async fn refresh_vote_data_for_alerts(
                 let (should_alert_rpc, consecutive_failures, seconds_since_first) =
                     if let Ok(mut state) = ui_state.try_write() {
                         state.rpc_failure_tracker[idx].record_failure(error_message.clone());
+                        if let Some(last_failure) = state.last_vote_rpc_failure_times.get_mut(idx) {
+                            *last_failure = Some(Instant::now());
+                        }
                         let tracker = &state.rpc_failure_tracker[idx];
                         let consecutive = tracker.consecutive_failures;
                         let seconds = tracker.seconds_since_first_failure().unwrap_or(0);
@@ -126,13 +133,16 @@ async fn refresh_vote_data_for_alerts(
                             .unwrap_or(30);
 
                         let should_alert = seconds >= threshold
-                            && ALERT_TRACKER
-                                .get()
-                                .map(|m| {
-                                    let mut tracker = m.lock().unwrap();
-                                    tracker.rpc_failure_tracker.should_send_alert(idx)
-                                })
-                                .unwrap_or(false);
+                            && {
+                                let tracker_mutex = ALERT_TRACKER.get_or_init(|| {
+                                    Mutex::new(ComprehensiveAlertTracker::new(
+                                        app_state.validator_statuses.len(),
+                                        2,
+                                    ))
+                                });
+                                let mut tracker = tracker_mutex.lock().unwrap();
+                                tracker.rpc_failure_tracker.should_send_alert(idx)
+                            };
 
                         (should_alert, consecutive, seconds)
                     } else {
@@ -409,6 +419,12 @@ async fn refresh_vote_data_for_alerts(
 
                     if should_update_slot_time {
                         new_slot_times.push(Some((new_slot, Instant::now())));
+                        if let Some(last_failure) = state.last_vote_rpc_failure_times.get_mut(idx) {
+                            // A new vote slot proves the validator voted after
+                            // any prior RPC outage, so the cached last-vote
+                            // time is no longer tainted.
+                            *last_failure = None;
+                        }
                     } else {
                         // Slot hasn't changed, keep existing time
                         new_slot_times.push(state.last_vote_slot_times.get(idx).and_then(|&v| v));
@@ -496,13 +512,18 @@ async fn refresh_vote_data_for_alerts(
 
                     if seconds_since_vote >= threshold {
                         let vote_rpc_failures = state.rpc_failure_tracker[idx].consecutive_failures;
+                        let tainted_by_vote_rpc_failure = vote_rpc_failure_taints_last_vote_time(
+                            *last,
+                            state.last_vote_rpc_failure_times.get(idx).and_then(|v| *v),
+                        );
 
-                        if vote_rpc_failures > 0 {
-                            // The cluster RPC fetch path is currently failing, so this
-                            // `seconds_since_vote` value is based on stale cached vote
-                            // data. Do NOT turn that into a high-priority delinquency
-                            // alert; the real problem is cluster-RPC reachability and
-                            // is handled by the low-priority RPC-failure alert path.
+                        if vote_rpc_failures > 0 || tainted_by_vote_rpc_failure {
+                            // The cluster RPC fetch path failed after the last observed
+                            // vote-slot update, so this `seconds_since_vote` value is
+                            // based on stale cached vote data. Do NOT turn that into a
+                            // high-priority delinquency alert; the real problem is
+                            // cluster-RPC reachability and is handled by the low-priority
+                            // RPC-failure alert path.
                             let last_error = state.rpc_failure_tracker[idx]
                                 .last_error
                                 .as_deref()
@@ -510,7 +531,7 @@ async fn refresh_vote_data_for_alerts(
                             let _ = log_sender.send(LogMessage {
                                 host: validator_log_host(&app_state, idx),
                                 message: format!(
-                                    "Delinquency alert suppressed: vote-account RPC has {} consecutive failure(s); stale vote data cannot prove delinquency (last error: {})",
+                                    "Delinquency alert suppressed: vote-account RPC data is stale (consecutive failures: {}, last error: {})",
                                     vote_rpc_failures, last_error
                                 ),
                                 timestamp: Instant::now(),
@@ -884,6 +905,12 @@ pub struct UiState {
     // Track when each validator's last vote slot changed
     pub last_vote_slot_times: Vec<Option<(u64, Instant)>>, // (slot, time when slot last changed)
 
+    // Track the most recent failed vote-account RPC fetch per validator. If a
+    // failure happens after last_vote_slot_times[idx], then that last-vote time
+    // is stale and cannot justify a high-priority delinquency alert until a
+    // later successful fetch observes a new vote slot.
+    pub last_vote_rpc_failure_times: Vec<Option<Instant>>,
+
     // Catchup status for each node
     pub catchup_data: Vec<NodePairStatus>,
 
@@ -1107,6 +1134,21 @@ pub(crate) fn should_send_high_priority_delinquency_alert(
         return false;
     }
     tracker.should_send_alert(idx)
+}
+
+/// A vote-account RPC failure that happened after the last observed vote slot
+/// change makes the last-vote timestamp stale for high-priority delinquency
+/// purposes. A later successful fetch of the same old slot should not clear
+/// that taint; only a successful fetch that observes a NEW vote slot proves
+/// the validator was actually voting after the RPC outage.
+pub(crate) fn vote_rpc_failure_taints_last_vote_time(
+    last_vote_slot_time: Option<(u64, Instant)>,
+    last_vote_rpc_failure_time: Option<Instant>,
+) -> bool {
+    match (last_vote_slot_time, last_vote_rpc_failure_time) {
+        (Some((_, last_vote_time)), Some(last_failure_time)) => last_failure_time >= last_vote_time,
+        _ => false,
+    }
 }
 
 /// How often we will repeat the "slow" per-node checks against the primary.
@@ -1358,6 +1400,7 @@ impl EnhancedStatusApp {
             increment_times: Vec::new(),
             selected_validator_index: app_state.selected_validator_index,
             last_vote_slot_times: vec![None; app_state.validator_statuses.len()],
+            last_vote_rpc_failure_times: vec![None; app_state.validator_statuses.len()],
             catchup_data: initial_catchup_data,
             catchup_failure_counts: vec![(0, 0); app_state.validator_statuses.len()],
             last_catchup_alert_times: vec![(None, None); app_state.validator_statuses.len()],
@@ -1425,7 +1468,12 @@ impl EnhancedStatusApp {
 
     /// Spawn background tasks for data fetching
     pub fn spawn_background_tasks(&self) {
-        // Unified refresh task that runs every 10 seconds and includes vote data for alerts
+        let vote_account_poll_interval_seconds =
+            vote_account_poll_interval_seconds(self.app_state.config.alert_config.as_ref());
+        // Unified UI refresh task still runs every 10 seconds. The cluster
+        // vote-account fetch is gated inside the loop by the configurable
+        // vote_account_poll_interval_seconds so operators can reduce public
+        // RPC pressure without slowing down local UI refreshes.
         let ui_state_for_refresh = Arc::clone(&self.ui_state);
         let app_state_for_refresh = Arc::clone(&self.app_state);
         let log_sender = self.log_sender.clone();
@@ -1482,21 +1530,31 @@ impl EnhancedStatusApp {
                     }
                 }
 
-                // Fetch vote data for all validators (needed for alerts)
-                let ui_state_vote = ui_state_for_refresh.clone();
-                let app_state_vote = app_state_for_refresh.clone();
-                let log_sender_vote = log_sender.clone();
-                let alert_manager_vote = alert_manager.clone();
+                // Fetch vote data for all validators (needed for alerts), but
+                // only at the configurable cluster-RPC polling cadence. The
+                // UI field refresh below still happens every 10 seconds.
+                let should_poll_vote_accounts = if let Ok(state) = ui_state_for_refresh.try_read() {
+                    state.last_vote_refresh.elapsed().as_secs() >= vote_account_poll_interval_seconds
+                } else {
+                    false
+                };
 
-                tokio::spawn(async move {
-                    refresh_vote_data_for_alerts(
-                        app_state_vote,
-                        ui_state_vote,
-                        log_sender_vote,
-                        alert_manager_vote,
-                    )
-                    .await;
-                });
+                if should_poll_vote_accounts {
+                    let ui_state_vote = ui_state_for_refresh.clone();
+                    let app_state_vote = app_state_for_refresh.clone();
+                    let log_sender_vote = log_sender.clone();
+                    let alert_manager_vote = alert_manager.clone();
+
+                    tokio::spawn(async move {
+                        refresh_vote_data_for_alerts(
+                            app_state_vote,
+                            ui_state_vote,
+                            log_sender_vote,
+                            alert_manager_vote,
+                        )
+                        .await;
+                    });
+                }
 
                 // Do the UI field refresh
                 let ui_state_clone = ui_state_for_refresh.clone();
@@ -4063,15 +4121,31 @@ fn draw_validator_table(
 
 // Removed draw_logs function as logs are no longer displayed
 
-fn draw_footer(f: &mut ratatui::Frame, area: Rect, ui_state: &UiState, app_state: &AppState) {
-    // Calculate time until next auto-refresh (every 10 seconds)
-    let elapsed = ui_state.last_refresh_time.elapsed();
-    let refresh_text = if elapsed < Duration::from_secs(10) {
-        let remaining = 10 - elapsed.as_secs();
+fn vote_account_poll_interval_seconds(alert_config: Option<&crate::types::AlertConfig>) -> u64 {
+    alert_config
+        .map(|c| c.vote_account_poll_interval_seconds)
+        .unwrap_or(10)
+        .max(1)
+}
+
+fn vote_account_refresh_text(last_vote_refresh: Instant, poll_interval_seconds: u64) -> String {
+    let poll_interval_seconds = poll_interval_seconds.max(1);
+    let elapsed = last_vote_refresh.elapsed().as_secs();
+    if elapsed < poll_interval_seconds {
+        let remaining = poll_interval_seconds - elapsed;
         format!("(R)efresh (in {}s)", remaining)
     } else {
         "(R)efresh".to_string()
-    };
+    }
+}
+
+fn draw_footer(f: &mut ratatui::Frame, area: Rect, ui_state: &UiState, app_state: &AppState) {
+    // Show countdown to the next cluster vote-account poll. Local UI fields
+    // still refresh every 10s, but this footer is the operator-facing timer
+    // for the expensive configurable external RPC check.
+    let poll_interval_seconds =
+        vote_account_poll_interval_seconds(app_state.config.alert_config.as_ref());
+    let refresh_text = vote_account_refresh_text(ui_state.last_vote_refresh, poll_interval_seconds);
 
     // Add Tab option if multiple validators
     let help_text = if app_state.validator_statuses.len() > 1 {
@@ -5864,8 +5938,9 @@ mod refresh_sync_tests {
 
 #[cfg(test)]
 mod delinquency_gate_tests {
-    use super::should_send_high_priority_delinquency_alert;
+    use super::{should_send_high_priority_delinquency_alert, vote_rpc_failure_taints_last_vote_time};
     use crate::alert::AlertTracker;
+    use std::time::Instant;
 
     #[test]
     fn high_priority_delinquency_is_suppressed_when_vote_rpc_is_failing() {
@@ -5915,5 +5990,76 @@ mod delinquency_gate_tests {
             !should_send_high_priority_delinquency_alert(0, 32, 30, &mut tracker, 0),
             "second alert within cooldown should be suppressed"
         );
+    }
+    #[test]
+    fn vote_rpc_failure_after_last_vote_taints_cached_vote_time() {
+        let last_vote = Instant::now();
+        let failure = last_vote + std::time::Duration::from_secs(1);
+
+        assert!(vote_rpc_failure_taints_last_vote_time(
+            Some((123, last_vote)),
+            Some(failure),
+        ));
+    }
+
+    #[test]
+    fn vote_rpc_failure_before_last_vote_does_not_taint_cached_vote_time() {
+        let failure = Instant::now();
+        let last_vote = failure + std::time::Duration::from_secs(1);
+
+        assert!(!vote_rpc_failure_taints_last_vote_time(
+            Some((124, last_vote)),
+            Some(failure),
+        ));
+    }
+}
+
+
+#[cfg(test)]
+mod vote_account_poll_interval_tests {
+    use super::{vote_account_poll_interval_seconds, vote_account_refresh_text};
+    use crate::types::AlertConfig;
+    use std::time::{Duration, Instant};
+
+    fn alert_config_with_poll_interval(interval: u64) -> AlertConfig {
+        AlertConfig {
+            enabled: true,
+            delinquency_threshold_seconds: 30,
+            ssh_failure_threshold_seconds: 1800,
+            rpc_failure_threshold_seconds: 30,
+            vote_account_poll_interval_seconds: interval,
+            telegram: None,
+            telegram_low_priority: None,
+            auto_failover_enabled: false,
+        }
+    }
+
+    #[test]
+    fn vote_account_poll_interval_defaults_to_previous_ten_seconds() {
+        assert_eq!(vote_account_poll_interval_seconds(None), 10);
+    }
+
+    #[test]
+    fn vote_account_poll_interval_uses_configured_value() {
+        let config = alert_config_with_poll_interval(45);
+        assert_eq!(vote_account_poll_interval_seconds(Some(&config)), 45);
+    }
+
+    #[test]
+    fn vote_account_poll_interval_clamps_zero_to_one() {
+        let config = alert_config_with_poll_interval(0);
+        assert_eq!(vote_account_poll_interval_seconds(Some(&config)), 1);
+    }
+
+    #[test]
+    fn vote_account_refresh_text_uses_configured_interval() {
+        let last_refresh = Instant::now() - Duration::from_secs(5);
+        assert_eq!(vote_account_refresh_text(last_refresh, 20), "(R)efresh (in 15s)");
+    }
+
+    #[test]
+    fn vote_account_refresh_text_shows_plain_refresh_after_interval_elapsed() {
+        let last_refresh = Instant::now() - Duration::from_secs(20);
+        assert_eq!(vote_account_refresh_text(last_refresh, 20), "(R)efresh");
     }
 }

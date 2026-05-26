@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-05-25
+
+### Added
+- **Low-priority alert channel**: New `telegram_low_priority` config field routes backup-node
+  warnings (SSH failures, delinquency, `getHealth` issues) and successful planned switches to a
+  separate Telegram channel, keeping the primary channel reserved for actionable failures
+- **RPC failure suppression**: High-priority delinquency alerts are suppressed while the
+  vote-account RPC is returning consecutive failures; stale cached vote data can no longer produce
+  false delinquency pages
+- **Stale vote-account data handling**: Vote data that hasn't been refreshed from the cluster is
+  now treated as a low-priority condition rather than a delinquency signal
+- **`verbose_logging` flag**: Optional runtime diagnostics gated behind a new config field
+  (default `false`); log output routed to `~/.solana-validator-switch/logs/latest.log`
+- **Configurable poll intervals**: New `vote_account_poll_interval_seconds` and
+  `node_status_poll_interval_seconds` config fields (defaults: 10 s and 20 s) allow tuning RPC
+  and SSH cadence independently
+- **VoteStateV4 compatibility**: Graceful fallback for the new vote-state format introduced in
+  Agave 2.x / Firedancer 0.5+; delinquency detection is preserved while richer UI columns degrade
+  cleanly instead of panicking
+
+### Fixed
+- **Tower verification race (Firedancer)**: SHA-256 checksum is now computed from the exact bytes
+  transferred rather than re-fetching the source file after the copy, eliminating a TOCTOU race
+  that caused tower-transfer failures under Firedancer
+- **Firedancer startup identity detection**: Tightened `ps`-based config-path grep to avoid
+  false matches that prevented Firedancer from being detected at startup
+- **SSH session stuck for 60+ minutes**: Dead SSH control-socket handles are now evicted from the
+  session cache on command failure instead of being reused across every subsequent poll, limiting
+  recovery to one failed tick (~10 s) rather than an hour or more
+- **Firedancer config path cached**: The `fdctl --config` path is resolved once at startup and
+  cached in `NodeWithStatus`, eliminating repeated `ps` lookups during failover
+
+### Changed
+- **Primary node load reduced**: `getHealth` calls, SSH keep-alive pings, and the catchup-stream
+  monitor are no longer issued against the active primary between slow-check intervals (10 min);
+  a voting primary's health is proved via cluster vote-account data instead
+- **SSH connection pre-warmed before failover**: The primary SSH session is established at the
+  start of the failover procedure to compensate for removing the periodic ping that previously
+  kept the connection warm
+- **Successful planned switches** now route to the low-priority Telegram channel
+- `delinquency_threshold_seconds` default lowered to 30 s (was 1800 s) to match real-world
+  operator expectations
+
 ## [2.0.6] - 2026-03-13
 
 ### Fixed

@@ -1,7 +1,67 @@
 #[cfg(test)]
 mod status_ui_alert_tests {
-    use crate::types::{AlertConfig, FailureTracker, NodeHealthStatus};
+    use crate::commands::status_ui_v2::{build_verbose_log_message, LogLevel};
+    use crate::alert::AlertTracker;
+    use crate::commands::status_ui_v2::{
+        classify_get_health_low_priority_state, get_health_low_priority_alert_decision,
+        should_send_get_health_low_priority_alert,
+    };
+    use crate::types::{AlertConfig, Config, FailureTracker, NodeHealthStatus};
     use std::time::{Duration, Instant};
+    use tokio::time::sleep;
+
+    #[test]
+    fn test_verbose_logging_defaults_to_false_when_missing() {
+        let config: Config = serde_yaml::from_str(
+            r#"
+version: "1.0.0"
+validators: []
+"#,
+        )
+        .expect("config should deserialize");
+
+        assert!(!config.verbose_logging);
+    }
+
+    #[test]
+    fn test_verbose_logging_false_when_explicitly_disabled() {
+        let config: Config = serde_yaml::from_str(
+            r#"
+version: "1.0.0"
+verbose_logging: false
+validators: []
+"#,
+        )
+        .expect("config should deserialize");
+
+        assert!(!config.verbose_logging);
+    }
+
+    #[test]
+    fn test_verbose_logging_true_enables_runtime_log_message() {
+        let log = build_verbose_log_message(
+            true,
+            "Meshmap_Mainnet_Backup",
+            "Vote data fetched: last slot 12345",
+            LogLevel::Info,
+        );
+
+        let log = log.expect("verbose logging should produce a log message");
+        assert_eq!(log.host, "Meshmap_Mainnet_Backup");
+        assert_eq!(log.message, "Vote data fetched: last slot 12345");
+    }
+
+    #[test]
+    fn test_verbose_logging_false_suppresses_runtime_log_message() {
+        let log = build_verbose_log_message(
+            false,
+            "Meshmap_Mainnet_Backup",
+            "Vote data fetched: last slot 12345",
+            LogLevel::Info,
+        );
+
+        assert!(log.is_none());
+    }
 
     // Regression test for bug: pressing 'S' to switch from status UI switched the wrong validator
     // Bug: User views validator 2 via Tab, presses 'S', but validator 1 gets switched instead
@@ -74,7 +134,10 @@ mod status_ui_alert_tests {
             delinquency_threshold_seconds: 30,
             ssh_failure_threshold_seconds: 1800, // 30 minutes
             rpc_failure_threshold_seconds: 1800, // 30 minutes
+            vote_account_poll_interval_seconds: 10,
+            node_status_poll_interval_seconds: 10,
             telegram: None,
+            telegram_low_priority: None,
             auto_failover_enabled: true,
         };
 
@@ -226,6 +289,130 @@ mod status_ui_alert_tests {
         assert!(alerts.contains(&"DELINQUENCY: Validator not voting"));
     }
 
+    #[tokio::test]
+    async fn test_backup_unhealthy_alert_waits_for_threshold_and_cooldown() {
+        let mut cooldown_tracker = AlertTracker::with_cooldown(1, 1);
+
+        assert_eq!(
+            classify_get_health_low_priority_state(
+                &crate::types::NodeStatus::Standby,
+                false,
+                Some("RPC error: Node is behind by 12 slots"),
+            ),
+            Some("Unhealthy")
+        );
+
+        assert!(!should_send_get_health_low_priority_alert(
+            &mut cooldown_tracker,
+            0,
+            29,
+        ));
+
+        assert!(should_send_get_health_low_priority_alert(
+            &mut cooldown_tracker,
+            0,
+            30,
+        ));
+
+        // Immediate re-check should stay suppressed by cooldown.
+        assert!(!should_send_get_health_low_priority_alert(
+            &mut cooldown_tracker,
+            0,
+            31,
+        ));
+
+        sleep(Duration::from_secs(1)).await;
+
+        // After the cooldown window passes, a still-unhealthy backup may alert again.
+        assert!(should_send_get_health_low_priority_alert(
+            &mut cooldown_tracker,
+            0,
+            31,
+        ));
+    }
+
+    #[test]
+    fn test_backup_timer_resets_when_healthy_again() {
+        let mut cooldown_tracker = AlertTracker::with_cooldown(1, 1);
+
+        assert!(should_send_get_health_low_priority_alert(
+            &mut cooldown_tracker,
+            0,
+            30,
+        ));
+
+        // Recovery resets the timer/cooldown state.
+        cooldown_tracker.reset(0);
+
+        assert_eq!(
+            classify_get_health_low_priority_state(&crate::types::NodeStatus::Standby, true, None),
+            None
+        );
+
+        assert!(should_send_get_health_low_priority_alert(
+            &mut cooldown_tracker,
+            0,
+            30,
+        ));
+    }
+
+    #[test]
+    fn test_backup_unreachable_via_ssh_is_classified_as_unreachable() {
+        assert_eq!(
+            classify_get_health_low_priority_state(
+                &crate::types::NodeStatus::Unknown,
+                false,
+                Some("Failed to parse RPC response: EOF while parsing a value at line 1 column 0. Output: "),
+            ),
+            Some("Unreachable")
+        );
+
+        let mut cooldown_tracker = AlertTracker::with_cooldown(1, 1);
+        assert!(should_send_get_health_low_priority_alert(
+            &mut cooldown_tracker,
+            0,
+            30,
+        ));
+    }
+
+
+
+    #[test]
+    fn test_get_health_alert_decision_routes_standby_unhealthy_to_low_priority() {
+        let mut cooldown_tracker = AlertTracker::with_cooldown(1, 1800);
+        let failure_start = Instant::now() - Duration::from_secs(30);
+
+        assert_eq!(
+            get_health_low_priority_alert_decision(
+                &crate::types::NodeStatus::Standby,
+                false,
+                Some("RPC error: Node is behind by 12 slots"),
+                Some(failure_start),
+                &mut cooldown_tracker,
+                0,
+            ),
+            Some(("Unhealthy", 30))
+        );
+    }
+
+    #[test]
+    fn test_get_health_alert_decision_never_routes_active_node() {
+        let mut cooldown_tracker = AlertTracker::with_cooldown(1, 1800);
+        let failure_start = Instant::now() - Duration::from_secs(30);
+
+        assert_eq!(
+            get_health_low_priority_alert_decision(
+                &crate::types::NodeStatus::Active,
+                false,
+                Some("RPC error: Node is behind by 12 slots"),
+                Some(failure_start),
+                &mut cooldown_tracker,
+                0,
+            ),
+            None
+        );
+    }
+
     // Test infrastructure alert thresholds
     #[test]
     fn test_infrastructure_alert_thresholds() {
@@ -234,14 +421,14 @@ mod status_ui_alert_tests {
             delinquency_threshold_seconds: 30,
             ssh_failure_threshold_seconds: 1800, // 30 minutes - VERY LOOSE
             rpc_failure_threshold_seconds: 1800, // 30 minutes - VERY LOOSE
+            vote_account_poll_interval_seconds: 10,
+            node_status_poll_interval_seconds: 10,
             telegram: None,
+            telegram_low_priority: None,
             auto_failover_enabled: false,
         };
-
         let mut ssh_tracker = FailureTracker::new();
         let mut rpc_tracker = FailureTracker::new();
-
-        // Many failures but still under time threshold = NO ALERT (avoiding noise)
         // Record initial failure to start the timer
         ssh_tracker.record_failure("SSH error".to_string());
         rpc_tracker.record_failure("RPC error".to_string());

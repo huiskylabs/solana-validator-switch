@@ -8,6 +8,10 @@
 
 version: "1.0.0"
 
+# When true, SVS writes extra runtime logs for vote-fetch and low-priority alert delivery.
+# Defaults to false when omitted.
+verbose_logging: false
+
 validators:
   # You can define multiple validator pairs if you manage multiple validators
   # Each validator pair shares the same vote account and identity
@@ -75,7 +79,22 @@ alert_config:
   enabled: true
   delinquency_threshold_seconds: 30 # CRITICAL: Alert after 30 seconds without voting
   ssh_failure_threshold_seconds: 1800 # LOW PRIORITY: Alert after 30 minutes of SSH failures
-  rpc_failure_threshold_seconds: 1800 # LOW PRIORITY: Alert after 30 minutes of RPC failures
+  rpc_failure_threshold_seconds: 30 # LOW PRIORITY: Alert after 30 seconds of RPC failures
+
+  # How often to poll the configured cluster RPC for vote-account status.
+  # Default if omitted: 10 seconds (preserves historical behavior).
+  # If public RPC returns HTTP 429 Too Many Requests, raise this to 30 or 60.
+  # Example override: 20 seconds reduces public RPC pressure by ~2x
+  # while keeping delinquency detection reasonably fast.
+  # Note: setting this above delinquency_threshold_seconds increases worst-case
+  # detection latency for real delinquency.
+  vote_account_poll_interval_seconds: 20
+
+  # How often to run direct checks against validator nodes (SSH, identity,
+  # backup getHealth, version, swap-readiness). Default if omitted: 10 seconds.
+  # Set this to 20 to make direct validator checks and the status footer cadence
+  # match a 20-second operator-facing refresh interval.
+  node_status_poll_interval_seconds: 20
 
   # Note: Alert cooldown periods to prevent spam:
   # - Delinquency alerts: 15-minute cooldown (high severity)

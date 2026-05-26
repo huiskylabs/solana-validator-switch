@@ -10,10 +10,13 @@ mod alert_logic_tests {
             delinquency_threshold_seconds: 30, // Critical - tight threshold
             ssh_failure_threshold_seconds: 1800, // 30 minutes - very loose threshold
             rpc_failure_threshold_seconds: 1800, // 30 minutes - very loose threshold
+            vote_account_poll_interval_seconds: 10,
+            node_status_poll_interval_seconds: 10,
             telegram: Some(TelegramConfig {
                 bot_token: "test_token".to_string(),
                 chat_id: "test_chat".to_string(),
             }),
+            telegram_low_priority: None,
             auto_failover_enabled: false,
         }
     }

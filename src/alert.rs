@@ -232,7 +232,24 @@ impl AlertManager {
             return Ok(());
         }
 
-        if let Some(telegram) = &self.config.telegram {
+        // Successful planned switches are informational: the operator
+        // intentionally triggered the swap, so we route them to the
+        // low-priority telegram channel (falling back to the main channel if
+        // a dedicated low-priority bot is not configured).
+        //
+        // Failures still go to the high-priority channel because they may
+        // require manual intervention — the operator needs to see them
+        // alongside other high-severity alerts.
+        let telegram = if success {
+            self.config
+                .telegram_low_priority
+                .as_ref()
+                .or(self.config.telegram.as_ref())
+        } else {
+            self.config.telegram.as_ref()
+        };
+
+        if let Some(telegram) = telegram {
             let message = if success {
                 let time_str = if let Some(time) = total_time {
                     format!(" in {}ms", time.as_millis())
@@ -407,6 +424,179 @@ impl AlertManager {
         Ok(())
     }
 
+    #[allow(dead_code)]
+    pub async fn send_backup_delinquency_alert(
+        &self,
+        validator_identity: &str,
+        node_label: &str,
+        last_vote_slot: u64,
+        seconds_since_vote: u64,
+    ) -> Result<()> {
+        if !self.config.enabled {
+            return Ok(());
+        }
+
+        if let Some(telegram) = self
+            .config
+            .telegram_low_priority
+            .as_ref()
+            .or(self.config.telegram.as_ref())
+        {
+            let message = format!(
+                "⚠️ *BACKUP NODE DELINQUENCY* ⚠️\n\n\
+                *Validator:* `{}`\n\
+                *Backup Node:* {}\n\
+                *Last Vote Slot:* {}\n\
+                *Time Since Last Vote:* {} seconds\n\
+                *Threshold:* {} seconds\n\n\
+                ℹ️ *Note:* Backup node is not currently active (Primary is handling votes)\n\n\
+                Monitor: If primary fails next, this backup should take over.",
+                validator_identity,
+                node_label,
+                last_vote_slot,
+                seconds_since_vote,
+                self.config.delinquency_threshold_seconds
+            );
+
+            self.send_telegram_message(telegram, &message).await?;
+        }
+
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub async fn send_get_health_alert_low_priority(
+        &self,
+        validator_identity: &str,
+        node_label: &str,
+        node_role: &str,
+        health_state: &str,
+        seconds_since_first: u64,
+        error: Option<&str>,
+    ) -> Result<()> {
+        if !self.config.enabled {
+            return Ok(());
+        }
+
+        if let Some(telegram) = self
+            .config
+            .telegram_low_priority
+            .as_ref()
+            .or(self.config.telegram.as_ref())
+        {
+            let error_text = error
+                .map(|value| format!("\n\n*Error:* {}", value))
+                .unwrap_or_default();
+
+            let message = format!(
+                "⚠️ *GETHEALTH {} ALERT* ⚠️\n\n\
+                *Validator:* `{}`\n\
+                *Node:* {} ({})\n\
+                *Status:* {}\n\
+                *Duration:* {} seconds\n\
+                *Threshold:* {} seconds{}\n\n\
+                ℹ️ Alert sent after repeated getHealth {} status",
+                health_state.to_uppercase(),
+                validator_identity,
+                node_label,
+                node_role,
+                health_state,
+                seconds_since_first,
+                self.config.rpc_failure_threshold_seconds,
+                error_text,
+                health_state.to_lowercase(),
+            );
+
+            self.send_telegram_message(telegram, &message).await?;
+        }
+
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub async fn send_ssh_failure_alert_low_priority(
+        &self,
+        validator_identity: &str,
+        node_label: &str,
+        consecutive_failures: u32,
+        seconds_since_first: u64,
+        error: &str,
+    ) -> Result<()> {
+        if !self.config.enabled {
+            return Ok(());
+        }
+
+        if let Some(telegram) = self
+            .config
+            .telegram_low_priority
+            .as_ref()
+            .or(self.config.telegram.as_ref())
+        {
+            let message = format!(
+                "⚠️ *SSH FAILURE ALERT* ⚠️\n\n\
+                *Validator:* `{}`\n\
+                *Node:* {}\n\
+                *Consecutive Failures:* {}\n\
+                *Duration:* {} seconds\n\
+                *Threshold:* {} seconds\n\n\
+                *Error:* {}\n\n\
+                ℹ️ Alert sent after threshold exceeded",
+                validator_identity,
+                node_label,
+                consecutive_failures,
+                seconds_since_first,
+                self.config.ssh_failure_threshold_seconds,
+                error
+            );
+
+            self.send_telegram_message(telegram, &message).await?;
+        }
+
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub async fn send_rpc_failure_alert_low_priority(
+        &self,
+        validator_identity: &str,
+        node_label: &str,
+        consecutive_failures: u32,
+        seconds_since_first: u64,
+        error: &str,
+    ) -> Result<()> {
+        if !self.config.enabled {
+            return Ok(());
+        }
+
+        if let Some(telegram) = self
+            .config
+            .telegram_low_priority
+            .as_ref()
+            .or(self.config.telegram.as_ref())
+        {
+            let message = format!(
+                "⚠️ *RPC FAILURE ALERT* ⚠️\n\n\
+                *Validator:* `{}`\n\
+                *Node:* {}\n\
+                *Consecutive Failures:* {}\n\
+                *Duration:* {} seconds\n\
+                *Threshold:* {} seconds\n\n\
+                *Error:* {}\n\n\
+                ℹ️ Alert sent after threshold exceeded",
+                validator_identity,
+                node_label,
+                consecutive_failures,
+                seconds_since_first,
+                self.config.rpc_failure_threshold_seconds,
+                error
+            );
+
+            self.send_telegram_message(telegram, &message).await?;
+        }
+
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn send_emergency_takeover_alert(
         &self,
@@ -565,6 +755,26 @@ impl AlertTracker {
                 self.last_alert_times[validator_idx] = Some(Instant::now());
                 true
             }
+        }
+    }
+
+    /// Seconds remaining until next allowed alert for this validator.
+    /// Returns Some(0) if an alert may be sent now, or None if index out of range.
+    pub fn seconds_until_next_alert(&self, validator_idx: usize) -> Option<u64> {
+        if validator_idx >= self.last_alert_times.len() {
+            return None;
+        }
+
+        match self.last_alert_times[validator_idx] {
+            Some(last_time) => {
+                let elapsed = last_time.elapsed().as_secs();
+                if elapsed >= self.cooldown_seconds {
+                    Some(0)
+                } else {
+                    Some(self.cooldown_seconds - elapsed)
+                }
+            }
+            None => Some(0),
         }
     }
 

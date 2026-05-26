@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VoteAccountInfo {
     pub vote_pubkey: String,
@@ -136,45 +135,73 @@ pub async fn fetch_vote_account_data(
             anyhow!("Vote account {} not found among {} vote accounts. Make sure the RPC endpoint matches the network (mainnet/testnet/devnet) where this vote account exists.", vote_pubkey_str, total_accounts)
         })?;
 
-    // Get detailed vote account data
+    // Get detailed vote account data. We still ask for this because the
+    // deserialized VoteState gives us a richer view (recent votes list with
+    // per-vote latency, credits, last_timestamp) — but newer on-chain vote
+    // state formats (e.g. VoteStateV4 introduced with Agave 2.x / Firedancer
+    // 0.5+) are not understood by the deserializer in solana-sdk 1.18 and
+    // produce a "invalid account data for instruction" error. When that
+    // happens we fall back to the lighter view derivable from `vote_info`,
+    // which is enough to keep delinquency detection working.
     let account_data = rpc_client
         .get_account(&vote_pubkey)
         .map_err(|e| anyhow!("Failed to get vote account data: {}", e))?;
 
-    // Parse vote state from account data
-    let vote_state = solana_sdk::vote::state::VoteState::deserialize(&account_data.data)
-        .map_err(|e| anyhow!("Failed to deserialize vote state: {}", e))?;
+    let vote_state = solana_sdk::vote::state::VoteState::deserialize(&account_data.data).ok();
 
-    // Get recent votes with latency
-    let mut recent_votes = Vec::new();
     let current_slot = rpc_client
         .get_slot()
         .map_err(|e| anyhow!("Failed to get current slot: {}", e))?;
 
-    // Get the most recent votes (up to 31 as shown in the example)
-    // The votes are stored in order, with most recent at the end
-    let vote_count = vote_state.votes.len();
-    for (i, lockout) in vote_state.votes.iter().rev().take(31).enumerate() {
-        // Calculate latency as difference between consecutive votes
-        // For the most recent vote, use current slot
-        let latency = if i == 0 {
-            // Most recent vote - latency from current slot
-            current_slot.saturating_sub(lockout.slot())
-        } else if i < vote_count - 1 {
-            // Get the next more recent vote (previous in reversed iteration)
-            if let Some(next_vote) = vote_state.votes.get(vote_count - i) {
-                next_vote.slot().saturating_sub(lockout.slot())
+    // Build the recent_votes list. Prefer the rich VoteState path; fall back
+    // to a single synthesized entry from vote_info.last_vote when the on-chain
+    // format is newer than what the SDK can decode.
+    let mut recent_votes = Vec::new();
+    if let Some(ref vs) = vote_state {
+        // Get the most recent votes (up to 31 as shown in the example).
+        // The votes are stored in order, with most recent at the end.
+        let vote_count = vs.votes.len();
+        for (i, lockout) in vs.votes.iter().rev().take(31).enumerate() {
+            // Calculate latency as difference between consecutive votes.
+            // For the most recent vote, use current slot.
+            let latency = if i == 0 {
+                // Most recent vote - latency from current slot
+                current_slot.saturating_sub(lockout.slot())
+            } else if i < vote_count - 1 {
+                // Get the next more recent vote (previous in reversed iteration)
+                if let Some(next_vote) = vs.votes.get(vote_count - i) {
+                    next_vote.slot().saturating_sub(lockout.slot())
+                } else {
+                    1 // Default latency
+                }
             } else {
-                1 // Default latency
-            }
-        } else {
-            1 // Default latency for oldest vote
-        };
+                1 // Default latency for oldest vote
+            };
+
+            recent_votes.push(RecentVote {
+                slot: lockout.slot(),
+                confirmation_count: (i + 1) as u32,
+                latency,
+            });
+        }
+    } else {
+        // Fallback path: we couldn't decode the on-chain VoteState (likely a
+        // VoteStateV4 / newer format). vote_info.last_vote is still trustworthy
+        // because it comes from get_vote_accounts() and doesn't require account
+        // data decoding on our side. One entry is enough to drive delinquency
+        // detection in status_ui_v2; the richer UI columns (latency over the
+        // last 31 votes, missed-vote window, etc.) simply degrade.
+
+        // Do not write directly to stderr here: this function runs while the
+        // terminal UI is active, and direct stderr writes corrupt the TUI. The
+        // degraded state is represented by missing latency/missed-vote metrics;
+        // if we need operator-facing diagnostics later, route them through the
+        // UI log_sender instead of eprintln!.
 
         recent_votes.push(RecentVote {
-            slot: lockout.slot(),
-            confirmation_count: (i + 1) as u32,
-            latency,
+            slot: vote_info.last_vote,
+            confirmation_count: 1,
+            latency: current_slot.saturating_sub(vote_info.last_vote),
         });
     }
 
@@ -182,7 +209,14 @@ pub async fn fetch_vote_account_data(
     let tvc_metrics = {
         let rank_data = compute_tvc_rank(&vote_account, vote_pubkey_str);
         let avg_latency = compute_avg_vote_latency(&recent_votes);
-        let (missed, window) = compute_missed_votes(&vote_state.votes, current_slot, 500);
+        // Missed-vote counting needs the full lockout history; we only have
+        // that on the rich path. On the fallback path we report
+        // (missed=0, window=0) which the UI can interpret as "no data".
+        let (missed, window) = if let Some(ref vs) = vote_state {
+            compute_missed_votes(&vs.votes, current_slot, 500)
+        } else {
+            (0, 0)
+        };
 
         match (rank_data, avg_latency) {
             (Some((rank, total)), Some(latency)) => Some(TvcPerformanceMetrics {
@@ -203,13 +237,25 @@ pub async fn fetch_vote_account_data(
         false
     };
 
-    // Get recent timestamp if available
-    let recent_timestamp = Some(format!(
-        "{}",
-        chrono::DateTime::<chrono::Utc>::from_timestamp(vote_state.last_timestamp.timestamp, 0)
+    // Pull credits and timestamp from the rich path when we have it, otherwise
+    // fall back: epoch_credits is part of vote_info and gives the cumulative
+    // credit count without needing to decode the account data ourselves.
+    let credits = if let Some(ref vs) = vote_state {
+        vs.credits()
+    } else {
+        vote_info
+            .epoch_credits
+            .last()
+            .map(|(_, credits, _)| *credits)
+            .unwrap_or(0)
+    };
+
+    let recent_timestamp = vote_state.as_ref().map(|vs| {
+        chrono::DateTime::<chrono::Utc>::from_timestamp(vs.last_timestamp.timestamp, 0)
             .unwrap_or_default()
             .format("%Y-%m-%dT%H:%M:%SZ")
-    ));
+            .to_string()
+    });
 
     Ok(ValidatorVoteData {
         vote_account_info: VoteAccountInfo {
@@ -219,7 +265,7 @@ pub async fn fetch_vote_account_data(
             commission: vote_info.commission,
             root_slot: vote_info.root_slot,
             last_vote: vote_info.last_vote,
-            credits: vote_state.credits(),
+            credits,
             recent_timestamp,
             current_slot: Some(current_slot),
         },

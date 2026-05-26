@@ -11,10 +11,13 @@ mod tests {
             delinquency_threshold_seconds: 30,
             ssh_failure_threshold_seconds: 1800,
             rpc_failure_threshold_seconds: 1800,
+            vote_account_poll_interval_seconds: 10,
+            node_status_poll_interval_seconds: 10,
             telegram: Some(TelegramConfig {
                 bot_token: "test_token".to_string(),
                 chat_id: "test_chat".to_string(),
             }),
+            telegram_low_priority: None,
             auto_failover_enabled: false,
         }
     }

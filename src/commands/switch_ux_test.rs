@@ -299,6 +299,7 @@ mod ux_tests {
             validator_type,
             agave_validator_executable: Some("/usr/bin/agave-validator".to_string()),
             fdctl_executable: None,
+            firedancer_config_path: None,
             solana_cli_executable: Some("/usr/bin/solana".to_string()),
             version: Some("1.18.0".to_string()),
             sync_status: Some("Caught up".to_string()),

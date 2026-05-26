@@ -98,6 +98,32 @@ pub async fn run_startup_checklist_with_config(
     )
     .await?;
 
+    // Sanity-check the alert-cadence config. If operators raise
+    // `vote_account_poll_interval_seconds` above `delinquency_threshold_seconds`
+    // to dodge public-RPC 429s, the high-priority delinquency detection latency
+    // is bounded below by the poll interval rather than the threshold — i.e.
+    // alerts may take roughly poll_interval seconds to fire, not threshold
+    // seconds. Surface this loudly so it can't be a silent footgun.
+    if let Some(ref cfg) = config {
+        if let Some(ref alert_cfg) = cfg.alert_config {
+            if alert_cfg.enabled
+                && alert_cfg.vote_account_poll_interval_seconds
+                    > alert_cfg.delinquency_threshold_seconds
+            {
+                let msg = format!(
+                    "alert_config.vote_account_poll_interval_seconds = {} exceeds delinquency_threshold_seconds = {}; high-priority delinquency detection latency may approach poll-interval seconds rather than threshold seconds.",
+                    alert_cfg.vote_account_poll_interval_seconds,
+                    alert_cfg.delinquency_threshold_seconds,
+                );
+                progress_bar.suspend(|| {
+                    eprintln!("⚠️  {}", msg.yellow());
+                });
+                logger.log(&format!("WARN: {}", msg))?;
+                validation.warnings.push(msg);
+            }
+        }
+    }
+
     // Only continue with SSH and other validation if config is valid
     let ssh_pool_and_keys = if validation.config_valid {
         progress_bar.set_position(30);
@@ -246,6 +272,10 @@ pub async fn run_startup_checklist_with_config(
         if let (Some(config), Some((ssh_pool, detected_ssh_keys)), Some(validator_statuses)) =
             (config, ssh_pool_and_keys, validator_statuses)
         {
+            logger.log_section("Startup Complete")?;
+            logger.log_success("Startup checks completed successfully")?;
+            logger.log("Entering interactive mode")?;
+
             // Create metadata cache
             let metadata_cache =
                 Arc::new(Mutex::new(crate::validator_metadata::MetadataCache::new()));
@@ -1185,6 +1215,7 @@ pub async fn detect_node_statuses(
                 validator_type,
                 agave_validator_executable,
                 fdctl_executable,
+                firedancer_config_path,
                 solana_cli_executable,
                 version,
                 sync_status,
@@ -1207,6 +1238,7 @@ pub async fn detect_node_statuses(
                 validator_type,
                 agave_validator_executable,
                 fdctl_executable,
+                firedancer_config_path,
                 solana_cli_executable,
                 version,
                 sync_status,
@@ -1272,6 +1304,7 @@ async fn detect_node_statuses_with_progress(
             let (
                 status,
                 validator_type,
+                firedancer_config_path,
                 version,
                 sync_status,
                 current_identity,
@@ -1308,6 +1341,7 @@ async fn detect_node_statuses_with_progress(
                 validator_type: validator_type.clone(),
                 agave_validator_executable: agave_validator_executable.clone(),
                 fdctl_executable: fdctl_executable.clone(),
+                firedancer_config_path: firedancer_config_path.clone(),
                 solana_cli_executable: solana_cli_executable.clone(),
                 version: version.clone(),
                 sync_status: sync_status.clone(),
@@ -1523,6 +1557,7 @@ async fn detect_node_status_and_executable(
     crate::types::ValidatorType,
     Option<String>, // agave_validator_executable
     Option<String>, // fdctl_executable
+    Option<String>, // firedancer_config_path
     Option<String>, // solana_cli_executable
     Option<String>, // version
     Option<String>, // sync_status
@@ -1541,6 +1576,7 @@ async fn detect_node_status_and_executable(
             crate::types::ValidatorType::Unknown,
             None,                                      // agave_validator_executable
             None,                                      // fdctl_executable
+            None,                                      // firedancer_config_path
             None,                                      // solana_cli_executable
             None,                                      // version
             None,                                      // sync_status
@@ -1809,15 +1845,19 @@ async fn detect_node_status_and_executable(
         }
     }
 
-    match crate::validator_rpc::get_identity(
-        ssh_pool,
-        node,
-        &ssh_key,
-        crate::validator_rpc::get_rpc_port(validator_type.clone(), command_line.as_deref()),
+    let identity_check = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        crate::validator_rpc::get_identity(
+            ssh_pool,
+            node,
+            &ssh_key,
+            crate::validator_rpc::get_rpc_port(validator_type.clone(), command_line.as_deref()),
+        ),
     )
-    .await
-    {
-        Ok(identity) => {
+    .await;
+
+    match identity_check {
+        Ok(Ok(identity)) => {
             if !identity.is_empty() {
                 current_identity = Some(identity.clone());
                 // logger.log(&format!("Set current_identity to: {}", identity)).ok();
@@ -1832,6 +1872,7 @@ async fn detect_node_status_and_executable(
                         validator_type.clone(),
                         agave_validator_executable,
                         fdctl_executable,
+                        firedancer_config_path,
                         solana_cli_executable,
                         version,
                         sync_status,
@@ -1848,6 +1889,7 @@ async fn detect_node_status_and_executable(
                         validator_type.clone(),
                         agave_validator_executable,
                         fdctl_executable,
+                        firedancer_config_path,
                         solana_cli_executable,
                         version,
                         sync_status,
@@ -1866,6 +1908,7 @@ async fn detect_node_status_and_executable(
                 validator_type.clone(),
                 agave_validator_executable,
                 fdctl_executable,
+                firedancer_config_path,
                 solana_cli_executable,
                 version,
                 sync_status,
@@ -1875,13 +1918,31 @@ async fn detect_node_status_and_executable(
                 swap_issues,
             ))
         }
-        Err(_e) => {
+        Ok(Err(_e)) => {
+            // logger.log_error("RPC identity check", &format!("Failed for node {}: {:?}", node.label, e)).ok();
+            Ok((
+                crate::types::NodeStatus::Unknown,
+                validator_type.clone(),
+                agave_validator_executable.clone(),
+                fdctl_executable.clone(),
+                firedancer_config_path.clone(),
+                solana_cli_executable.clone(),
+                version.clone(),
+                sync_status.clone(),
+                current_identity.clone(),
+                ledger_path.clone(),
+                swap_ready,
+                swap_issues.clone(),
+            ))
+        }
+        Err(_) => {
             // logger.log_error("RPC identity check", &format!("Failed for node {}: {:?}", node.label, e)).ok();
             Ok((
                 crate::types::NodeStatus::Unknown,
                 validator_type,
                 agave_validator_executable,
                 fdctl_executable,
+                firedancer_config_path,
                 solana_cli_executable,
                 version,
                 sync_status,
@@ -2010,6 +2071,7 @@ async fn detect_node_status_and_executable_with_progress(
 ) -> Result<(
     crate::types::NodeStatus,
     crate::types::ValidatorType,
+    Option<String>, // firedancer_config_path
     Option<String>, // version
     Option<String>, // sync_status
     Option<String>, // current_identity
@@ -2036,6 +2098,7 @@ async fn detect_node_status_and_executable_with_progress(
         return Ok((
             crate::types::NodeStatus::Unknown,
             crate::types::ValidatorType::Unknown,
+            None,                                      // firedancer_config_path
             None,                                      // version
             None,                                      // sync_status
             None,                                      // current_identity
@@ -2063,6 +2126,7 @@ async fn detect_node_status_and_executable_with_progress(
     let sync_status;
     let mut current_identity = None;
     let mut ledger_path = None;
+    let mut firedancer_config_path = None;
 
     // Step 2: Validator Type Detection (from config)
     logger.log(&format!("Validator type from config: {:?}", validator_type))?;
@@ -2086,7 +2150,7 @@ async fn detect_node_status_and_executable_with_progress(
     if let Ok(output) = ssh_pool.execute_command(node, &ssh_key, ps_cmd).await {
         logger.log_ssh_command(&node.host, ps_cmd, &output, None)?;
 
-        // Extract ledger path from process arguments
+        // Extract ledger path and Firedancer config path from process arguments
         for line in output.lines() {
             let parts: Vec<&str> = line.split_whitespace().collect();
 
@@ -2098,6 +2162,13 @@ async fn detect_node_status_and_executable_with_progress(
                         .log(&format!("Extracted ledger path: {}", parts[i + 1]))
                         .ok();
                     break;
+                }
+                // For Firedancer, also capture the config path
+                if validator_type == crate::types::ValidatorType::Firedancer && part == &"--config" && i + 1 < parts.len() {
+                    firedancer_config_path = Some(parts[i + 1].to_string());
+                    logger
+                        .log(&format!("Extracted Firedancer config path: {}", parts[i + 1]))
+                        .ok();
                 }
             }
 
@@ -2111,13 +2182,14 @@ async fn detect_node_status_and_executable_with_progress(
     if validator_type == crate::types::ValidatorType::Firedancer && ledger_path.is_none() {
         // Try to extract ledger path from Firedancer config file
         // First find the config path from the running process
-        let config_cmd = "ps aux | grep 'fdctl.*--config' | grep -v grep | head -1";
+        let config_cmd = "ps aux | grep 'fdctl.*--config ' | grep -v grep | head -1";
         if let Ok(output) = ssh_pool.execute_command(node, &ssh_key, config_cmd).await {
             // Extract config path
             let parts: Vec<&str> = output.split_whitespace().collect();
             for (i, part) in parts.iter().enumerate() {
                 if part == &"--config" && i + 1 < parts.len() {
                     let config_path = parts[i + 1];
+                    firedancer_config_path = Some(config_path.to_string());
                     logger
                         .log(&format!("Found Firedancer config at: {}", config_path))
                         .ok();
@@ -2399,27 +2471,40 @@ async fn detect_node_status_and_executable_with_progress(
         }
     }
 
-    match crate::validator_rpc::get_identity(
-        ssh_pool,
-        node,
-        &ssh_key,
-        crate::validator_rpc::get_rpc_port(validator_type.clone(), command_line.as_deref()),
+    let identity_check = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        crate::validator_rpc::get_identity(
+            ssh_pool,
+            node,
+            &ssh_key,
+            crate::validator_rpc::get_rpc_port(validator_type.clone(), command_line.as_deref()),
+        ),
     )
-    .await
-    {
-        Ok(identity) => {
+    .await;
+
+    match identity_check {
+        Ok(Ok(identity)) => {
             if !identity.is_empty() {
                 current_identity = Some(identity.clone());
+                logger.log_success(&format!(
+                    "Detected active identity for {}: {}",
+                    node.label, identity
+                ))?;
                 // logger.log(&format!("Set current_identity to: {}", identity)).ok();
 
                 // Check if this identity matches the validator's funded identity
                 // logger.log(&format!("Comparing identity {} with validator identity {}", identity, validator_pair.identity_pubkey)).ok();
                 if identity == validator_pair.identity_pubkey {
+                    logger.log_success(&format!(
+                        "Identity detected for {}: {} (ACTIVE)",
+                        node.label, identity
+                    ))?;
                     // logger.log_success(&format!("Node {} is ACTIVE (identity matches)", node.label)).ok();
                     // Skip tower file check during startup - will be done at switch time
                     return Ok((
                         crate::types::NodeStatus::Active,
                         validator_type.clone(),
+                        firedancer_config_path,
                         version,
                         sync_status,
                         current_identity,
@@ -2428,11 +2513,16 @@ async fn detect_node_status_and_executable_with_progress(
                         swap_issues,
                     ));
                 } else {
+                    logger.log_success(&format!(
+                        "Identity detected for {}: {} (STANDBY)",
+                        node.label, identity
+                    ))?;
                     // logger.log(&format!("Node {} is STANDBY (identity {} does not match {})", node.label, identity, validator_pair.identity_pubkey)).ok();
                     // For standby nodes, swap_ready and swap_issues are already set correctly (no tower needed)
                     return Ok((
                         crate::types::NodeStatus::Standby,
                         validator_type.clone(),
+                        firedancer_config_path,
                         version,
                         sync_status,
                         current_identity,
@@ -2443,8 +2533,17 @@ async fn detect_node_status_and_executable_with_progress(
                 }
             }
         }
-        Err(_e) => {
-            // logger.log_error("RPC identity check", &format!("Failed for node {}: {:?}", node.label, e)).ok();
+        Ok(Err(e)) => {
+            logger.log_warning(&format!(
+                "Identity RPC check failed for {}: {}",
+                node.label, e
+            ))?;
+        }
+        Err(_) => {
+            logger.log_warning(&format!(
+                "Identity RPC check timed out for {} after 20s",
+                node.label
+            ))?;
         }
     }
 
@@ -2452,9 +2551,14 @@ async fn detect_node_status_and_executable_with_progress(
     progress_bar.suspend(|| {
         println!("      ❌ Identity: Unable to determine");
     });
+    logger.log_warning(&format!(
+        "Identity unavailable for {} - marking node status as UNKNOWN",
+        node.label
+    ))?;
     Ok((
         crate::types::NodeStatus::Unknown,
         validator_type,
+        firedancer_config_path,
         version,
         sync_status,
         current_identity,

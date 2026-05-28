@@ -83,4 +83,114 @@ mod tests {
             "Should NOT trigger failover when RPC is failing"
         );
     }
+
+    /// Regression test for the deleted auto-failover trigger.
+    ///
+    /// Commit `c071354 review: apply mechanical cleanup pass` removed the
+    /// only call site of `execute_emergency_failover` while leaving the
+    /// function definition behind a stale `#[allow(dead_code)]`. The result
+    /// was that `auto_failover_enabled: true` in production silently did
+    /// nothing on the next delinquency event.
+    ///
+    /// This test asserts on the source text of `status_ui_v2.rs` so that
+    /// any future "cleanup" pass that removes the trigger again will
+    /// immediately fail the test suite — without needing to construct a
+    /// synthetic `AppState`/`UiState`/`AsyncSshPool` (which is many hundreds
+    /// of lines of boilerplate). The test is cheap insurance: it catches
+    /// deletions but does not catch logic regressions inside the trigger.
+    /// A future refactor that extracts the gate into a `pub(crate)` helper
+    /// can replace this with a behavioural test on the helper.
+    #[test]
+    fn test_auto_failover_trigger_call_site_still_present() {
+        let src = include_str!("commands/status_ui_v2.rs");
+
+        // Definition + at least one call site = at least 2 occurrences of
+        // `execute_emergency_failover(`. The definition counts as one. Any
+        // value < 2 means the call site has been deleted.
+        let occurrences = src.matches("execute_emergency_failover(").count();
+        assert!(
+            occurrences >= 2,
+            "execute_emergency_failover() has {} reference(s) in status_ui_v2.rs; expected at least 2 (1 definition + 1 call site). \
+             If this fails, the auto-failover trigger has been deleted again — see plan svs_restore_auto_failover_trigger.plan.md.",
+            occurrences
+        );
+
+        // The deleted code path emitted two distinctive log markers when
+        // the gate fired. The restored code preserves them verbatim so log
+        // greps from the previous era still match. Both must be present.
+        assert!(
+            src.contains("Auto-failover conditions met: vote_rpc_failures=0"),
+            "Expected 'Auto-failover conditions met' log line in status_ui_v2.rs; \
+             this is the first of two markers the gate emits and is required \
+             for log-grep continuity with the pre-c071354 era."
+        );
+        assert!(
+            src.contains("🚨 AUTO-FAILOVER: Initiating emergency takeover"),
+            "Expected '🚨 AUTO-FAILOVER: Initiating emergency takeover' log \
+             line in status_ui_v2.rs."
+        );
+
+        // The simulation env var must be wired to all three suppression
+        // sites. If any one of these strings disappears, simulation testing
+        // is broken and the operator cannot safely verify the gate without
+        // a real delinquency event.
+        assert!(
+            src.contains("SVS_SIMULATE_FAILOVER"),
+            "Expected SVS_SIMULATE_FAILOVER env var handling in status_ui_v2.rs."
+        );
+        assert!(
+            src.contains("🧪 SIMULATION: forcing node["),
+            "Expected '🧪 SIMULATION: forcing node[..]' force-delinquent marker."
+        );
+        assert!(
+            src.contains("🧪 SIMULATION: would have sent"),
+            "Expected '🧪 SIMULATION: would have sent' telegram-suppression marker."
+        );
+        assert!(
+            src.contains("🚨 SIMULATION DRY-RUN: auto-failover gate passed"),
+            "Expected '🚨 SIMULATION DRY-RUN' failover-suppression marker."
+        );
+    }
+
+    /// Documents the gating conditions for the auto-failover trigger.
+    ///
+    /// Mirrors the live boolean expression in the alerts_to_send loop:
+    ///     !is_backup
+    ///     && alert_config.enabled
+    ///     && alert_config.auto_failover_enabled
+    ///     && vote_rpc_failures == 0
+    /// If any of the four inputs is wrong, no failover should fire.
+    #[test]
+    fn test_auto_failover_gate_truth_table() {
+        fn gate(
+            is_backup: bool,
+            alerts_enabled: bool,
+            auto_failover_enabled: bool,
+            vote_rpc_failures: u32,
+        ) -> bool {
+            !is_backup && alerts_enabled && auto_failover_enabled && vote_rpc_failures == 0
+        }
+
+        // Happy path — fires.
+        assert!(gate(false, true, true, 0));
+
+        // Each input flipped in isolation must suppress.
+        assert!(!gate(true, true, true, 0), "backup should suppress");
+        assert!(
+            !gate(false, false, true, 0),
+            "alerts disabled should suppress"
+        );
+        assert!(
+            !gate(false, true, false, 0),
+            "auto_failover_enabled=false should suppress"
+        );
+        assert!(
+            !gate(false, true, true, 1),
+            "vote_rpc_failures>0 should suppress"
+        );
+        assert!(
+            !gate(false, true, true, 99),
+            "any vote_rpc_failures>0 should suppress"
+        );
+    }
 }

@@ -1752,18 +1752,49 @@ impl EnhancedStatusApp {
         }
     }
 
-    /// Spawn background tasks for data fetching
-    pub fn spawn_background_tasks(&self) {
-        // ── Diagnostics (dup-cycle investigation) ──
+    /// Spawn background tasks for data fetching.
+    ///
+    /// **Idempotent**: if previous background tasks are still running
+    /// (e.g. left over from a previous `run_enhanced_ui` cycle that ended
+    /// with a manual switch and looped back to create a new
+    /// `EnhancedStatusApp`), their `JoinHandle`s are aborted before new
+    /// ones are spawned. Without this, every manual switch would leave +2
+    /// orphaned loops racing the new pair on the same 20s interval,
+    /// producing the dup-cycle log bursts that the per-loop `loop_id`
+    /// instrumentation flagged.
+    pub async fn spawn_background_tasks(&self) {
+        // ── Dup-cycle root-cause fix ──
         //
-        // Increment the process-wide spawn count and log it. If a future
-        // restart shows this counter rolling past 1 inside a single process
-        // lifetime, that proves the background loops are being re-spawned
-        // (the suspected dup-cycle root cause). If it stays at 1 forever
-        // AND the per-tick loop_id values are all the same, then the dup
-        // cadence is being driven by something other than loop accumulation
-        // (e.g. the Tab-handled validator-switch path in
-        // `handle_validator_switch_with_timeout`).
+        // Cancel any previously-spawned background tasks before spawning a
+        // new set. Hold the write-lock for the absolute minimum needed.
+        {
+            let mut old_handles = self.background_tasks.write().await;
+            let aborted = old_handles.len();
+            for h in old_handles.drain(..) {
+                h.abort();
+            }
+            if aborted > 0 {
+                let _ = self.log_sender.send(LogMessage {
+                    host: "svs".to_string(),
+                    message: format!(
+                        "spawn_background_tasks: aborted {} stale background task handle(s) before respawning",
+                        aborted
+                    ),
+                    timestamp: Instant::now(),
+                    level: LogLevel::Info,
+                });
+            }
+        }
+
+        // ── Diagnostics (retained after the fix) ──
+        //
+        // Increment the process-wide spawn count and log it. Post-fix this
+        // counter still grows by 1 on every manual switch (because every
+        // switch produces a new `EnhancedStatusApp` that invokes us), but
+        // the abort step above means the loop count stays at 2 instead of
+        // growing unboundedly. If post-fix logs ever show count > 1 paired
+        // with > 2 distinct `loop_id` values within a single 20s window,
+        // the fix has regressed.
         let spawn_count = BACKGROUND_TASKS_SPAWN_COUNT
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             + 1;
@@ -1791,7 +1822,7 @@ impl EnhancedStatusApp {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             + 1;
         let log_sender_for_loop_a_ticks = self.log_sender.clone();
-        tokio::spawn(async move {
+        let loop_a_handle = tokio::spawn(async move {
             let mut interval = interval(Duration::from_secs(vote_account_poll_interval_seconds));
             interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
@@ -1831,7 +1862,7 @@ impl EnhancedStatusApp {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             + 1;
         let log_sender_for_loop_b_ticks = self.log_sender.clone();
-        tokio::spawn(async move {
+        let loop_b_handle = tokio::spawn(async move {
             let mut interval = interval(Duration::from_secs(node_status_poll_interval_seconds));
             // Don't try to "catch up" on missed ticks. If the previous refresh
             // took longer than the configured interval, wait for the next
@@ -1887,6 +1918,15 @@ impl EnhancedStatusApp {
                 });
             }
         });
+
+        // Store both handles so the next `spawn_background_tasks` invocation
+        // (after the user does a manual switch and returns to status view)
+        // can abort them, preventing the orphaned-loop accumulation bug.
+        {
+            let mut handles = self.background_tasks.write().await;
+            handles.push(loop_a_handle);
+            handles.push(loop_b_handle);
+        }
 
         // Two background tasks run independently:
         // - vote-account polling hits the configured cluster RPC
@@ -2092,8 +2132,10 @@ pub async fn run_enhanced_ui(app: &mut EnhancedStatusApp) -> Result<bool> {
     terminal.clear()?;
     terminal.hide_cursor()?;
 
-    // Spawn background tasks
-    app.spawn_background_tasks();
+    // Spawn background tasks (aborts any handles left over from a previous
+    // `run_enhanced_ui` invocation so manual switches don't accumulate
+    // orphan loops).
+    app.spawn_background_tasks().await;
 
     // Create a channel for keyboard events
     let (key_tx, mut key_rx) = tokio::sync::mpsc::unbounded_channel::<KeyEvent>();

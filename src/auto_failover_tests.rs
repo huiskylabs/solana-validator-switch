@@ -193,4 +193,80 @@ mod tests {
             "any vote_rpc_failures>0 should suppress"
         );
     }
+
+    /// Regression test for the dup-cycle root-cause fix.
+    ///
+    /// `spawn_background_tasks` is called once per `run_enhanced_ui`
+    /// invocation, and `run_enhanced_ui` is re-entered by
+    /// `show_enhanced_status_ui`'s outer loop after every manual switch.
+    /// Prior to the fix, each re-entry left the previous (Loop A, Loop B)
+    /// pair running and spawned a fresh pair on top — after N switches,
+    /// N+1 pairs would be racing on the same 20s interval, producing
+    /// log-burst dup-cycles that grew unboundedly over time.
+    ///
+    /// The fix: store the spawned `JoinHandle`s on
+    /// `EnhancedStatusApp::background_tasks`, and at the top of
+    /// `spawn_background_tasks` drain that Vec and call `.abort()` on each
+    /// handle before spawning new ones. This test asserts the source has
+    /// all three required ingredients of that pattern. A future cleanup
+    /// pass that removes any of them will fail the test suite.
+    #[test]
+    fn test_background_tasks_aborted_on_respawn() {
+        let src = include_str!("commands/status_ui_v2.rs");
+
+        // 1. The handles must be captured (not discarded by tokio::spawn).
+        assert!(
+            src.contains("let loop_a_handle = tokio::spawn"),
+            "Expected `let loop_a_handle = tokio::spawn(...)` in spawn_background_tasks. \
+             If the assignment is missing, the JoinHandle is dropped and cannot be aborted."
+        );
+        assert!(
+            src.contains("let loop_b_handle = tokio::spawn"),
+            "Expected `let loop_b_handle = tokio::spawn(...)` in spawn_background_tasks."
+        );
+
+        // 2. Both handles must be stored on background_tasks for the next
+        //    invocation to find them.
+        assert!(
+            src.contains("handles.push(loop_a_handle)"),
+            "Loop A handle must be pushed into self.background_tasks."
+        );
+        assert!(
+            src.contains("handles.push(loop_b_handle)"),
+            "Loop B handle must be pushed into self.background_tasks."
+        );
+
+        // 3. The function must abort old handles before spawning new ones.
+        //    The drain+abort is the actual dup-cycle fix.
+        assert!(
+            src.contains("for h in old_handles.drain(..)"),
+            "Expected `for h in old_handles.drain(..) {{ h.abort(); }}` pattern \
+             at the top of spawn_background_tasks. Without it, manual switches \
+             leak orphaned background loops and the dup-cycle returns."
+        );
+        assert!(
+            src.contains("h.abort();"),
+            "Expected `h.abort()` call on stale handles."
+        );
+
+        // 4. spawn_background_tasks must be async (so it can await the
+        //    RwLock). Sync version cannot abort handles correctly.
+        assert!(
+            src.contains("pub async fn spawn_background_tasks(&self)"),
+            "spawn_background_tasks must be `pub async fn` so it can `.write().await` \
+             the background_tasks RwLock for the abort/store steps."
+        );
+        assert!(
+            src.contains("app.spawn_background_tasks().await;"),
+            "Caller in run_enhanced_ui must use `.await` since the function is now async."
+        );
+
+        // 5. The diagnostic counter is retained — it's still useful for
+        //    confirming the fix (count > 1 paired with > 2 distinct loop_ids
+        //    in any 20s window would indicate regression).
+        assert!(
+            src.contains("BACKGROUND_TASKS_SPAWN_COUNT"),
+            "The diagnostic counter should be retained after the fix."
+        );
+    }
 }

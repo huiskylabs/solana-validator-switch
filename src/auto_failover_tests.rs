@@ -199,92 +199,120 @@ mod tests {
     /// `spawn_background_tasks` is called once per `run_enhanced_ui`
     /// invocation, and `run_enhanced_ui` is re-entered by
     /// `show_enhanced_status_ui`'s outer loop after every manual switch.
-    /// Prior to the fix, each re-entry left the previous (Loop A, Loop B)
-    /// pair running and spawned a fresh pair on top — after N switches,
-    /// N+1 pairs would be racing on the same 20s interval, producing
-    /// log-burst dup-cycles that grew unboundedly over time.
+    /// Prior to the JoinSet refactor, each re-entry could leave the
+    /// previous (Loop A, Loop B) pair running and spawn a fresh pair on
+    /// top — after N switches, N+1 pairs would be racing on the same 20s
+    /// interval, producing log-burst dup-cycles that grew unboundedly
+    /// over time.
     ///
-    /// The fix has TWO layers:
-    /// 1. `Drop` impl on `EnhancedStatusApp` aborts background_tasks
-    ///    handles when the app instance is dropped. This is the
-    ///    load-bearing layer because `show_enhanced_status_ui` creates a
-    ///    new `EnhancedStatusApp` instance every loop iteration.
-    /// 2. Inside `spawn_background_tasks`, drain `self.background_tasks`
-    ///    and `.abort()` each stale handle before pushing new ones.
-    ///    Defense-in-depth for the case where `spawn_background_tasks`
-    ///    is somehow called twice on the same app instance.
+    /// The fix is structural: `background_tasks` is a
+    /// `tokio::task::JoinSet`, which auto-aborts every task it owns when
+    /// it is dropped. Since each new `EnhancedStatusApp` replaces the
+    /// previous one (and the previous one's `JoinSet` is dropped along
+    /// with it), the stale loops cannot outlive their owning app
+    /// instance. The Drop impl on `EnhancedStatusApp` is retained as an
+    /// explicit `JoinSet::abort_all()` call so the abort moment is
+    /// visible to a debugger and to source-code search.
     ///
-    /// Both layers must be present. This test asserts on the source so
-    /// that a future cleanup pass removing either layer will fail the
-    /// test suite.
+    /// This test asserts on the source so that a future cleanup pass
+    /// that swaps the JoinSet back to a `Vec<JoinHandle>` (or removes
+    /// the Drop impl) will fail the test suite.
     #[test]
     fn test_background_tasks_aborted_on_respawn() {
         let src = include_str!("commands/status_ui_v2.rs");
 
-        // ── Layer 1: Drop impl ──
+        // ── Structural supervision: JoinSet ──
         //
-        // This is the load-bearing fix. Without it, each manual switch
-        // leaks +2 zombie background loops.
+        // `tokio::task::JoinSet` is the load-bearing primitive. Its
+        // `Drop` impl aborts every spawned task automatically, which is
+        // what prevents the dup-cycle bug. A regression to manual
+        // `Vec<JoinHandle>` management here re-opens the bug class.
+        assert!(
+            src.contains("tokio::task::JoinSet"),
+            "Expected `tokio::task::JoinSet` in status_ui_v2.rs. Without \
+             a JoinSet (or equivalent structured supervisor) the background \
+             loops are not aborted when their owning EnhancedStatusApp \
+             drops, which is the dup-cycle bug."
+        );
+        assert!(
+            src.contains("pub background_tasks: Arc<std::sync::Mutex<tokio::task::JoinSet"),
+            "Expected `pub background_tasks: Arc<std::sync::Mutex<tokio::task::JoinSet<...>>` \
+             field declaration on EnhancedStatusApp. The exact field type matters: \
+             `Arc<RwLock<Vec<JoinHandle>>>` does NOT auto-abort on drop and re-enables \
+             the dup-cycle bug class."
+        );
+
+        // ── Explicit Drop impl (defensive, makes the abort moment greppable) ──
         assert!(
             src.contains("impl Drop for EnhancedStatusApp"),
             "Expected `impl Drop for EnhancedStatusApp` in status_ui_v2.rs. \
-             Without the Drop impl, each `show_enhanced_status_ui` outer-loop \
-             iteration leaks the previous app's background loops because \
-             tokio::JoinHandle does not auto-abort on drop."
+             Even though `JoinSet::drop` would abort tasks implicitly, the \
+             explicit Drop impl makes the supervision discipline visible to \
+             readers and to source-code search."
         );
         assert!(
-            src.contains("self.background_tasks.try_write()"),
-            "Expected Drop impl to call `self.background_tasks.try_write()` \
-             to access the handle Vec."
+            src.contains("tasks.abort_all()"),
+            "Expected Drop impl to call `tasks.abort_all()` on the JoinSet \
+             guard. This is the explicit abort that makes the supervision \
+             moment debugger-visible."
         );
 
-        // ── Layer 2: abort-on-respawn ──
+        // ── Boolean signaling flags use AtomicBool, not RwLock<bool> ──
         //
-        // Defense-in-depth. Covers a hypothetical `spawn_background_tasks` \
-        // called twice on the same instance.
+        // RwLock<bool> with 50ms timeouts was silently dropping state
+        // updates under contention (bug class 3 in the concurrency-
+        // hardening plan). AtomicBool stores are wait-free so the
+        // contention path doesn't exist.
         assert!(
-            src.contains("let loop_a_handle = tokio::spawn"),
-            "Expected `let loop_a_handle = tokio::spawn(...)` in spawn_background_tasks. \
-             If the assignment is missing, the JoinHandle is dropped and cannot be aborted."
+            src.contains("Arc<AtomicBool>"),
+            "Expected `Arc<AtomicBool>` in status_ui_v2.rs for the \
+             should_quit / emergency_takeover_in_progress / switch_confirmed \
+             signaling flags."
         );
         assert!(
-            src.contains("let loop_b_handle = tokio::spawn"),
-            "Expected `let loop_b_handle = tokio::spawn(...)` in spawn_background_tasks."
-        );
-        assert!(
-            src.contains("handles.push(loop_a_handle)"),
-            "Loop A handle must be pushed into self.background_tasks."
-        );
-        assert!(
-            src.contains("handles.push(loop_b_handle)"),
-            "Loop B handle must be pushed into self.background_tasks."
-        );
-        assert!(
-            src.contains("for h in old_handles.drain(..)"),
-            "Expected `for h in old_handles.drain(..) {{ h.abort(); }}` pattern \
-             at the top of spawn_background_tasks for defense-in-depth."
-        );
-
-        // ── async fn signature + .await at caller ──
-        assert!(
-            src.contains("pub async fn spawn_background_tasks(&self)"),
-            "spawn_background_tasks must be `pub async fn` so it can `.write().await` \
-             the background_tasks RwLock for the abort/store steps."
-        );
-        assert!(
-            src.contains("app.spawn_background_tasks().await;"),
-            "Caller in run_enhanced_ui must use `.await` since the function is now async."
+            src.contains("AtomicBool::new"),
+            "Expected `AtomicBool::new(...)` constructor calls in \
+             EnhancedStatusApp::new."
         );
 
         // ── Diagnostic counter retained ──
         //
-        // After the Drop fix, the counter still grows by 1 per manual
-        // switch, but distinct loop_ids in any 20s window should stay at
-        // exactly 2 (because the previous app's handles were aborted by
-        // its Drop). Regression tell: distinct loop_ids in a window > 2.
+        // After the JoinSet refactor, the counter still grows by 1 per
+        // manual switch, but distinct loop_ids in any 20s window should
+        // stay at exactly 2 (because the previous app's JoinSet aborted
+        // its tasks on drop). Regression tell: distinct loop_ids in a
+        // window > 2.
         assert!(
             src.contains("BACKGROUND_TASKS_SPAWN_COUNT"),
             "The diagnostic counter should be retained after the fix."
+        );
+
+        // ── No silent-drop try_write inside refresh_vote_data_for_alerts ──
+        //
+        // The hot-path audit (Change 3 in the plan) converted every
+        // `try_write` site in the body of `refresh_vote_data_for_alerts`
+        // to a `write_lock_with_timeout` that logs a Warning on timeout.
+        // If a future change re-introduces `try_write()` inside this
+        // function body, the silent-drop pattern returns and bug class 3
+        // re-opens (vote_rpc_failures counter desyncs, alert suppressed
+        // when it shouldn't be, etc.).
+        let fn_start = src
+            .find("async fn refresh_vote_data_for_alerts(")
+            .expect("refresh_vote_data_for_alerts function must exist");
+        let after_start = &src[fn_start..];
+        // The next "/// View states for the UI" marker is right after
+        // the function's closing brace — see the source ordering near
+        // the top of status_ui_v2.rs.
+        let body_end = after_start
+            .find("/// View states for the UI")
+            .expect("View states marker must follow refresh_vote_data_for_alerts");
+        let body = &after_start[..body_end];
+        assert!(
+            !body.contains("try_write()"),
+            "`try_write()` reappeared inside refresh_vote_data_for_alerts. \
+             This re-opens the silent-drop bug class — converting it to \
+             `write_lock_with_timeout(&ui_state, 500).await` with a Warning \
+             log on the Err arm is the correct pattern."
         );
     }
 }

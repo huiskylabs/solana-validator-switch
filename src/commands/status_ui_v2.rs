@@ -22,7 +22,6 @@ async fn read_lock_with_timeout<T>(
 }
 
 /// Helper for acquiring write lock with timeout
-#[allow(dead_code)]
 async fn write_lock_with_timeout<T>(
     lock: &Arc<RwLock<T>>,
     timeout_ms: u64,
@@ -45,6 +44,7 @@ use ratatui::{
 };
 use std::fs::OpenOptions;
 use std::io::{self, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -114,16 +114,17 @@ use crate::{ssh::AsyncSshPool, AppState};
 
 /// Refresh vote data for all validators and send alerts.
 ///
-/// `emergency_takeover_flag` is the shared RwLock held by `EnhancedStatusApp`
-/// (`emergency_takeover_in_progress`). When the auto-failover gate fires
-/// inside this function, the spawned `execute_emergency_failover` task uses
-/// the flag to pause the UI render loop during the takeover.
+/// `emergency_takeover_flag` is the shared `Arc<AtomicBool>` held by
+/// `EnhancedStatusApp` (`emergency_takeover_in_progress`). When the
+/// auto-failover gate fires inside this function, the spawned
+/// `execute_emergency_failover` task uses the flag to pause the UI
+/// render loop during the takeover.
 async fn refresh_vote_data_for_alerts(
     app_state: Arc<AppState>,
     ui_state: Arc<RwLock<UiState>>,
     log_sender: tokio::sync::mpsc::UnboundedSender<LogMessage>,
     alert_manager: Option<AlertManager>,
-    emergency_takeover_flag: Arc<RwLock<bool>>,
+    emergency_takeover_flag: Arc<AtomicBool>,
 ) {
     let mut new_vote_data = Vec::new();
 
@@ -149,8 +150,21 @@ async fn refresh_vote_data_for_alerts(
                 // same old vote slot does not prove the validator voted after
                 // the RPC outage. The taint is cleared later only when this
                 // fetch observes a NEW vote slot.
-                if let Ok(mut state) = ui_state.try_write() {
-                    state.rpc_failure_tracker[idx].record_success();
+                match write_lock_with_timeout(&ui_state, 500).await {
+                    Ok(mut state) => {
+                        state.rpc_failure_tracker[idx].record_success();
+                    }
+                    Err(e) => {
+                        let _ = log_sender.send(LogMessage {
+                            host: validator_log_host(&app_state, idx),
+                            message: format!(
+                                "ui_state write lock timed out while recording RPC success for validator {}: {}",
+                                idx, e
+                            ),
+                            timestamp: Instant::now(),
+                            level: LogLevel::Warning,
+                        });
+                    }
                 }
 
                 let _ = log_sender.send(LogMessage {
@@ -175,36 +189,48 @@ async fn refresh_vote_data_for_alerts(
                 // high-priority delinquency alert based on stale cached vote
                 // timestamps.
                 let (should_alert_rpc, consecutive_failures, seconds_since_first) =
-                    if let Ok(mut state) = ui_state.try_write() {
-                        state.rpc_failure_tracker[idx].record_failure(error_message.clone());
-                        if let Some(last_failure) = state.last_vote_rpc_failure_times.get_mut(idx) {
-                            *last_failure = Some(Instant::now());
+                    match write_lock_with_timeout(&ui_state, 500).await {
+                        Ok(mut state) => {
+                            state.rpc_failure_tracker[idx].record_failure(error_message.clone());
+                            if let Some(last_failure) = state.last_vote_rpc_failure_times.get_mut(idx) {
+                                *last_failure = Some(Instant::now());
+                            }
+                            let tracker = &state.rpc_failure_tracker[idx];
+                            let consecutive = tracker.consecutive_failures;
+                            let seconds = tracker.seconds_since_first_failure().unwrap_or(0);
+                            let threshold = app_state
+                                .config
+                                .alert_config
+                                .as_ref()
+                                .map(|c| c.rpc_failure_threshold_seconds)
+                                .unwrap_or(30);
+
+                            let should_alert = seconds >= threshold
+                                && {
+                                    let tracker_mutex = ALERT_TRACKER.get_or_init(|| {
+                                        Mutex::new(ComprehensiveAlertTracker::new(
+                                            app_state.validator_statuses.len(),
+                                            2,
+                                        ))
+                                    });
+                                    let mut tracker = tracker_mutex.lock().unwrap();
+                                    tracker.rpc_failure_tracker.should_send_alert(idx)
+                                };
+
+                            (should_alert, consecutive, seconds)
                         }
-                        let tracker = &state.rpc_failure_tracker[idx];
-                        let consecutive = tracker.consecutive_failures;
-                        let seconds = tracker.seconds_since_first_failure().unwrap_or(0);
-                        let threshold = app_state
-                            .config
-                            .alert_config
-                            .as_ref()
-                            .map(|c| c.rpc_failure_threshold_seconds)
-                            .unwrap_or(30);
-
-                        let should_alert = seconds >= threshold
-                            && {
-                                let tracker_mutex = ALERT_TRACKER.get_or_init(|| {
-                                    Mutex::new(ComprehensiveAlertTracker::new(
-                                        app_state.validator_statuses.len(),
-                                        2,
-                                    ))
-                                });
-                                let mut tracker = tracker_mutex.lock().unwrap();
-                                tracker.rpc_failure_tracker.should_send_alert(idx)
-                            };
-
-                        (should_alert, consecutive, seconds)
-                    } else {
-                        (false, 0, 0)
+                        Err(e) => {
+                            let _ = log_sender.send(LogMessage {
+                                host: validator_log_host(&app_state, idx),
+                                message: format!(
+                                    "ui_state write lock timed out while recording RPC failure for validator {}: {}",
+                                    idx, e
+                                ),
+                                timestamp: Instant::now(),
+                                level: LogLevel::Warning,
+                            });
+                            (false, 0, 0)
+                        }
                     };
 
                 if should_alert_rpc {
@@ -297,13 +323,26 @@ async fn refresh_vote_data_for_alerts(
                         match crate::validator_rpc::get_health(&*ssh_pool, &node, &ssh_key, rpc_port).await {
                             Ok(is_healthy) => {
                                 // Update UI state rpc health
-                                if let Ok(mut st) = ui_state_local.try_write() {
-                                    if let Some(pair) = st.rpc_health_data.get_mut(vidx) {
-                                        let rpc_status = if nidx == 0 { &mut pair.node_0 } else { &mut pair.node_1 };
-                                        rpc_status.is_healthy = is_healthy;
-                                        rpc_status.last_check = Some(Instant::now());
-                                        rpc_status.error_message = None;
-                                        rpc_status.failure_start = None;
+                                match write_lock_with_timeout(&ui_state_local, 500).await {
+                                    Ok(mut st) => {
+                                        if let Some(pair) = st.rpc_health_data.get_mut(vidx) {
+                                            let rpc_status = if nidx == 0 { &mut pair.node_0 } else { &mut pair.node_1 };
+                                            rpc_status.is_healthy = is_healthy;
+                                            rpc_status.last_check = Some(Instant::now());
+                                            rpc_status.error_message = None;
+                                            rpc_status.failure_start = None;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        let _ = log_sender.send(LogMessage {
+                                            host: host_tag.clone(),
+                                            message: format!(
+                                                "ui_state write lock timed out while updating RPC health (healthy): {}",
+                                                e
+                                            ),
+                                            timestamp: Instant::now(),
+                                            level: LogLevel::Warning,
+                                        });
                                     }
                                 }
 
@@ -381,16 +420,29 @@ async fn refresh_vote_data_for_alerts(
                                 let error_text = e.to_string();
                                 let failure_start = {
                                     let mut start = None;
-                                    if let Ok(mut st) = ui_state_local.try_write() {
-                                        if let Some(pair) = st.rpc_health_data.get_mut(vidx) {
-                                            let rpc_status = if nidx == 0 { &mut pair.node_0 } else { &mut pair.node_1 };
-                                            rpc_status.is_healthy = false;
-                                            rpc_status.last_check = Some(Instant::now());
-                                            rpc_status.error_message = Some(error_text.clone());
-                                            if rpc_status.failure_start.is_none() {
-                                                rpc_status.failure_start = Some(Instant::now());
+                                    match write_lock_with_timeout(&ui_state_local, 500).await {
+                                        Ok(mut st) => {
+                                            if let Some(pair) = st.rpc_health_data.get_mut(vidx) {
+                                                let rpc_status = if nidx == 0 { &mut pair.node_0 } else { &mut pair.node_1 };
+                                                rpc_status.is_healthy = false;
+                                                rpc_status.last_check = Some(Instant::now());
+                                                rpc_status.error_message = Some(error_text.clone());
+                                                if rpc_status.failure_start.is_none() {
+                                                    rpc_status.failure_start = Some(Instant::now());
+                                                }
+                                                start = rpc_status.failure_start;
                                             }
-                                            start = rpc_status.failure_start;
+                                        }
+                                        Err(e) => {
+                                            let _ = log_sender.send(LogMessage {
+                                                host: host_tag.clone(),
+                                                message: format!(
+                                                    "ui_state write lock timed out while updating RPC health (unreachable): {}",
+                                                    e
+                                                ),
+                                                timestamp: Instant::now(),
+                                                level: LogLevel::Warning,
+                                            });
                                         }
                                     }
                                     start
@@ -479,8 +531,28 @@ async fn refresh_vote_data_for_alerts(
         }
     });
 
-    // Update UI state and check for delinquency alerts
-    if let Ok(mut state) = ui_state.try_write() {
+    // Update UI state and check for delinquency alerts. Hold the write
+    // lock for the duration of the check; a slow acquisition here
+    // surfaces as a loud Warning so a hidden writer cannot silently drop
+    // the alert pass (the silent-drop pattern that fail-open `try_write`
+    // enabled is what bug class 3 in the concurrency-hardening plan was
+    // about).
+    let mut state = match write_lock_with_timeout(&ui_state, 500).await {
+        Ok(g) => g,
+        Err(e) => {
+            let _ = log_sender.send(LogMessage {
+                host: "svs".to_string(),
+                message: format!(
+                    "ui_state write lock timed out at end of refresh_vote_data_for_alerts; skipping vote-data update and delinquency check this tick: {}",
+                    e
+                ),
+                timestamp: Instant::now(),
+                level: LogLevel::Warning,
+            });
+            return;
+        }
+    };
+    {
         // Update vote data
         let mut new_slot_times = Vec::new();
         let mut new_increments = Vec::new();
@@ -982,25 +1054,25 @@ fn key_to_action(key: KeyEvent, current_view: &ViewState) -> Option<UiAction> {
     }
 }
 
-/// Process UI actions with timeouts to prevent blocking
+/// Process UI actions with timeouts to prevent blocking.
+///
+/// `should_quit` and `switch_confirmed` are `Arc<AtomicBool>` — wait-free
+/// atomic stores instead of `RwLock<bool>` with 50ms timeouts. The 50ms
+/// timeouts were silently dropping writes under contention, which was
+/// bug class 3 in the concurrency-hardening plan; atomics remove that
+/// failure mode entirely.
 async fn process_ui_action(
     action: UiAction,
     ui_state: &Arc<RwLock<UiState>>,
-    should_quit: &Arc<RwLock<bool>>,
+    should_quit: &Arc<AtomicBool>,
     view_state: &Arc<RwLock<ViewState>>,
     app_state: &Arc<AppState>,
-    switch_confirmed: &Arc<RwLock<bool>>,
+    switch_confirmed: &Arc<AtomicBool>,
     log_sender: &tokio::sync::mpsc::UnboundedSender<LogMessage>,
 ) -> Result<()> {
     match action {
         UiAction::Quit => {
-            // Use timeout for write lock
-            let quit_write =
-                tokio::time::timeout(Duration::from_millis(50), should_quit.write()).await;
-
-            if let Ok(mut quit) = quit_write {
-                *quit = true;
-            }
+            should_quit.store(true, Ordering::Release);
         }
         UiAction::CancelSwitch => {
             // Use timeout for write lock
@@ -1021,17 +1093,9 @@ async fn process_ui_action(
             }
         }
         UiAction::ConfirmSwitch => {
-            // Use timeouts for both write locks
-            let switch_write =
-                tokio::time::timeout(Duration::from_millis(50), switch_confirmed.write()).await;
-
-            let quit_write =
-                tokio::time::timeout(Duration::from_millis(50), should_quit.write()).await;
-
-            if let (Ok(mut switch), Ok(mut quit)) = (switch_write, quit_write) {
-                *switch = true;
-                *quit = true;
-            }
+            // Atomic stores are wait-free; no timeout / contention path needed.
+            switch_confirmed.store(true, Ordering::Release);
+            should_quit.store(true, Ordering::Release);
         }
         UiAction::Refresh => {
             // Handle refresh with timeout
@@ -1149,45 +1213,34 @@ pub struct EnhancedStatusApp {
     pub ssh_pool: Arc<AsyncSshPool>,
     pub ui_state: Arc<RwLock<UiState>>,
     pub log_sender: tokio::sync::mpsc::UnboundedSender<LogMessage>,
-    pub should_quit: Arc<RwLock<bool>>,
+    pub should_quit: Arc<AtomicBool>,
     pub view_state: Arc<RwLock<ViewState>>,
-    pub emergency_takeover_in_progress: Arc<RwLock<bool>>,
-    pub switch_confirmed: Arc<RwLock<bool>>,
-    pub background_tasks: Arc<RwLock<Vec<tokio::task::JoinHandle<()>>>>,
+    pub emergency_takeover_in_progress: Arc<AtomicBool>,
+    pub switch_confirmed: Arc<AtomicBool>,
+    pub background_tasks: Arc<std::sync::Mutex<tokio::task::JoinSet<()>>>,
     pub last_manual_refresh: Arc<RwLock<Instant>>,
 }
 
 /// Abort orphaned background tasks when the app is dropped.
 ///
 /// `show_enhanced_status_ui` creates a fresh `EnhancedStatusApp` on every
-/// iteration of its outer loop (i.e. after every manual switch). The
-/// previous app's `JoinHandle`s are stored in `self.background_tasks`,
-/// but tokio does NOT auto-abort tasks when their `JoinHandle` is dropped
-/// — dropping detaches the task, leaving it running. Without this Drop
-/// impl, each manual switch leaks +2 background loops, producing the
-/// dup-cycle log bursts that the per-loop `loop_id` instrumentation
-/// surfaced (with N manual switches, N+1 (Loop A, Loop B) pairs end up
-/// racing on the same 20s interval).
-///
-/// The abort-on-respawn step inside `spawn_background_tasks` itself is
-/// retained as defense-in-depth (covers the case where the same
-/// `EnhancedStatusApp` instance has `spawn_background_tasks` called on
-/// it more than once), but this Drop impl is the load-bearing fix.
+/// iteration of its outer loop (i.e. after every manual switch). With
+/// `tokio::task::JoinSet` storing the background loop handles, dropping
+/// the `JoinSet` already aborts every spawned task — this Drop impl is
+/// kept as an explicit call to `abort_all` so the abort moment is
+/// visible to a debugger and to source-code search, and so future
+/// readers can see the supervision discipline without having to know
+/// the implicit `Drop for JoinSet` semantics.
 impl Drop for EnhancedStatusApp {
     fn drop(&mut self) {
-        // `tokio::sync::RwLock::try_write` requires being inside a tokio
-        // runtime. Drop runs from within the runtime here (the caller is
-        // `show_enhanced_status_ui`'s outer loop, which is async), so this
-        // succeeds in normal operation. If it ever fails (e.g. another
-        // writer is holding the lock at the exact moment of drop), we
-        // accept the leak — there is no useful recovery action available
-        // from a sync Drop, and at worst the next call to
-        // `spawn_background_tasks` (on a new app instance) will still
-        // produce a working monitoring loop.
-        if let Ok(mut handles) = self.background_tasks.try_write() {
-            for h in handles.drain(..) {
-                h.abort();
-            }
+        // Acquire the sync Mutex non-blockingly: if a concurrent
+        // `spawn_background_tasks` call is currently holding the lock
+        // we accept the rare leak and rely on the implicit
+        // `Drop for JoinSet` abort that runs when the Arc's refcount
+        // hits zero. There is no useful recovery action available from
+        // a sync Drop.
+        if let Ok(mut tasks) = self.background_tasks.try_lock() {
+            tasks.abort_all();
         }
     }
 }
@@ -1743,11 +1796,11 @@ impl EnhancedStatusApp {
             ssh_pool,
             ui_state,
             log_sender,
-            should_quit: Arc::new(RwLock::new(false)),
+            should_quit: Arc::new(AtomicBool::new(false)),
             view_state: Arc::new(RwLock::new(ViewState::Status)),
-            emergency_takeover_in_progress: Arc::new(RwLock::new(false)),
-            switch_confirmed: Arc::new(RwLock::new(false)),
-            background_tasks: Arc::new(RwLock::new(Vec::new())),
+            emergency_takeover_in_progress: Arc::new(AtomicBool::new(false)),
+            switch_confirmed: Arc::new(AtomicBool::new(false)),
+            background_tasks: Arc::new(std::sync::Mutex::new(tokio::task::JoinSet::new())),
             last_manual_refresh: Arc::new(RwLock::new(Instant::now() - Duration::from_secs(60))),
         })
     }
@@ -1789,47 +1842,29 @@ impl EnhancedStatusApp {
 
     /// Spawn background tasks for data fetching.
     ///
-    /// **Idempotent**: if previous background tasks are still running
-    /// (e.g. left over from a previous `run_enhanced_ui` cycle that ended
-    /// with a manual switch and looped back to create a new
-    /// `EnhancedStatusApp`), their `JoinHandle`s are aborted before new
-    /// ones are spawned. Without this, every manual switch would leave +2
-    /// orphaned loops racing the new pair on the same 20s interval,
-    /// producing the dup-cycle log bursts that the per-loop `loop_id`
-    /// instrumentation flagged.
-    pub async fn spawn_background_tasks(&self) {
-        // ── Dup-cycle root-cause fix ──
+    /// Each invocation pushes two long-running loops (vote-account poll
+    /// and node-status poll) into `self.background_tasks` (a
+    /// `tokio::task::JoinSet`). The `JoinSet` is the supervision boundary:
+    /// when the `EnhancedStatusApp` is dropped (which happens on every
+    /// outer-loop iteration of `show_enhanced_status_ui`), the `JoinSet`
+    /// drops and `tokio::task::JoinSet::drop` aborts every task it
+    /// contains. That is the structural fix for the dup-cycle class of
+    /// bug: stale loops cannot outlive their owning app instance.
+    ///
+    /// `BACKGROUND_TASKS_SPAWN_COUNT` and the per-loop `loop_id` markers
+    /// stay so post-restart log analysis can confirm exactly 2 distinct
+    /// `loop_id` values fire in any 20s window.
+    pub fn spawn_background_tasks(&self) {
+        // ── Diagnostics (retained) ──
         //
-        // Cancel any previously-spawned background tasks before spawning a
-        // new set. Hold the write-lock for the absolute minimum needed.
-        {
-            let mut old_handles = self.background_tasks.write().await;
-            let aborted = old_handles.len();
-            for h in old_handles.drain(..) {
-                h.abort();
-            }
-            if aborted > 0 {
-                let _ = self.log_sender.send(LogMessage {
-                    host: "svs".to_string(),
-                    message: format!(
-                        "spawn_background_tasks: aborted {} stale background task handle(s) before respawning",
-                        aborted
-                    ),
-                    timestamp: Instant::now(),
-                    level: LogLevel::Info,
-                });
-            }
-        }
-
-        // ── Diagnostics (retained after the fix) ──
-        //
-        // Increment the process-wide spawn count and log it. Post-fix this
-        // counter still grows by 1 on every manual switch (because every
-        // switch produces a new `EnhancedStatusApp` that invokes us), but
-        // the abort step above means the loop count stays at 2 instead of
-        // growing unboundedly. If post-fix logs ever show count > 1 paired
-        // with > 2 distinct `loop_id` values within a single 20s window,
-        // the fix has regressed.
+        // Increment the process-wide spawn count and log it. Post-fix
+        // this counter still grows by 1 on every manual switch (because
+        // every switch produces a new `EnhancedStatusApp` that invokes
+        // us), but `JoinSet::drop` on the previous instance means the
+        // loop count stays at 2 instead of growing unboundedly. If
+        // post-fix logs ever show count > 1 paired with > 2 distinct
+        // `loop_id` values within a single 20s window, the fix has
+        // regressed.
         let spawn_count = BACKGROUND_TASKS_SPAWN_COUNT
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             + 1;
@@ -1857,7 +1892,25 @@ impl EnhancedStatusApp {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             + 1;
         let log_sender_for_loop_a_ticks = self.log_sender.clone();
-        let loop_a_handle = tokio::spawn(async move {
+
+        let ui_state_for_node_refresh = Arc::clone(&self.ui_state);
+        let app_state_for_node_refresh = Arc::clone(&self.app_state);
+        let log_sender_for_node_refresh = self.log_sender.clone();
+        let loop_b_id = LOOP_INSTANCE_COUNTER
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+        let log_sender_for_loop_b_ticks = self.log_sender.clone();
+
+        // Acquire the JoinSet lock once and spawn both loops into it.
+        // `JoinSet::spawn` is sync and fast (it stores a future + handle
+        // into an internal Vec), so the sync Mutex is correct here and
+        // the lock is released immediately after both spawns complete.
+        let mut tasks = self
+            .background_tasks
+            .lock()
+            .expect("background_tasks Mutex poisoned");
+
+        tasks.spawn(async move {
             let mut interval = interval(Duration::from_secs(vote_account_poll_interval_seconds));
             interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
@@ -1890,14 +1943,7 @@ impl EnhancedStatusApp {
             }
         });
 
-        let ui_state_for_node_refresh = Arc::clone(&self.ui_state);
-        let app_state_for_node_refresh = Arc::clone(&self.app_state);
-        let log_sender_for_node_refresh = self.log_sender.clone();
-        let loop_b_id = LOOP_INSTANCE_COUNTER
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            + 1;
-        let log_sender_for_loop_b_ticks = self.log_sender.clone();
-        let loop_b_handle = tokio::spawn(async move {
+        tasks.spawn(async move {
             let mut interval = interval(Duration::from_secs(node_status_poll_interval_seconds));
             // Don't try to "catch up" on missed ticks. If the previous refresh
             // took longer than the configured interval, wait for the next
@@ -1914,14 +1960,22 @@ impl EnhancedStatusApp {
                     level: LogLevel::Info,
                 });
 
-                // Skip if already refreshing
+                // Pre-check to skip wasted work if a refresh is already in
+                // flight. Benign on `try_read` failure: if we can't get
+                // the read, we just fall through and start another
+                // refresh — the inner spawn below merges-or-skips
+                // correctly. No silent state drop here.
                 if let Ok(state) = ui_state_for_node_refresh.try_read() {
                     if state.is_refreshing {
                         continue;
                     }
                 }
 
-                // Mark as refreshing
+                // Mark-as-refreshing. Benign on `try_write` failure: if
+                // we can't get the write, we don't mark — the next tick
+                // will try again 10s later. No silent state drop with
+                // observable consequence (the worst case is one wasted
+                // refresh on the next tick).
                 if let Ok(mut state) = ui_state_for_node_refresh.try_write() {
                     state.last_refresh_time = Instant::now();
                     state.is_refreshing = true;
@@ -1953,15 +2007,6 @@ impl EnhancedStatusApp {
                 });
             }
         });
-
-        // Store both handles so the next `spawn_background_tasks` invocation
-        // (after the user does a manual switch and returns to status view)
-        // can abort them, preventing the orphaned-loop accumulation bug.
-        {
-            let mut handles = self.background_tasks.write().await;
-            handles.push(loop_a_handle);
-            handles.push(loop_b_handle);
-        }
 
         // Two background tasks run independently:
         // - vote-account polling hits the configured cluster RPC
@@ -2170,7 +2215,7 @@ pub async fn run_enhanced_ui(app: &mut EnhancedStatusApp) -> Result<bool> {
     // Spawn background tasks (aborts any handles left over from a previous
     // `run_enhanced_ui` invocation so manual switches don't accumulate
     // orphan loops).
-    app.spawn_background_tasks().await;
+    app.spawn_background_tasks();
 
     // Create a channel for keyboard events
     let (key_tx, mut key_rx) = tokio::sync::mpsc::unbounded_channel::<KeyEvent>();
@@ -2239,27 +2284,13 @@ pub async fn run_enhanced_ui(app: &mut EnhancedStatusApp) -> Result<bool> {
                 .await?;
         }
 
-        // Check for quit signal with timeout to prevent blocking
-        let quit_check =
-            tokio::time::timeout(Duration::from_millis(1), app.should_quit.read()).await;
-
-        if let Ok(should_quit) = quit_check {
-            if *should_quit {
-                break;
-            }
+        // Check for quit signal. Atomic load is wait-free; no timeout needed.
+        if app.should_quit.load(Ordering::Acquire) {
+            break;
         }
 
-        // Check if emergency takeover is in progress with timeout
-        let emergency_check = tokio::time::timeout(
-            Duration::from_millis(1),
-            app.emergency_takeover_in_progress.read(),
-        )
-        .await;
-
-        let emergency_in_progress = match emergency_check {
-            Ok(guard) => *guard,
-            Err(_) => false, // Assume no emergency if we can't check
-        };
+        // Check if emergency takeover is in progress. Atomic load is wait-free.
+        let emergency_in_progress = app.emergency_takeover_in_progress.load(Ordering::Acquire);
 
         if emergency_in_progress && !emergency_mode {
             // Just entering emergency mode - cleanup terminal
@@ -2326,9 +2357,8 @@ pub async fn run_enhanced_ui(app: &mut EnhancedStatusApp) -> Result<bool> {
     std::io::stdout().flush()?;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Return whether switch was confirmed
-    let switch_confirmed_result = read_lock_with_timeout(&app.switch_confirmed, 100).await;
-    Ok(switch_confirmed_result.map(|guard| *guard).unwrap_or(false))
+    // Return whether switch was confirmed. Atomic load is wait-free.
+    Ok(app.switch_confirmed.load(Ordering::Acquire))
 }
 
 // Note: handle_key_event has been replaced by the action-based system
@@ -3572,16 +3602,18 @@ fn draw_footer(f: &mut ratatui::Frame, area: Rect, ui_state: &UiState, app_state
 /// `tokio::spawn` so the alert-send loop continues running while the
 /// takeover executes.
 ///
-/// `emergency_takeover_flag` is the shared `Arc<RwLock<bool>>` from
-/// `EnhancedStatusApp::emergency_takeover_in_progress`; this function flips
-/// it to `true` while the takeover is in flight (to pause UI rendering) and
-/// back to `false` after the takeover completes.
+/// `emergency_takeover_flag` is the shared `Arc<AtomicBool>` from
+/// `EnhancedStatusApp::emergency_takeover_in_progress`; this function
+/// flips it to `true` while the takeover is in flight (to pause UI
+/// rendering) and back to `false` after the takeover completes. Atomic
+/// stores are wait-free so the flag-flip never contends with the UI
+/// render loop's load.
 async fn execute_emergency_failover(
     validator_status: crate::ValidatorStatus,
     alert_manager: AlertManager,
     ssh_pool: Arc<crate::ssh::AsyncSshPool>,
     detected_ssh_keys: std::collections::HashMap<String, String>,
-    emergency_takeover_flag: Arc<RwLock<bool>>,
+    emergency_takeover_flag: Arc<AtomicBool>,
 ) {
     // Find active and standby nodes
     let (active_node, standby_node) = match (
@@ -3629,7 +3661,7 @@ async fn execute_emergency_failover(
     }
 
     // Set the emergency takeover flag to suspend UI rendering
-    *emergency_takeover_flag.write().await = true;
+    emergency_takeover_flag.store(true, Ordering::Release);
 
     // Wait a moment for the UI to stop rendering and cleanup terminal
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -3651,7 +3683,7 @@ async fn execute_emergency_failover(
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     // Clear the emergency takeover flag to resume UI
-    *emergency_takeover_flag.write().await = false;
+    emergency_takeover_flag.store(false, Ordering::Release);
 }
 
 /// Draw the switch UI
@@ -4904,9 +4936,15 @@ pub async fn show_enhanced_status_ui(app_state: &AppState) -> Result<()> {
         }
 
         // Execute the switch
-        // Sync the UI's selected validator index to app_state before switch
-        // This ensures we switch the validator the user was viewing, not the default
-        if let Ok(ui_state_guard) = app.ui_state.try_read() {
+        // Sync the UI's selected validator index to app_state before switch.
+        // This ensures we switch the validator the user was viewing, not
+        // the default. We're in an async context just after
+        // `run_enhanced_ui` returned and before the next iteration, so
+        // `.read().await` is fine — there is no render-loop hot-path
+        // constraint here, and the silent-drop pattern of `try_read`
+        // could leave the switch operating on a stale index.
+        {
+            let ui_state_guard = app.ui_state.read().await;
             current_app_state.selected_validator_index = ui_state_guard.selected_validator_index;
         }
 

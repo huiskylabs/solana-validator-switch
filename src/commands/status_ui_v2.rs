@@ -1157,6 +1157,41 @@ pub struct EnhancedStatusApp {
     pub last_manual_refresh: Arc<RwLock<Instant>>,
 }
 
+/// Abort orphaned background tasks when the app is dropped.
+///
+/// `show_enhanced_status_ui` creates a fresh `EnhancedStatusApp` on every
+/// iteration of its outer loop (i.e. after every manual switch). The
+/// previous app's `JoinHandle`s are stored in `self.background_tasks`,
+/// but tokio does NOT auto-abort tasks when their `JoinHandle` is dropped
+/// — dropping detaches the task, leaving it running. Without this Drop
+/// impl, each manual switch leaks +2 background loops, producing the
+/// dup-cycle log bursts that the per-loop `loop_id` instrumentation
+/// surfaced (with N manual switches, N+1 (Loop A, Loop B) pairs end up
+/// racing on the same 20s interval).
+///
+/// The abort-on-respawn step inside `spawn_background_tasks` itself is
+/// retained as defense-in-depth (covers the case where the same
+/// `EnhancedStatusApp` instance has `spawn_background_tasks` called on
+/// it more than once), but this Drop impl is the load-bearing fix.
+impl Drop for EnhancedStatusApp {
+    fn drop(&mut self) {
+        // `tokio::sync::RwLock::try_write` requires being inside a tokio
+        // runtime. Drop runs from within the runtime here (the caller is
+        // `show_enhanced_status_ui`'s outer loop, which is async), so this
+        // succeeds in normal operation. If it ever fails (e.g. another
+        // writer is holding the lock at the exact moment of drop), we
+        // accept the leak — there is no useful recovery action available
+        // from a sync Drop, and at worst the next call to
+        // `spawn_background_tasks` (on a new app instance) will still
+        // produce a working monitoring loop.
+        if let Ok(mut handles) = self.background_tasks.try_write() {
+            for h in handles.drain(..) {
+                h.abort();
+            }
+        }
+    }
+}
+
 /// UI State that can be shared across threads
 #[allow(dead_code)]
 pub struct UiState {

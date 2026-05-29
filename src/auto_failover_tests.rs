@@ -204,17 +204,44 @@ mod tests {
     /// N+1 pairs would be racing on the same 20s interval, producing
     /// log-burst dup-cycles that grew unboundedly over time.
     ///
-    /// The fix: store the spawned `JoinHandle`s on
-    /// `EnhancedStatusApp::background_tasks`, and at the top of
-    /// `spawn_background_tasks` drain that Vec and call `.abort()` on each
-    /// handle before spawning new ones. This test asserts the source has
-    /// all three required ingredients of that pattern. A future cleanup
-    /// pass that removes any of them will fail the test suite.
+    /// The fix has TWO layers:
+    /// 1. `Drop` impl on `EnhancedStatusApp` aborts background_tasks
+    ///    handles when the app instance is dropped. This is the
+    ///    load-bearing layer because `show_enhanced_status_ui` creates a
+    ///    new `EnhancedStatusApp` instance every loop iteration.
+    /// 2. Inside `spawn_background_tasks`, drain `self.background_tasks`
+    ///    and `.abort()` each stale handle before pushing new ones.
+    ///    Defense-in-depth for the case where `spawn_background_tasks`
+    ///    is somehow called twice on the same app instance.
+    ///
+    /// Both layers must be present. This test asserts on the source so
+    /// that a future cleanup pass removing either layer will fail the
+    /// test suite.
     #[test]
     fn test_background_tasks_aborted_on_respawn() {
         let src = include_str!("commands/status_ui_v2.rs");
 
-        // 1. The handles must be captured (not discarded by tokio::spawn).
+        // ── Layer 1: Drop impl ──
+        //
+        // This is the load-bearing fix. Without it, each manual switch
+        // leaks +2 zombie background loops.
+        assert!(
+            src.contains("impl Drop for EnhancedStatusApp"),
+            "Expected `impl Drop for EnhancedStatusApp` in status_ui_v2.rs. \
+             Without the Drop impl, each `show_enhanced_status_ui` outer-loop \
+             iteration leaks the previous app's background loops because \
+             tokio::JoinHandle does not auto-abort on drop."
+        );
+        assert!(
+            src.contains("self.background_tasks.try_write()"),
+            "Expected Drop impl to call `self.background_tasks.try_write()` \
+             to access the handle Vec."
+        );
+
+        // ── Layer 2: abort-on-respawn ──
+        //
+        // Defense-in-depth. Covers a hypothetical `spawn_background_tasks` \
+        // called twice on the same instance.
         assert!(
             src.contains("let loop_a_handle = tokio::spawn"),
             "Expected `let loop_a_handle = tokio::spawn(...)` in spawn_background_tasks. \
@@ -224,9 +251,6 @@ mod tests {
             src.contains("let loop_b_handle = tokio::spawn"),
             "Expected `let loop_b_handle = tokio::spawn(...)` in spawn_background_tasks."
         );
-
-        // 2. Both handles must be stored on background_tasks for the next
-        //    invocation to find them.
         assert!(
             src.contains("handles.push(loop_a_handle)"),
             "Loop A handle must be pushed into self.background_tasks."
@@ -235,22 +259,13 @@ mod tests {
             src.contains("handles.push(loop_b_handle)"),
             "Loop B handle must be pushed into self.background_tasks."
         );
-
-        // 3. The function must abort old handles before spawning new ones.
-        //    The drain+abort is the actual dup-cycle fix.
         assert!(
             src.contains("for h in old_handles.drain(..)"),
             "Expected `for h in old_handles.drain(..) {{ h.abort(); }}` pattern \
-             at the top of spawn_background_tasks. Without it, manual switches \
-             leak orphaned background loops and the dup-cycle returns."
-        );
-        assert!(
-            src.contains("h.abort();"),
-            "Expected `h.abort()` call on stale handles."
+             at the top of spawn_background_tasks for defense-in-depth."
         );
 
-        // 4. spawn_background_tasks must be async (so it can await the
-        //    RwLock). Sync version cannot abort handles correctly.
+        // ── async fn signature + .await at caller ──
         assert!(
             src.contains("pub async fn spawn_background_tasks(&self)"),
             "spawn_background_tasks must be `pub async fn` so it can `.write().await` \
@@ -261,9 +276,12 @@ mod tests {
             "Caller in run_enhanced_ui must use `.await` since the function is now async."
         );
 
-        // 5. The diagnostic counter is retained — it's still useful for
-        //    confirming the fix (count > 1 paired with > 2 distinct loop_ids
-        //    in any 20s window would indicate regression).
+        // ── Diagnostic counter retained ──
+        //
+        // After the Drop fix, the counter still grows by 1 per manual
+        // switch, but distinct loop_ids in any 20s window should stay at
+        // exactly 2 (because the previous app's handles were aborted by
+        // its Drop). Regression tell: distinct loop_ids in a window > 2.
         assert!(
             src.contains("BACKGROUND_TASKS_SPAWN_COUNT"),
             "The diagnostic counter should be retained after the fix."

@@ -198,10 +198,21 @@ impl AlertManager {
             telegram.bot_token
         );
 
+        // No parse_mode: deliver alert text as plain text. The previous
+        // `parse_mode: "Markdown"` caused Telegram to reject any message
+        // whose interpolated user-controlled field (validator label,
+        // node host, etc.) contained an unescaped Markdown
+        // metacharacter (`_`, `*`, `` ` ``, `[`) — for example a
+        // validator label like `Meshmap_Testnet` produced
+        // "Bad Request: can't parse entities" and the alert (including
+        // HIGH-PRIORITY delinquency alerts that gate auto-failover
+        // operator visibility) was silently dropped. The literal
+        // `*bold*` markers will now appear in the rendered message;
+        // restoring rich formatting safely requires escaping every
+        // user-controlled field, which is a separate follow-up.
         let payload = json!({
             "chat_id": telegram.chat_id,
             "text": message,
-            "parse_mode": "Markdown",
             "disable_web_page_preview": true
         });
 

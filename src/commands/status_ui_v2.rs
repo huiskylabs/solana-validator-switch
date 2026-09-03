@@ -4689,12 +4689,13 @@ async fn refresh_node_version(
     ui_state: Arc<RwLock<UiState>>,
     log_sender: tokio::sync::mpsc::UnboundedSender<LogMessage>,
 ) {
-    // The validator binary version changes only when the operator deploys a
-    // new build, so polling it every 10 seconds is wasteful on the primary.
-    // Throttle to PRIMARY_SLOW_CHECK_INTERVAL on the primary; backup nodes
-    // continue to refresh at the normal cadence.
+    // The validator binary version changes only when the operator deploys a new
+    // build, so polling it every 10s is wasteful on BOTH nodes. Unlike
+    // status/identity, the standby's version doesn't drive swap detection, so it
+    // can be throttled too — pass Active to apply the 10-min throttle regardless
+    // of role. (Swap detection stays at 10s in refresh_node_status_and_identity.)
     if should_throttle_primary_check(
-        &node.status,
+        &crate::types::NodeStatus::Active,
         validator_idx,
         node_idx,
         "node_version",

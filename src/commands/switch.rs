@@ -57,6 +57,229 @@ fn decode_base64_payload(payload: &str) -> Result<Vec<u8>> {
         .map_err(|e| anyhow!("Failed to decode transferred tower data: {}", e))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FailoverMode {
+    Graceful,
+    DegradedSourceUnavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FailoverStepPlan {
+    pub demote_source: bool,
+    pub transfer_tower: bool,
+    pub promote_standby: bool,
+}
+
+impl FailoverMode {
+    pub(crate) fn for_confirmed_delinquency(source_reachable: bool) -> Self {
+        if source_reachable {
+            Self::Graceful
+        } else {
+            Self::DegradedSourceUnavailable
+        }
+    }
+
+    pub(crate) fn step_plan(self) -> FailoverStepPlan {
+        let source_steps = matches!(self, Self::Graceful);
+        FailoverStepPlan {
+            demote_source: source_steps,
+            transfer_tower: source_steps,
+            promote_standby: true,
+        }
+    }
+
+    fn attempts_source_steps(self) -> bool {
+        self.step_plan().demote_source
+    }
+}
+
+/// Minimal per-node view used to decide switch direction.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct NodeRoleInput {
+    pub status: crate::types::NodeStatus,
+    pub has_tower: bool,
+}
+
+/// Why a direction was chosen, so callers can explain themselves to the user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RoleResolutionReason {
+    /// Exactly one node reports the funded identity and one reports a different one.
+    ActiveAndStandby,
+    /// No node reports the funded identity, but exactly one healthy standby remains
+    /// and every other node is unreachable. Disaster takeover.
+    DegradedStandbyPromotion,
+    /// Both nodes report an unfunded identity; direction chosen by tower presence.
+    TowerRecovery,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum RoleResolution {
+    Resolved {
+        source_idx: usize,
+        target_idx: usize,
+        mode: FailoverMode,
+        reason: RoleResolutionReason,
+    },
+    Ambiguous(&'static str),
+}
+
+/// Node roles carrying an assertion about where they came from.
+///
+/// Roles are the single most dangerous input to a failover: get them stale and
+/// the switch runs backwards, demoting the healthy node and promoting the one
+/// that already failed. `AppState` holds roles detected at startup and an
+/// automatic failover does not refresh them, so reading roles from it in a
+/// long-running UI produced exactly that.
+///
+/// `resolve_roles` only accepts this type, so every caller has to say which
+/// constructor applies. There is no way to pass roles without making that claim.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct AssertedNodeRoles(Vec<NodeRoleInput>);
+
+impl AssertedNodeRoles {
+    /// Roles read from live UI state on this tick.
+    pub(crate) fn from_live_ui_state(roles: Vec<NodeRoleInput>) -> Self {
+        Self(roles)
+    }
+
+    /// Roles from an `AppState` the caller guarantees is current — either built
+    /// moments ago by startup detection (one-shot CLI paths) or just refreshed
+    /// from live UI state before the call.
+    ///
+    /// Never valid for an `AppState` that has outlived a failover without being
+    /// refreshed; that is the stale read this type exists to prevent.
+    pub(crate) fn from_current_app_state(roles: Vec<NodeRoleInput>) -> Self {
+        Self(roles)
+    }
+
+    fn as_slice(&self) -> &[NodeRoleInput] {
+        &self.0
+    }
+}
+
+/// Decide which node to demote and which to promote.
+///
+/// Role comes from an RPC identity probe, so a node whose validator process is
+/// down reports `Unknown` rather than `Active`. Treating that as "undeterminable"
+/// would block the one case failover exists for, so a single healthy standby
+/// alongside unreachable peers resolves to a degraded takeover. Direction is
+/// always derived from observed roles — never from position in the config —
+/// because a positional guess can promote a dead node and demote a live one.
+pub(crate) fn resolve_roles(roles: &AssertedNodeRoles) -> RoleResolution {
+    use crate::types::NodeStatus;
+
+    let nodes = roles.as_slice();
+
+    if nodes.len() < 2 {
+        return RoleResolution::Ambiguous(
+            "Validator must have at least 2 nodes configured for switching",
+        );
+    }
+
+    let indices_with = |wanted: NodeStatus| -> Vec<usize> {
+        nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.status == wanted)
+            .map(|(i, _)| i)
+            .collect()
+    };
+
+    let active = indices_with(NodeStatus::Active);
+    let standby = indices_with(NodeStatus::Standby);
+    let unknown = indices_with(NodeStatus::Unknown);
+
+    if active.len() > 1 {
+        return RoleResolution::Ambiguous(
+            "Multiple nodes report the funded identity; refusing to switch until exactly one node is active",
+        );
+    }
+
+    match (active.first(), standby.len()) {
+        (Some(&source_idx), 1) => RoleResolution::Resolved {
+            source_idx,
+            target_idx: standby[0],
+            mode: FailoverMode::Graceful,
+            reason: RoleResolutionReason::ActiveAndStandby,
+        },
+        // No active node, one healthy standby, every other node unreachable.
+        (None, 1) if unknown.len() == nodes.len() - 1 => RoleResolution::Resolved {
+            source_idx: unknown[0],
+            target_idx: standby[0],
+            mode: FailoverMode::DegradedSourceUnavailable,
+            reason: RoleResolutionReason::DegradedStandbyPromotion,
+        },
+        // Both nodes unfunded: the one holding a tower is the more recent active.
+        (None, 2) if nodes.len() == 2 => {
+            let source_idx = if nodes[standby[0]].has_tower {
+                standby[0]
+            } else if nodes[standby[1]].has_tower {
+                standby[1]
+            } else {
+                standby[0]
+            };
+            let target_idx = if source_idx == standby[0] {
+                standby[1]
+            } else {
+                standby[0]
+            };
+            RoleResolution::Resolved {
+                source_idx,
+                target_idx,
+                mode: FailoverMode::Graceful,
+                reason: RoleResolutionReason::TowerRecovery,
+            }
+        }
+        (None, 0) => RoleResolution::Ambiguous(
+            "Cannot switch: no node is reachable. Verify RPC health and node status before attempting switch.",
+        ),
+        // One known role and no verified standby: the peer is unreachable, so
+        // there is nowhere safe to promote to.
+        (Some(_), 0) => RoleResolution::Ambiguous(
+            "Cannot switch: no standby with a known role. The peer node is unreachable, so there is no verified promotion target.",
+        ),
+        _ => RoleResolution::Ambiguous(
+            "Cannot switch: node roles are ambiguous. Verify RPC health and node status before attempting switch.",
+        ),
+    }
+}
+
+#[derive(Debug)]
+struct TowerUnavailableError(String);
+
+impl std::fmt::Display for TowerUnavailableError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for TowerUnavailableError {}
+
+fn tower_unavailable_error(message: impl Into<String>) -> anyhow::Error {
+    anyhow::Error::new(TowerUnavailableError(message.into()))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TowerFailureAction {
+    ContinueWithoutTower,
+    Abort,
+}
+
+fn tower_failure_action(source_demoted: bool, error: &anyhow::Error) -> TowerFailureAction {
+    if source_demoted && error.downcast_ref::<TowerUnavailableError>().is_some() {
+        TowerFailureAction::ContinueWithoutTower
+    } else {
+        TowerFailureAction::Abort
+    }
+}
+
+fn should_rollback_source_after_tower_failure(
+    source_demoted: bool,
+    action: TowerFailureAction,
+) -> bool {
+    source_demoted && action == TowerFailureAction::Abort
+}
+
 pub async fn switch_command(dry_run: bool, app_state: &mut crate::AppState) -> Result<bool> {
     // Clear screen and ensure clean output after menu selection
     print!("\x1B[2J\x1B[1;1H");
@@ -91,136 +314,101 @@ pub async fn switch_command_with_confirmation(
         return Ok(false);
     }
 
-    // Find active and standby nodes with full status information
-    let active_node_with_status = validator_status
-        .nodes_with_status
-        .iter()
-        .find(|n| n.status == crate::types::NodeStatus::Active);
-    let standby_node_with_status = validator_status
-        .nodes_with_status
-        .iter()
-        .find(|n| n.status == crate::types::NodeStatus::Standby);
+    // Resolve direction from observed roles rather than config order.
+    //
+    // Roles here must already be current: the TUI refreshes them from live UI
+    // state before calling, and the one-shot CLI paths build `app_state`
+    // immediately beforehand.
+    let role_inputs = AssertedNodeRoles::from_current_app_state(
+        validator_status
+            .nodes_with_status
+            .iter()
+            .map(|n| NodeRoleInput {
+                status: n.status.clone(),
+                has_tower: n.tower_path.is_some(),
+            })
+            .collect(),
+    );
 
-    let (active_node_with_status, standby_node_with_status) =
-        match (active_node_with_status, standby_node_with_status) {
-            (Some(active), Some(standby)) => (active, standby),
-            _ => {
-                // Handle special case: both nodes are standby or both unknown
-                let standby_nodes: Vec<_> = validator_status
-                    .nodes_with_status
-                    .iter()
-                    .filter(|n| n.status == crate::types::NodeStatus::Standby)
-                    .collect();
+    let (source_idx, target_idx, failover_mode, reason) = match resolve_roles(&role_inputs) {
+        RoleResolution::Resolved {
+            source_idx,
+            target_idx,
+            mode,
+            reason,
+        } => (source_idx, target_idx, mode, reason),
+        RoleResolution::Ambiguous(message) => {
+            println_if_not_silent!("\n{}", "⚠️  Cannot determine switch direction".yellow().bold());
+            println_if_not_silent!("{}", format!("   {}", message).bright_red());
+            return Err(anyhow!("{}", message));
+        }
+    };
 
-                let unknown_nodes: Vec<_> = validator_status
-                    .nodes_with_status
-                    .iter()
-                    .filter(|n| n.status == crate::types::NodeStatus::Unknown)
-                    .collect();
+    let active_node_with_status = &validator_status.nodes_with_status[source_idx];
+    let standby_node_with_status = &validator_status.nodes_with_status[target_idx];
 
-                if standby_nodes.len() == 2 {
-                    println_if_not_silent!(
-                        "\n{}",
-                        "⚠️  Both nodes are in STANDBY state - Recovery Mode"
-                            .yellow()
-                            .bold()
-                    );
+    crate::startup_logger::append_runtime_log(
+        "INFO",
+        "svs",
+        &format!(
+            "Switch requested ({}): {} -> {} | mode={:?} | reason={:?}",
+            if dry_run { "DRY RUN" } else { "LIVE" },
+            active_node_with_status.node.label,
+            standby_node_with_status.node.label,
+            failover_mode,
+            reason
+        ),
+    );
 
-                    // In recovery mode, try to identify which node has a tower file
-                    // The node with a tower file should be the "source" (assigned to active_node_with_status)
-                    let node0_has_tower =
-                        validator_status.nodes_with_status[0].tower_path.is_some();
-                    let node1_has_tower =
-                        validator_status.nodes_with_status[1].tower_path.is_some();
-
-                    let (source_idx, target_idx) = match (node0_has_tower, node1_has_tower) {
-                        (true, false) => {
-                            // Node 0 has tower, use it as source
-                            println_if_not_silent!(
-                                "   Tower file found on {} - using as source",
-                                validator_status.nodes_with_status[0].node.label
-                            );
-                            (0, 1)
-                        }
-                        (false, true) => {
-                            // Node 1 has tower, use it as source
-                            println_if_not_silent!(
-                                "   Tower file found on {} - using as source",
-                                validator_status.nodes_with_status[1].node.label
-                            );
-                            (1, 0)
-                        }
-                        (true, true) => {
-                            // Both have tower files - use node[0] as source (default)
-                            println_if_not_silent!(
-                                "   Both nodes have tower files - using {} as source",
-                                validator_status.nodes_with_status[0].node.label
-                            );
-                            (0, 1)
-                        }
-                        (false, false) => {
-                            // Neither has a detected tower file - this is risky
-                            println_if_not_silent!(
-                                "{}",
-                                "   ⚠️  WARNING: No tower file detected on either node!"
-                                    .bright_red()
-                            );
-                            println_if_not_silent!(
-                                "   Using {} as source (may fail if tower doesn't exist)",
-                                validator_status.nodes_with_status[0].node.label
-                            );
-                            (0, 1)
-                        }
-                    };
-
-                    println_if_not_silent!(
-                        "Will activate {} and keep {} as standby",
-                        validator_status.nodes_with_status[target_idx].node.label,
-                        validator_status.nodes_with_status[source_idx].node.label
-                    );
-
-                    (
-                        &validator_status.nodes_with_status[source_idx], // Source: has tower, will be demoted
-                        &validator_status.nodes_with_status[target_idx], // Target: will receive tower and become active
-                    )
-                } else if unknown_nodes.len() == 2 {
-                    // Both nodes have Unknown status - RPC likely down on both
-                    println_if_not_silent!(
-                        "\n{}",
-                        "⚠️  Both nodes have UNKNOWN status - RPC may be down"
-                            .yellow()
-                            .bold()
-                    );
-                    println_if_not_silent!(
-                        "{}",
-                        "   Cannot safely determine which node is active!".bright_red()
-                    );
-                    println_if_not_silent!(
-                        "   Please verify node status manually before proceeding."
-                    );
-                    return Err(anyhow!(
-                        "Cannot switch: Both nodes have Unknown status. \
-                        Verify RPC health and node status before attempting switch."
-                    ));
-                } else {
-                    // Fallback: use first two nodes if we can't determine status
-                    if validator_status.nodes_with_status.len() < 2 {
-                        return Err(anyhow!(
-                            "Validator must have at least 2 nodes configured for switching"
-                        ));
-                    }
-                    println_if_not_silent!(
-                        "\n{}",
-                        "⚠️  Cannot determine Active/Standby status - using default node order"
-                            .yellow()
-                    );
-                    (
-                        &validator_status.nodes_with_status[0],
-                        &validator_status.nodes_with_status[1],
-                    )
-                }
+    match reason {
+        RoleResolutionReason::ActiveAndStandby => {}
+        RoleResolutionReason::DegradedStandbyPromotion => {
+            println_if_not_silent!(
+                "\n{}",
+                "⚠️  DEGRADED TAKEOVER - active node is unreachable"
+                    .yellow()
+                    .bold()
+            );
+            println_if_not_silent!(
+                "   {} is not reporting an identity; promoting {} without source demotion or tower transfer.",
+                active_node_with_status.node.label,
+                standby_node_with_status.node.label
+            );
+            println_if_not_silent!(
+                "{}",
+                "   The standby will activate without the latest tower and may miss recent vote history."
+                    .yellow()
+            );
+        }
+        RoleResolutionReason::TowerRecovery => {
+            println_if_not_silent!(
+                "\n{}",
+                "⚠️  Both nodes are in STANDBY state - Recovery Mode"
+                    .yellow()
+                    .bold()
+            );
+            if active_node_with_status.tower_path.is_some() {
+                println_if_not_silent!(
+                    "   Tower file found on {} - using as source",
+                    active_node_with_status.node.label
+                );
+            } else {
+                println_if_not_silent!(
+                    "{}",
+                    "   ⚠️  WARNING: No tower file detected on either node!".bright_red()
+                );
+                println_if_not_silent!(
+                    "   Using {} as source (may fail if tower doesn't exist)",
+                    active_node_with_status.node.label
+                );
             }
-        };
+            println_if_not_silent!(
+                "Will activate {} and keep {} as standby",
+                standby_node_with_status.node.label,
+                active_node_with_status.node.label
+            );
+        }
+    }
 
     println_if_not_silent!(
         "\n{}",
@@ -367,39 +555,77 @@ pub async fn switch_command_with_confirmation(
         app_state.detected_ssh_keys.clone(),
     );
 
-    // Pre-warm SSH connections to both nodes for faster switching
     if !dry_run {
         let spinner = ConditionalSpinner::new("Pre-warming SSH connections...");
-
-        // Get SSH keys for both nodes
-        let active_ssh_key = app_state
-            .detected_ssh_keys
-            .get(&active_node_with_status.node.host)
-            .ok_or_else(|| anyhow!("No SSH key detected for active node"))?;
         let standby_ssh_key = app_state
             .detected_ssh_keys
             .get(&standby_node_with_status.node.host)
             .ok_or_else(|| anyhow!("No SSH key detected for standby node"))?;
+        app_state
+            .ssh_pool
+            .get_session(&standby_node_with_status.node, standby_ssh_key)
+            .await?;
 
-        // Pre-warm both connections (they'll be reused from the pool during switch)
-        {
-            let pool = app_state.ssh_pool.clone();
-            // Trigger connection creation for both nodes
-            let _ = pool
+        // The source is only a hard dependency when we intend to demote it.
+        // A Graceful switch must never proceed without it: the source still
+        // reports the funded identity, so promoting the standby without
+        // demoting it would run that identity on two nodes.
+        if failover_mode.attempts_source_steps() {
+            let active_ssh_key = app_state
+                .detected_ssh_keys
+                .get(&active_node_with_status.node.host)
+                .ok_or_else(|| anyhow!("No SSH key detected for active node"))?;
+            app_state
+                .ssh_pool
                 .get_session(&active_node_with_status.node, active_ssh_key)
                 .await?;
-            let _ = pool
-                .get_session(&standby_node_with_status.node, standby_ssh_key)
-                .await?;
+            spinner.stop_with_message("✅ SSH connections ready");
+        } else {
+            spinner.stop_with_message("✅ Standby SSH connection ready");
+            println_if_not_silent!(
+                "   Skipping source pre-warm for {} - degraded takeover does not touch it.",
+                active_node_with_status.node.label
+            );
         }
-
-        spinner.stop_with_message("✅ SSH connections ready");
     }
 
     // Execute the switch process
     let switch_result = switch_manager
-        .execute_switch(dry_run, require_confirmation)
+        .execute_switch_in_mode(dry_run, require_confirmation, failover_mode)
         .await;
+
+    match &switch_result {
+        Ok(true) => crate::startup_logger::append_runtime_log(
+            "INFO",
+            "svs",
+            &format!(
+                "Switch completed ({}): {} is now ACTIVE | mode={:?} | identity_switch={}",
+                if dry_run { "DRY RUN" } else { "LIVE" },
+                standby_node_with_status.node.label,
+                failover_mode,
+                switch_manager
+                    .identity_switch_time
+                    .map(|d| format!("{}ms", d.as_millis()))
+                    .unwrap_or_else(|| "n/a".to_string())
+            ),
+        ),
+        Ok(false) => crate::startup_logger::append_runtime_log(
+            "WARNING",
+            "svs",
+            "Switch was not completed (cancelled or unavailable)",
+        ),
+        Err(error) => crate::startup_logger::append_runtime_log(
+            "ERROR",
+            "svs",
+            &format!(
+                "Switch failed: {} -> {} | mode={:?} | {}",
+                active_node_with_status.node.label,
+                standby_node_with_status.node.label,
+                failover_mode,
+                error
+            ),
+        ),
+    }
 
     // Send Telegram notification for switch result (only for live switches)
     if !dry_run {
@@ -599,7 +825,12 @@ impl SwitchManager {
         crate::executable_utils::extract_firedancer_config_path(&process_info)
     }
 
-    async fn execute_switch(&mut self, dry_run: bool, require_confirmation: bool) -> Result<bool> {
+    async fn execute_switch_in_mode(
+        &mut self,
+        dry_run: bool,
+        require_confirmation: bool,
+        mode: FailoverMode,
+    ) -> Result<bool> {
         // Show confirmation dialog (except for dry run or when explicitly disabled)
         if !dry_run && require_confirmation {
             println!(
@@ -666,7 +897,10 @@ impl SwitchManager {
             self.warmup_backup_connection("the failover").await?;
         }
 
-        // Step 1: Switch active node to unfunded identity
+        let mut source_demoted = false;
+        let primary_offline_start = Instant::now();
+
+        if mode.attempts_source_steps() {
         println_if_not_silent!(
             "\n{}",
             "🔄 Step 1: Switch Active Node to Unfunded Identity"
@@ -674,12 +908,10 @@ impl SwitchManager {
                 .bold()
         );
         let active_switch_start = Instant::now();
-        self.switch_primary_to_unfunded(dry_run).await?;
-        // Track that step 1 completed for potential rollback
-        let step1_completed = true;
+            match self.switch_primary_to_unfunded(dry_run).await {
+                Ok(()) => {
+                    source_demoted = true;
         self.active_switch_time = Some(active_switch_start.elapsed());
-        // Mark primary offline start point (after active node switched to unfunded)
-        let primary_offline_start = Instant::now();
         if !dry_run {
             println_if_not_silent!(
                 "   ✓ Completed in {}",
@@ -688,38 +920,46 @@ impl SwitchManager {
                     .bold()
             );
         }
+                }
+                Err(error) => return Err(error),
+            }
 
-        // Step 2: Transfer tower file (with rollback on failure)
+            if source_demoted {
         println_if_not_silent!(
             "\n{}",
             "📤 Step 2: Transfer Tower File".bright_blue().bold()
         );
-        if let Err(e) = self.transfer_tower_file(dry_run).await {
-            // Step 2 failed - attempt rollback of Step 1
-            if step1_completed && !dry_run {
+                if let Err(error) = self.transfer_tower_file(dry_run).await {
+                    let action = tower_failure_action(source_demoted, &error);
+                    match action {
+                        TowerFailureAction::ContinueWithoutTower => {
                 println_if_not_silent!(
                     "\n{}",
-                    "⚠️  Tower transfer failed! Attempting rollback..."
-                        .bright_red()
+                                "⚠️  Tower transfer unavailable; continuing degraded failover because the active identity is already unfunded."
+                                    .bright_yellow()
                         .bold()
                 );
-                if let Err(rollback_err) = self.rollback_primary_to_funded().await {
-                    // CRITICAL: Both forward and rollback failed
-                    eprintln!(
+                            println_if_not_silent!("   Reason: {}", error);
+                            println_if_not_silent!(
+                                "   The standby will activate without the latest tower and may miss recent vote history."
+                            );
+                        }
+                        TowerFailureAction::Abort => {
+                            if should_rollback_source_after_tower_failure(source_demoted, action)
+                                && !dry_run
+                            {
+                                println_if_not_silent!(
                         "\n{}",
-                        "🚨 CRITICAL: Rollback failed! Validator may be in inconsistent state!"
+                                    "⚠️  Tower transfer failed integrity/safety checks; attempting rollback..."
                             .bright_red()
                             .bold()
                     );
-                    eprintln!("   Original error: {}", e);
-                    eprintln!("   Rollback error: {}", rollback_err);
-                    eprintln!(
-                        "   ⚠️  MANUAL INTERVENTION REQUIRED: Check validator status on both nodes!"
-                    );
+                                if let Err(rollback_error) = self.rollback_primary_to_funded().await
+                                {
                     return Err(anyhow!(
-                        "Switch failed and rollback failed. Original: {}. Rollback: {}",
-                        e,
-                        rollback_err
+                                        "Tower transfer failed and rollback failed. Original: {}. Rollback: {}",
+                                        error,
+                                        rollback_error
                     ));
                 }
                 println_if_not_silent!(
@@ -728,9 +968,19 @@ impl SwitchManager {
                         .bright_green()
                 );
             }
-            return Err(e);
+                            return Err(error);
+                        }
+                    }
+                }
+            }
+        } else {
+            println_if_not_silent!(
+                "\n{}",
+                "⚠️  Degraded takeover: source is unreachable and confirmed delinquent; skipping source demotion and tower transfer."
+                    .bright_yellow()
+                    .bold()
+            );
         }
-        // Note: tower_transfer_time is set inside transfer_tower_file method
 
         // Step 3: Switch standby node to funded identity (with rollback on failure)
         println_if_not_silent!(
@@ -741,9 +991,9 @@ impl SwitchManager {
         );
         let standby_switch_start = Instant::now();
         if let Err(e) = self.switch_backup_to_funded(dry_run).await {
-            // Step 3 failed - attempt rollback of Step 1
-            // Note: Tower file was transferred but that's okay, it can be overwritten later
-            if step1_completed && !dry_run {
+            // If we demoted the source, restore it when target activation fails.
+            // A degraded takeover did not modify the source, so no rollback is possible.
+            if source_demoted && !dry_run {
                 println_if_not_silent!(
                     "\n{}",
                     "⚠️  Standby activation failed! Attempting rollback..."
@@ -1083,26 +1333,39 @@ impl SwitchManager {
             .active_node_with_status
             .tower_path
             .as_ref()
-            .ok_or_else(|| anyhow!("Tower path not available for active node"))?;
+            .ok_or_else(|| tower_unavailable_error("Tower path not available for active node"))?;
 
         // Verify the tower file exists
         let check_tower_cmd = format!("test -f {} && echo 'exists' || echo 'missing'", tower_path);
         let tower_exists = {
-            let ssh_key = self.get_ssh_key_for_node(&self.active_node_with_status.node.host)?;
+            let ssh_key = self
+                .get_ssh_key_for_node(&self.active_node_with_status.node.host)
+                .map_err(|error| {
+                    tower_unavailable_error(format!(
+                        "Cannot access tower on active node: {}",
+                        error
+                    ))
+                })?;
             let pool = self.ssh_pool.clone();
             pool.execute_command(
                 &self.active_node_with_status.node,
                 &ssh_key,
                 &check_tower_cmd,
             )
-            .await?
+            .await
+            .map_err(|error| {
+                tower_unavailable_error(format!(
+                    "Failed to check tower on active node: {}",
+                    error
+                ))
+            })?
         };
 
         if tower_exists.trim() != "exists" {
-            return Err(anyhow!(
+            return Err(tower_unavailable_error(format!(
                 "Tower file not found on active node: {}",
                 tower_path
-            ));
+            )));
         }
 
         let tower_filename = tower_path.split('/').last().unwrap_or("tower.bin");
@@ -1148,7 +1411,10 @@ impl SwitchManager {
                     {
                         Ok(data) => data,
                         Err(e) => {
-                            return Err(anyhow!("Failed to read tower file: {}", e));
+                            return Err(tower_unavailable_error(format!(
+                                "Failed to read tower file from active node: {}",
+                                e
+                            )));
                         }
                     }
                 };
@@ -1469,6 +1735,278 @@ impl SwitchManager {
             }
         } else {
             println_if_not_silent!("✅ Validator identity switch completed successfully");
+        }
+    }
+}
+
+#[cfg(test)]
+mod failover_policy_tests {
+    use super::{
+        should_rollback_source_after_tower_failure, tower_failure_action,
+        tower_unavailable_error, FailoverMode, TowerFailureAction,
+    };
+
+    #[test]
+    fn automatic_failover_promotes_standby_when_source_is_unreachable() {
+        let mode = FailoverMode::for_confirmed_delinquency(false);
+        let plan = mode.step_plan();
+
+        assert_eq!(mode, FailoverMode::DegradedSourceUnavailable);
+        assert!(!plan.demote_source);
+        assert!(!plan.transfer_tower);
+        assert!(plan.promote_standby);
+    }
+
+    #[test]
+    fn automatic_failover_uses_best_effort_source_steps_when_reachable() {
+        let mode = FailoverMode::for_confirmed_delinquency(true);
+        let plan = mode.step_plan();
+
+        assert_eq!(mode, FailoverMode::Graceful);
+        assert!(plan.demote_source);
+        assert!(plan.transfer_tower);
+        assert!(plan.promote_standby);
+    }
+
+    #[test]
+    fn missing_tower_continues_only_after_source_identity_is_demoted() {
+        let unavailable = tower_unavailable_error("tower missing");
+        assert_eq!(
+            tower_failure_action(true, &unavailable),
+            TowerFailureAction::ContinueWithoutTower
+        );
+        assert_eq!(
+            tower_failure_action(false, &unavailable),
+            TowerFailureAction::Abort
+        );
+    }
+
+    #[test]
+    fn tower_integrity_or_destination_failures_still_abort() {
+        let checksum_error = anyhow::anyhow!("Tower file checksum mismatch");
+        let destination_error = anyhow::anyhow!("Failed to write tower file");
+
+        let checksum_action = tower_failure_action(true, &checksum_error);
+        let destination_action = tower_failure_action(true, &destination_error);
+
+        assert_eq!(checksum_action, TowerFailureAction::Abort);
+        assert_eq!(destination_action, TowerFailureAction::Abort);
+        assert!(should_rollback_source_after_tower_failure(
+            true,
+            checksum_action
+        ));
+        assert!(should_rollback_source_after_tower_failure(
+            true,
+            destination_action
+        ));
+        assert!(!should_rollback_source_after_tower_failure(
+            false,
+            TowerFailureAction::Abort
+        ));
+    }
+}
+
+#[cfg(test)]
+mod role_resolution_tests {
+    //! Switch direction must come from observed node roles, never from the
+    //! order nodes appear in the config.
+    //!
+    //! Role is derived from an RPC identity probe, so a node whose validator
+    //! process is down reports `Unknown`, not `Active`. The pair then looks
+    //! like `{Standby, Unknown}` and older code either refused to switch
+    //! ("Unable to determine active/standby nodes") or fell back to positional
+    //! order, which could demote the only healthy node and promote the dead one.
+
+    use super::{
+        resolve_roles, AssertedNodeRoles, FailoverMode, NodeRoleInput, RoleResolution,
+        RoleResolutionReason,
+    };
+    use crate::types::NodeStatus;
+
+    fn node(status: NodeStatus, has_tower: bool) -> NodeRoleInput {
+        NodeRoleInput { status, has_tower }
+    }
+
+    #[test]
+    fn active_and_standby_resolve_to_graceful_switch() {
+        let nodes = vec![
+            node(NodeStatus::Active, true),
+            node(NodeStatus::Standby, false),
+        ];
+
+        assert_eq!(
+            resolve_roles(&AssertedNodeRoles::from_live_ui_state(nodes.clone())),
+            RoleResolution::Resolved {
+                source_idx: 0,
+                target_idx: 1,
+                mode: FailoverMode::Graceful,
+                reason: RoleResolutionReason::ActiveAndStandby,
+            }
+        );
+    }
+
+    #[test]
+    fn standby_plus_unknown_resolves_to_degraded_promotion() {
+        let nodes = vec![
+            node(NodeStatus::Standby, false),
+            node(NodeStatus::Unknown, false),
+        ];
+
+        let resolution = resolve_roles(&AssertedNodeRoles::from_live_ui_state(nodes.clone()));
+
+        assert_eq!(
+            resolution,
+            RoleResolution::Resolved {
+                source_idx: 1,
+                target_idx: 0,
+                mode: FailoverMode::DegradedSourceUnavailable,
+                reason: RoleResolutionReason::DegradedStandbyPromotion,
+            }
+        );
+
+        let RoleResolution::Resolved { mode, .. } = resolution else {
+            panic!("expected a resolved direction");
+        };
+        let plan = mode.step_plan();
+        assert!(!plan.demote_source);
+        assert!(!plan.transfer_tower);
+        assert!(plan.promote_standby);
+    }
+
+    #[test]
+    fn degraded_resolution_targets_standby_regardless_of_index() {
+        // Regression: a positional fallback promoted whichever node came second
+        // in the config. With the healthy standby listed first that meant
+        // demoting the only working node and promoting the dead one.
+        let standby_first = vec![
+            node(NodeStatus::Standby, false),
+            node(NodeStatus::Unknown, false),
+        ];
+        let standby_second = vec![
+            node(NodeStatus::Unknown, false),
+            node(NodeStatus::Standby, false),
+        ];
+
+        for (nodes, expected_target) in [(standby_first, 0usize), (standby_second, 1usize)] {
+            let RoleResolution::Resolved {
+                source_idx,
+                target_idx,
+                mode,
+                reason,
+            } = resolve_roles(&AssertedNodeRoles::from_live_ui_state(nodes.clone()))
+            else {
+                panic!("expected a resolved direction");
+            };
+
+            assert_eq!(target_idx, expected_target, "must promote the healthy standby");
+            assert_ne!(source_idx, expected_target);
+            assert_eq!(nodes[target_idx].status, NodeStatus::Standby);
+            assert_eq!(nodes[source_idx].status, NodeStatus::Unknown);
+            assert_eq!(mode, FailoverMode::DegradedSourceUnavailable);
+            assert_eq!(reason, RoleResolutionReason::DegradedStandbyPromotion);
+        }
+    }
+
+    #[test]
+    fn two_standby_nodes_pick_source_by_tower_presence() {
+        let tower_on_second = vec![
+            node(NodeStatus::Standby, false),
+            node(NodeStatus::Standby, true),
+        ];
+
+        assert_eq!(
+            resolve_roles(&AssertedNodeRoles::from_live_ui_state(tower_on_second)),
+            RoleResolution::Resolved {
+                source_idx: 1,
+                target_idx: 0,
+                mode: FailoverMode::Graceful,
+                reason: RoleResolutionReason::TowerRecovery,
+            }
+        );
+
+        // No tower anywhere still resolves, defaulting to the first standby as
+        // source, matching the previous recovery-mode behaviour.
+        let no_tower = vec![
+            node(NodeStatus::Standby, false),
+            node(NodeStatus::Standby, false),
+        ];
+        assert_eq!(
+            resolve_roles(&AssertedNodeRoles::from_live_ui_state(no_tower)),
+            RoleResolution::Resolved {
+                source_idx: 0,
+                target_idx: 1,
+                mode: FailoverMode::Graceful,
+                reason: RoleResolutionReason::TowerRecovery,
+            }
+        );
+    }
+
+    #[test]
+    fn active_with_unreachable_peer_names_the_missing_promotion_target() {
+        // Regression: a node that was unreachable at startup stays Unknown in
+        // the app_state snapshot even after it recovers. The switch path must
+        // read live roles; if it genuinely is Active + Unknown, the refusal
+        // should say why rather than "roles are ambiguous".
+        let nodes = vec![
+            node(NodeStatus::Active, true),
+            node(NodeStatus::Unknown, false),
+        ];
+
+        let RoleResolution::Ambiguous(message) = resolve_roles(&AssertedNodeRoles::from_live_ui_state(nodes.clone())) else {
+            panic!("promoting an unverifiable node must be refused");
+        };
+        assert!(
+            message.contains("no verified promotion target"),
+            "unhelpful refusal: {message}"
+        );
+    }
+
+    #[test]
+    fn recovered_peer_makes_the_same_pair_switchable() {
+        // Same two nodes once the peer reports a role again.
+        let nodes = vec![
+            node(NodeStatus::Active, true),
+            node(NodeStatus::Standby, false),
+        ];
+
+        assert_eq!(
+            resolve_roles(&AssertedNodeRoles::from_live_ui_state(nodes.clone())),
+            RoleResolution::Resolved {
+                source_idx: 0,
+                target_idx: 1,
+                mode: FailoverMode::Graceful,
+                reason: RoleResolutionReason::ActiveAndStandby,
+            }
+        );
+    }
+
+    #[test]
+    fn unresolvable_role_combinations_are_refused() {
+        let both_unknown = vec![
+            node(NodeStatus::Unknown, false),
+            node(NodeStatus::Unknown, false),
+        ];
+        let both_active = vec![
+            node(NodeStatus::Active, true),
+            node(NodeStatus::Active, true),
+        ];
+        let single_node = vec![node(NodeStatus::Standby, false)];
+        let active_without_standby = vec![
+            node(NodeStatus::Active, true),
+            node(NodeStatus::Unknown, false),
+        ];
+
+        for nodes in [
+            both_unknown,
+            both_active,
+            single_node,
+            active_without_standby,
+        ] {
+            assert!(
+                matches!(resolve_roles(&AssertedNodeRoles::from_live_ui_state(nodes.clone())), RoleResolution::Ambiguous(_)),
+                "expected refusal for {:?}",
+                nodes
+            );
         }
     }
 }

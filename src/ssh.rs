@@ -12,6 +12,10 @@ use tokio::time::timeout;
 pub struct AsyncSshPool {
     sessions: Arc<RwLock<HashMap<String, Arc<Session>>>>,
     shell_types: Arc<RwLock<HashMap<String, RemoteShellType>>>,
+    /// Per-connection-key locks that serialize (re)connect attempts so the
+    /// several concurrent per-node background loops don't stampede and build a
+    /// pile of competing SSH masters while a node is unhealthy.
+    reconnect_locks: Arc<RwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     config: PoolConfig,
 }
 
@@ -41,6 +45,7 @@ impl AsyncSshPool {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             shell_types: Arc::new(RwLock::new(HashMap::new())),
+            reconnect_locks: Arc::new(RwLock::new(HashMap::new())),
             config,
         }
     }
@@ -63,9 +68,31 @@ impl AsyncSshPool {
             || command.contains("2>&1")
     }
 
-    /// Detect the remote shell type (PowerShell vs bash)
+    /// Detect the remote shell type, preferring bash whenever it works.
     async fn detect_remote_shell(&self, session: &Session) -> Result<RemoteShellType> {
-        // Try pwsh (PowerShell Core) detection first - this is what's common on Linux
+        // Prefer bash whenever the node has a working one. These validators run
+        // Linux, where bash is the correct, reliable shell. PowerShell (pwsh)
+        // may also be installed, but it is not a safe default: e.g. a broken
+        // pwsh/.NET install aborts on every invocation, which surfaces as
+        // "the remote process has terminated" for every SSH command and takes
+        // node health + swap-readiness monitoring down while the box is fine.
+        // Only fall back to PowerShell for genuine Windows hosts (no bash).
+        let bash_test = session
+            .command("bash")
+            .arg("-c")
+            .arg("echo svs_bash_ok")
+            .output()
+            .await;
+
+        if let Ok(output) = bash_test {
+            if output.status.success()
+                && String::from_utf8_lossy(&output.stdout).contains("svs_bash_ok")
+            {
+                return Ok(RemoteShellType::Bash);
+            }
+        }
+
+        // No usable bash - try PowerShell Core, then Windows PowerShell.
         let pwsh_test = session
             .command("pwsh")
             .arg("-Command")
@@ -101,22 +128,44 @@ impl AsyncSshPool {
     pub async fn get_session(&self, node: &NodeConfig, ssh_key_path: &str) -> Result<Arc<Session>> {
         let key = Self::get_connection_key(node, ssh_key_path);
 
-        // Try to get existing session. We always probe liveness before
-        // returning a cached session because the cost of a missed-detection
-        // (handing back a dead session right before a failover) is much
-        // higher than the cost of one extra round-trip per call.
+        // Fast path: reuse a cached session, but only if it can still run real
+        // commands. We probe through the same shell + stdout path real commands
+        // use (see probe_session_alive) rather than a bare `true`, because a
+        // multiplex master can stay half-alive: trivial execs succeed while
+        // real commands fail with "the remote process has terminated".
         {
             let sessions = self.sessions.read().await;
             if let Some(session) = sessions.get(&key) {
-                if self.is_session_alive(session).await {
+                let shell_type = self.cached_shell_type(&key).await;
+                if self.probe_session_alive(session, shell_type).await {
                     return Ok(Arc::clone(session));
                 }
 
-                // Session is stale; drop it so we reconnect cleanly below.
+                // Session is wedged/stale; drop it so we reconnect cleanly.
                 drop(sessions);
                 self.remove_session(&key).await;
             }
         }
+
+        // Slow path: (re)connect under a per-key lock so concurrent callers for
+        // the same node don't stampede and create a pile of competing masters
+        // while it is unhealthy. Only one task connects; the rest reuse it.
+        let reconnect_lock = self.reconnect_lock_for(&key).await;
+        let _guard = reconnect_lock.lock().await;
+
+        // Double-check: another task may have (re)established the session while
+        // we were waiting for the lock.
+        {
+            let sessions = self.sessions.read().await;
+            if let Some(session) = sessions.get(&key) {
+                let shell_type = self.cached_shell_type(&key).await;
+                if self.probe_session_alive(session, shell_type).await {
+                    return Ok(Arc::clone(session));
+                }
+            }
+        }
+        // Make sure any dead handle is gone before we reconnect.
+        self.remove_session(&key).await;
 
         // Create new session
         let session = self.create_session(node, ssh_key_path).await?;
@@ -146,6 +195,32 @@ impl AsyncSshPool {
     pub async fn remove_session(&self, key: &str) {
         let mut sessions = self.sessions.write().await;
         sessions.remove(key);
+    }
+
+    /// Look up the detected shell type for a connection key, defaulting to
+    /// bash when it has not been probed yet.
+    async fn cached_shell_type(&self, key: &str) -> RemoteShellType {
+        let shell_types = self.shell_types.read().await;
+        shell_types
+            .get(key)
+            .cloned()
+            .unwrap_or(RemoteShellType::Bash)
+    }
+
+    /// Get (creating if necessary) the per-key reconnect lock.
+    async fn reconnect_lock_for(&self, key: &str) -> Arc<tokio::sync::Mutex<()>> {
+        {
+            let locks = self.reconnect_locks.read().await;
+            if let Some(lock) = locks.get(key) {
+                return Arc::clone(lock);
+            }
+        }
+        let mut locks = self.reconnect_locks.write().await;
+        Arc::clone(
+            locks
+                .entry(key.to_string())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+        )
     }
 
     /// Get the cached shell type for a node, ensuring session exists first
@@ -210,12 +285,47 @@ impl AsyncSshPool {
         Ok(session)
     }
 
-    async fn is_session_alive(&self, session: &Session) -> bool {
-        // Simple check by running a lightweight command with timeout
-        match timeout(Duration::from_secs(5), session.command("true").output()).await {
-            Ok(Ok(output)) => output.status.success(),
-            _ => false, // Timeout or error = dead session
+    /// Probe whether a cached session can still run *real* commands.
+    ///
+    /// A bare `true` is not enough: after a backup node hiccups, the
+    /// multiplexed SSH master frequently stays half-alive - trivial direct
+    /// execs still succeed while `bash -c "..."` commands fail with
+    /// "the remote process has terminated". We therefore probe through the
+    /// same shell + stdout path real commands use, so get_session reconnects
+    /// instead of handing back a wedged session for hours.
+    async fn probe_session_alive(&self, session: &Session, shell_type: RemoteShellType) -> bool {
+        const MARKER: &str = "__svs_alive__";
+        let echo = format!("echo {}", MARKER);
+        let mut cmd = match shell_type {
+            RemoteShellType::PowerShellCore => {
+                let mut c = session.command("pwsh");
+                c.arg("-c").arg(&echo);
+                c
+            }
+            RemoteShellType::PowerShell => {
+                let mut c = session.command("powershell");
+                c.arg("-Command").arg(&echo);
+                c
+            }
+            RemoteShellType::Bash => {
+                let mut c = session.command("bash");
+                c.arg("-c").arg(&echo);
+                c
+            }
+        };
+        match timeout(Duration::from_secs(5), cmd.output()).await {
+            Ok(Ok(output)) => {
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).contains(MARKER)
+            }
+            _ => false, // timeout or session-level error = dead session
         }
+    }
+
+    async fn is_session_alive(&self, session: &Session) -> bool {
+        // Back-compat wrapper used by get_stats. Assumes bash (all managed
+        // validators are Linux); get_session probes with the detected shell.
+        self.probe_session_alive(session, RemoteShellType::Bash).await
     }
 
     /// Execute a command with arguments and return the output

@@ -128,8 +128,57 @@ async fn refresh_vote_data_for_alerts(
 ) {
     let mut new_vote_data = Vec::new();
 
+    // Node roles must come from live UI state, not from `app_state`.
+    //
+    // `app_state` is a snapshot taken once per UI-loop iteration, and an
+    // automatic failover does not recreate the app — so once one fires, the
+    // snapshot keeps the pre-failover roles indefinitely. Every role-keyed
+    // decision below is then computed against a stale view: alerts name the
+    // wrong node, priority is misclassified, and most seriously the direction
+    // of the *next* failover is inverted, demoting the healthy node and
+    // "promoting" the one that already failed.
+    //
+    // The snapshot still supplies everything else (detected paths, executables,
+    // ledger locations), so only `status` is overlaid.
+    let validator_statuses: Vec<crate::ValidatorStatus> = {
+        let ui_read = ui_state.read().await;
+        app_state
+            .validator_statuses
+            .iter()
+            .enumerate()
+            .map(|(idx, snapshot)| {
+                let mut corrected = snapshot.clone();
+                let snapshot_roles: Vec<crate::types::NodeStatus> = snapshot
+                    .nodes_with_status
+                    .iter()
+                    .map(|n| n.status.clone())
+                    .collect();
+                let live_roles: Vec<crate::types::NodeStatus> = ui_read
+                    .validator_statuses
+                    .get(idx)
+                    .map(|vs| {
+                        vs.nodes_with_status
+                            .iter()
+                            .map(|n| n.status.clone())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                for (node_idx, role) in resolve_live_roles(&snapshot_roles, &live_roles)
+                    .into_iter()
+                    .enumerate()
+                {
+                    if let Some(node) = corrected.nodes_with_status.get_mut(node_idx) {
+                        node.status = role;
+                    }
+                }
+                corrected
+            })
+            .collect()
+    };
+
     // Fetch vote data for all validators
-    for (idx, validator_status) in app_state.validator_statuses.iter().enumerate() {
+    for (idx, validator_status) in validator_statuses.iter().enumerate() {
         let validator_pair = &validator_status.validator_pair;
         
             // Use active node label for better identification
@@ -156,7 +205,7 @@ async fn refresh_vote_data_for_alerts(
                     }
                     Err(e) => {
                         let _ = log_sender.send(LogMessage {
-                            host: validator_log_host(&app_state, idx),
+                            host: validator_log_host_for(&validator_statuses, idx),
                             message: format!(
                                 "ui_state write lock timed out while recording RPC success for validator {}: {}",
                                 idx, e
@@ -168,7 +217,7 @@ async fn refresh_vote_data_for_alerts(
                 }
 
                 let _ = log_sender.send(LogMessage {
-                    host: validator_log_host(&app_state, idx),
+                    host: validator_log_host_for(&validator_statuses, idx),
                     message: format!(
                             "[{}] Vote data fetched: last slot {}",
                             node_label,
@@ -221,7 +270,7 @@ async fn refresh_vote_data_for_alerts(
                         }
                         Err(e) => {
                             let _ = log_sender.send(LogMessage {
-                                host: validator_log_host(&app_state, idx),
+                                host: validator_log_host_for(&validator_statuses, idx),
                                 message: format!(
                                     "ui_state write lock timed out while recording RPC failure for validator {}: {}",
                                     idx, e
@@ -246,7 +295,7 @@ async fn refresh_vote_data_for_alerts(
                             .await
                         {
                             let _ = log_sender.send(LogMessage {
-                                host: validator_log_host(&app_state, idx),
+                                host: validator_log_host_for(&validator_statuses, idx),
                                 message: format!(
                                     "Failed to send LOW-PRIORITY vote-account RPC failure alert: {}",
                                     send_err
@@ -259,7 +308,7 @@ async fn refresh_vote_data_for_alerts(
                 }
 
                 let _ = log_sender.send(LogMessage {
-                    host: validator_log_host(&app_state, idx),
+                    host: validator_log_host_for(&validator_statuses, idx),
                         message: format!("[{}] Failed to fetch vote data: {}", node_label, error_message),
                     timestamp: Instant::now(),
                     level: LogLevel::Error,
@@ -284,13 +333,19 @@ async fn refresh_vote_data_for_alerts(
     let ui_state_health = ui_state.clone();
     let log_sender_health = log_sender.clone();
     let alert_manager_health = alert_manager.clone();
+    // Roles for the skip-the-active-node decision must be the live ones. The
+    // `app_state` snapshot is only rebuilt when the UI loop restarts, so after
+    // an automatic failover it names the wrong node — which both adds getHealth
+    // load to the production active node and, worse, stops the real standby
+    // from being health-checked at all.
+    let roles_health = validator_statuses.clone();
 
     tokio::spawn(async move {
-        for (vidx, validator_status) in app_state_health.validator_statuses.iter().enumerate() {
+        for (vidx, validator_status) in roles_health.iter().enumerate() {
             // Precompute values that inner tasks need so they don't capture the
             // entire `app_state_health` Arc (which would move it on the first
             // iteration and break subsequent iterations).
-            let validator_count = app_state_health.validator_statuses.len();
+            let validator_count = roles_health.len();
             let validator_identity = validator_status.validator_pair.identity_pubkey.clone();
 
             for (nidx, node_with_status) in validator_status.nodes_with_status.iter().enumerate() {
@@ -650,6 +705,11 @@ async fn refresh_vote_data_for_alerts(
                 NodeHealthStatus,
                 bool,
                 u32,
+                // send_alert: false when the notification is within its
+                // cooldown. The entry is still enqueued so the auto-failover
+                // gate is evaluated — throttling alerts must not throttle
+                // recovery.
+                bool,
             )> = Vec::new();
 
             for (idx, last) in state.last_vote_slot_times.iter().enumerate() {
@@ -677,21 +737,20 @@ async fn refresh_vote_data_for_alerts(
                         let mut logged = simulation_force_logged().lock().unwrap();
                         if logged.insert(idx) {
                             drop(logged);
-                            let host = if let Some(node_with_status) = app_state
-                                .validator_statuses[idx]
+                            let host = if let Some(node_with_status) = validator_statuses[idx]
                                 .nodes_with_status
                                 .iter()
                                 .find(|n| n.status == crate::types::NodeStatus::Active)
                             {
                                 node_with_status.node.host.clone()
                             } else {
-                                app_state.validator_statuses[idx].nodes_with_status[0]
+                                validator_statuses[idx].nodes_with_status[0]
                                     .node
                                     .host
                                     .clone()
                             };
                             let _ = log_sender.send(LogMessage {
-                                host: validator_log_host(&app_state, idx),
+                                host: validator_log_host_for(&validator_statuses, idx),
                                 message: format!(
                                     "🧪 SIMULATION: forcing node[{}] {} to appear delinquent for gate evaluation (seconds_since_vote={}, vote_rpc_failures=0)",
                                     idx, host, seconds_since_vote
@@ -705,17 +764,17 @@ async fn refresh_vote_data_for_alerts(
 
                     // Log delinquency check for debugging
                     let _ = log_sender.send(LogMessage {
-                        host: validator_log_host(&app_state, idx),
+                        host: validator_log_host_for(&validator_statuses, idx),
                             message: format!("[{}] Delinquency check: {} seconds without vote (threshold: {}s){}",
                                 // Use active node label for identification
-                                if let Some(node_with_status) = app_state.validator_statuses[idx]
+                                if let Some(node_with_status) = validator_statuses[idx]
                                     .nodes_with_status
                                     .iter()
                                     .find(|n| n.status == crate::types::NodeStatus::Active)
                                 {
                                     node_with_status.node.label.as_str()
                                 } else {
-                                    app_state.validator_statuses[idx].nodes_with_status[0].node.label.as_str()
+                                    validator_statuses[idx].nodes_with_status[0].node.label.as_str()
                                 },
                                 real_seconds_since_vote, threshold,
                                 if simulation_active_for_idx {
@@ -756,7 +815,7 @@ async fn refresh_vote_data_for_alerts(
                                 .as_deref()
                                 .unwrap_or("unknown error");
                             let _ = log_sender.send(LogMessage {
-                                host: validator_log_host(&app_state, idx),
+                                host: validator_log_host_for(&validator_statuses, idx),
                                 message: format!(
                                     "Delinquency alert suppressed: vote-account RPC data is stale (consecutive failures: {}, last error: {})",
                                     vote_rpc_failures, last_error
@@ -783,49 +842,53 @@ async fn refresh_vote_data_for_alerts(
                                 idx,
                             )
                         };
-                        if should_enqueue {
-                            // proceed to enqueue alert
-                        } else {
-                            // Alert suppressed due to cooldown - log suppression with remaining time
+                        let send_alert = delinquency_disposition(should_enqueue).send_alert;
+                        if !send_alert {
+                            // Alert suppressed due to cooldown - log suppression with remaining time.
+                            //
+                            // Deliberately does NOT skip the rest of this
+                            // iteration. The auto-failover gate below is fed by
+                            // `alerts_to_send`, so `continue`ing here made
+                            // notification throttling silently disable recovery:
+                            // after a failover sent its alert, a second node
+                            // failure went unhandled for the whole cooldown.
+                            // Observed as takeovers firing at exact 15-minute
+                            // intervals - the cooldown expiring, not the fault.
                             let remaining = tracker
                                 .delinquency_tracker
                                 .seconds_until_next_alert(idx)
                                 .unwrap_or(0);
 
                             let _ = log_sender.send(LogMessage {
-                                host: validator_log_host(&app_state, idx),
+                                host: validator_log_host_for(&validator_statuses, idx),
                                 message: format!(
-                                    "Delinquency alert suppressed by cooldown: {}s remaining (threshold: {}s)",
+                                    "Delinquency alert suppressed by cooldown: {}s remaining (threshold: {}s); failover gate still evaluated",
                                     remaining, threshold
                                 ),
                                 timestamp: Instant::now(),
                                 level: LogLevel::Info,
                             });
-
-                            // skip enqueueing
-                            continue;
                         }
                         // Determine active node (fallback to first node)
-                        let active_node = if let Some(node_with_status) = app_state
-                            .validator_statuses[idx]
+                        let active_node = if let Some(node_with_status) = validator_statuses[idx]
                             .nodes_with_status
                             .iter()
                             .find(|n| n.status == crate::types::NodeStatus::Active)
                         {
                             node_with_status.node.clone()
                         } else {
-                            app_state.validator_statuses[idx].nodes_with_status[0].node.clone()
+                            validator_statuses[idx].nodes_with_status[0].node.clone()
                         };
 
                         // Determine priority by role: if active node is reporting as Active, it's high priority; otherwise low
-                        let is_active = app_state.validator_statuses[idx]
+                        let is_active = validator_statuses[idx]
                             .nodes_with_status
                             .iter()
                             .any(|n| n.status == crate::types::NodeStatus::Active);
                         let is_backup = !is_active;
                         let node_health = state.validator_health[idx].clone();
 
-                        alerts_to_send.push((idx, is_backup, active_node, *last_slot, seconds_since_vote, node_health, is_active, vote_rpc_failures));
+                        alerts_to_send.push((idx, is_backup, active_node, *last_slot, seconds_since_vote, node_health, is_active, vote_rpc_failures, send_alert));
                     }
                 }
             }
@@ -833,14 +896,17 @@ async fn refresh_vote_data_for_alerts(
             // Release tracker lock before awaiting network calls
             drop(tracker);
 
-            for (idx, is_backup, active_node, last_slot, seconds_since_vote, node_health, is_active, vote_rpc_failures) in alerts_to_send {
+            for (idx, is_backup, active_node, last_slot, seconds_since_vote, node_health, is_active, vote_rpc_failures, send_alert) in alerts_to_send {
                 let alert_mgr_for_telegram = alert_mgr.clone();
                 let log_sender_for_telegram = log_sender.clone();
                 let identity = app_state.validator_statuses[idx].validator_pair.identity_pubkey.clone();
-                let host_for_log = validator_log_host(&app_state, idx);
+                let host_for_log = validator_log_host_for(&validator_statuses, idx);
                 let sim_idx = simulate_failover_idx();
                 let suppress_telegram = sim_idx == Some(idx);
 
+                // Alert sending is throttled by cooldown; the failover gate
+                // below is not. Only this block is skipped when suppressed.
+                if send_alert {
                 // Pre-send log: record alert intent and priority
                 let _ = log_sender.send(LogMessage {
                     host: host_for_log.clone(),
@@ -911,6 +977,7 @@ async fn refresh_vote_data_for_alerts(
                         });
                     }
                 });
+                }
 
                 // ── Change 1: Auto-failover trigger ──
                 //
@@ -979,8 +1046,11 @@ async fn refresh_vote_data_for_alerts(
                                 level: LogLevel::Error,
                             });
 
-                            let validator_status_for_failover =
-                                app_state.validator_statuses[idx].clone();
+                            // Claim the in-progress flag before spawning so a
+                            // second poll tick cannot race the pre-warm phase.
+                            emergency_takeover_flag.store(true, Ordering::Release);
+
+                            let validator_status_for_failover = validator_statuses[idx].clone();
                             let ssh_pool_for_failover = app_state.ssh_pool.clone();
                             let detected_keys_for_failover =
                                 app_state.detected_ssh_keys.clone();
@@ -1257,6 +1327,24 @@ pub struct EnhancedStatusApp {
 /// visible to a debugger and to source-code search, and so future
 /// readers can see the supervision discipline without having to know
 /// the implicit `Drop for JoinSet` semantics.
+async fn shutdown_join_set(
+    background_tasks: &Arc<std::sync::Mutex<tokio::task::JoinSet<()>>>,
+) {
+    let mut tasks = {
+        let mut guard = background_tasks
+            .lock()
+            .expect("background_tasks Mutex poisoned");
+        std::mem::take(&mut *guard)
+    };
+    tasks.shutdown().await;
+}
+
+impl EnhancedStatusApp {
+    async fn shutdown_background_tasks(&self) {
+        shutdown_join_set(&self.background_tasks).await;
+    }
+}
+
 impl Drop for EnhancedStatusApp {
     fn drop(&mut self) {
         // Acquire the sync Mutex non-blockingly: if a concurrent
@@ -1633,9 +1721,59 @@ fn clear_throttle_timestamps_for_node(validator_idx: usize, node_idx: usize) {
     guard.retain(|(vidx, nidx, _), _| !(*vidx == validator_idx && *nidx == node_idx));
 }
 
-fn validator_log_host(app_state: &AppState, validator_idx: usize) -> String {
-    app_state
-        .validator_statuses
+/// What to do about a detected delinquency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DelinquencyDisposition {
+    /// Send the operator notification. Subject to the alert cooldown.
+    pub send_alert: bool,
+    /// Evaluate the auto-failover gate. Never subject to the alert cooldown.
+    pub evaluate_failover: bool,
+}
+
+/// Split notification throttling from recovery.
+///
+/// These were previously the same decision: a delinquency whose alert was in
+/// cooldown was skipped entirely, and since the auto-failover gate is fed by
+/// the same queue, recovery was skipped with it. After a failover sent its
+/// alert, a second node failure went unhandled for the full cooldown — visible
+/// as takeovers firing at exact 15-minute intervals, which is the cooldown
+/// expiring rather than the fault being detected.
+pub(crate) fn delinquency_disposition(alert_allowed_by_cooldown: bool) -> DelinquencyDisposition {
+    DelinquencyDisposition {
+        send_alert: alert_allowed_by_cooldown,
+        evaluate_failover: true,
+    }
+}
+
+/// Prefer the live role for each node, falling back to the snapshot only where
+/// live state has no entry for that index.
+///
+/// `app_state` is snapshotted once per UI-loop iteration and an automatic
+/// failover does not recreate the app, so after one fires the snapshot holds
+/// the pre-failover roles indefinitely. Anything keyed off those roles is then
+/// inverted — including the direction of the next failover.
+pub(crate) fn resolve_live_roles(
+    snapshot: &[crate::types::NodeStatus],
+    live: &[crate::types::NodeStatus],
+) -> Vec<crate::types::NodeStatus> {
+    snapshot
+        .iter()
+        .enumerate()
+        .map(|(idx, snapshot_role)| live.get(idx).cloned().unwrap_or_else(|| snapshot_role.clone()))
+        .collect()
+}
+
+/// Node label to attribute a validator-level log line to, preferring the
+/// active node.
+///
+/// Callers must pass role-corrected statuses. Attributing lines using the
+/// `app_state` snapshot after a failover names the wrong node — the demoted
+/// one — on every delinquency line and alert for that pair.
+fn validator_log_host_for(
+    validator_statuses: &[crate::ValidatorStatus],
+    validator_idx: usize,
+) -> String {
+    validator_statuses
         .get(validator_idx)
         .and_then(|vs| {
             vs.nodes_with_status
@@ -3620,6 +3758,14 @@ fn draw_footer(f: &mut ratatui::Frame, area: Rect, ui_state: &UiState, app_state
     f.render_widget(footer, area);
 }
 
+struct EmergencyTakeoverFlagGuard(Arc<AtomicBool>);
+
+impl Drop for EmergencyTakeoverFlagGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
 /// Execute emergency failover for a validator.
 ///
 /// Called from `refresh_vote_data_for_alerts` when the auto-failover gate
@@ -3641,53 +3787,113 @@ async fn execute_emergency_failover(
     detected_ssh_keys: std::collections::HashMap<String, String>,
     emergency_takeover_flag: Arc<AtomicBool>,
 ) {
-    // Find active and standby nodes
-    let (active_node, standby_node) = match (
-        validator_status
-            .nodes_with_status
-            .iter()
-            .find(|n| n.status == crate::types::NodeStatus::Active),
-        validator_status
-            .nodes_with_status
-            .iter()
-            .find(|n| n.status == crate::types::NodeStatus::Standby),
-    ) {
-        (Some(active), Some(standby)) => (active.clone(), standby.clone()),
-        _ => {
-            eprintln!("❌ Emergency failover failed: could not identify active/standby nodes");
-            return;
-        }
-    };
+    // The caller claims the flag before spawning. This guard clears it on
+    // every return path, including standby pre-warm failures.
+    let _flag_guard = EmergencyTakeoverFlagGuard(emergency_takeover_flag);
 
-    // Pre-warm the SSH session to the primary. The 10-second periodic SSH
-    // ping against the primary has been disabled to reduce load on the
-    // production node, so the cached SSH session may have gone idle and the
-    // OpenSSH controlmaster may have dropped it. Establishing the session
-    // here keeps the connection-setup cost off the critical failover path.
-    //
-    // If pre-warm fails we surface it loudly and abort BEFORE any state
-    // changes. The downstream `set-identity --unfunded` would fail anyway,
-    // but the operator-facing error would be a generic "failed to execute
-    // command" rather than the actionable "primary is unreachable, failover
-    // not attempted."
-    if let Some(ssh_key) = detected_ssh_keys.get(&active_node.node.host) {
-        if let Err(e) = ssh_pool.get_session(&active_node.node, ssh_key).await {
+    // Find active and standby nodes
+    let role_inputs = crate::commands::switch::AssertedNodeRoles::from_live_ui_state(
+        validator_status
+            .nodes_with_status
+            .iter()
+            .map(|n| crate::commands::switch::NodeRoleInput {
+                status: n.status.clone(),
+                has_tower: n.tower_path.is_some(),
+            })
+            .collect(),
+    );
+
+    let (active_node, standby_node, resolved_reason) =
+        match crate::commands::switch::resolve_roles(&role_inputs) {
+            crate::commands::switch::RoleResolution::Resolved {
+                source_idx,
+                target_idx,
+                reason,
+                ..
+            } => (
+                validator_status.nodes_with_status[source_idx].clone(),
+                validator_status.nodes_with_status[target_idx].clone(),
+                reason,
+            ),
+            crate::commands::switch::RoleResolution::Ambiguous(message) => {
+                eprintln!("❌ Emergency failover failed: {}", message);
+                return;
+            }
+        };
+
+    // The standby is the only hard SSH dependency in a disaster takeover.
+    // If it cannot be reached there is nowhere safe to promote, so abort.
+    let standby_ssh_key = match detected_ssh_keys.get(&standby_node.node.host) {
+        Some(key) => key,
+        None => {
             eprintln!(
-                "❌ Emergency failover pre-warm failed for {}: {}. Aborting failover before any state change.",
-                active_node.node.host, e
+                "❌ Emergency failover: no SSH key detected for standby host {}. Aborting before any state change.",
+                standby_node.node.host
             );
             return;
         }
-    } else {
+    };
+    if let Err(error) = ssh_pool
+        .get_session(&standby_node.node, standby_ssh_key)
+        .await
+    {
         eprintln!(
-            "❌ Emergency failover: no SSH key detected for primary host {}. Aborting before any state change.",
-            active_node.node.host
+            "❌ Emergency failover standby pre-warm failed for {}: {}. Aborting before any state change.",
+            standby_node.node.host, error
         );
         return;
     }
 
-    // Set the emergency takeover flag to suspend UI rendering
-    emergency_takeover_flag.store(true, Ordering::Release);
+    // Source reachability selects graceful vs degraded execution. The caller
+    // reached this function only after healthy cluster RPC confirmed vote
+    // delinquency, so an unreachable source is expected during a reboot and
+    // must not block standby promotion.
+    //
+    // When role resolution already concluded the source is not reporting an
+    // identity, SSH reachability is irrelevant: there is no funded identity to
+    // demote and no tower to copy, so force the degraded plan. Probing SSH here
+    // would wrongly select Graceful for a host that answers SSH but has no
+    // running validator.
+    let failover_mode = if resolved_reason
+        == crate::commands::switch::RoleResolutionReason::DegradedStandbyPromotion
+    {
+        eprintln!(
+            "⚠️  {} is not reporting an identity. Continuing degraded takeover without source demotion or tower copy.",
+            active_node.node.label
+        );
+        crate::commands::switch::FailoverMode::DegradedSourceUnavailable
+    } else {
+        let source_reachable = match detected_ssh_keys.get(&active_node.node.host) {
+            Some(key) => match ssh_pool.get_session(&active_node.node, key).await {
+                Ok(_) => true,
+                Err(error) => {
+                    eprintln!(
+                        "⚠️  Primary pre-warm failed for {}: {}. Continuing degraded takeover without source demotion or tower copy.",
+                        active_node.node.host, error
+                    );
+                    false
+                }
+            },
+            None => {
+                eprintln!(
+                    "⚠️  No SSH key detected for primary host {}. Continuing degraded takeover without source demotion or tower copy.",
+                    active_node.node.host
+                );
+                false
+            }
+        };
+        crate::commands::switch::FailoverMode::for_confirmed_delinquency(source_reachable)
+    };
+
+    crate::startup_logger::append_runtime_log(
+        "WARNING",
+        "svs",
+        &format!(
+            "AUTO-FAILOVER starting: {} -> {} | mode={:?}",
+            active_node.node.label, standby_node.node.label, failover_mode
+        ),
+    );
+    let promoted_label = standby_node.node.label.clone();
 
     // Wait a moment for the UI to stop rendering and cleanup terminal
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -3699,17 +3905,28 @@ async fn execute_emergency_failover(
         ssh_pool,
         detected_ssh_keys,
         alert_manager,
+        failover_mode,
     );
 
     if let Err(e) = emergency_failover.execute_emergency_takeover().await {
         eprintln!("❌ Emergency failover error: {}", e);
+        crate::startup_logger::append_runtime_log(
+            "ERROR",
+            "svs",
+            &format!("AUTO-FAILOVER failed: {}", e),
+        );
+    } else {
+        crate::startup_logger::append_runtime_log(
+            "INFO",
+            "svs",
+            &format!("AUTO-FAILOVER completed: {} is now ACTIVE", promoted_label),
+        );
     }
 
     // Wait a moment for the user to see the results
     tokio::time::sleep(Duration::from_secs(3)).await;
 
-    // Clear the emergency takeover flag to resume UI
-    emergency_takeover_flag.store(false, Ordering::Release);
+    // The flag guard resumes the UI on return.
 }
 
 /// Draw the switch UI
@@ -3749,47 +3966,94 @@ fn draw_switch_ui(f: &mut ratatui::Frame, app_state: &AppState, ui_state: &UiSta
     if !app_state.validator_statuses.is_empty() {
         let validator_status = &app_state.validator_statuses[ui_state.selected_validator_index];
 
-        let active_node = validator_status
-            .nodes_with_status
-            .iter()
-            .find(|n| n.status == crate::types::NodeStatus::Active);
-        let standby_node = validator_status
-            .nodes_with_status
-            .iter()
-            .find(|n| n.status == crate::types::NodeStatus::Standby);
+        // Roles come from live UI state; `app_state` holds the roles detected
+        // at startup, so a node that was unreachable then would still read as
+        // Unknown here and the plan would render as ambiguous even though both
+        // nodes are healthy. Tower presence still comes from `app_state`.
+        let live_nodes = ui_state
+            .validator_statuses
+            .get(ui_state.selected_validator_index)
+            .map(|vs| &vs.nodes_with_status);
 
-        let mut status_text = vec![];
-        status_text.push(
-            Line::from("Current State:").style(Style::default().add_modifier(Modifier::BOLD)),
+        let role_inputs = crate::commands::switch::AssertedNodeRoles::from_live_ui_state(
+            validator_status
+                .nodes_with_status
+                .iter()
+                .enumerate()
+                .map(|(idx, n)| crate::commands::switch::NodeRoleInput {
+                    status: live_nodes
+                        .and_then(|nodes| nodes.get(idx))
+                        .map(|live| live.status.clone())
+                        .unwrap_or_else(|| n.status.clone()),
+                    has_tower: n.tower_path.is_some(),
+                })
+                .collect(),
         );
+        let resolution = crate::commands::switch::resolve_roles(&role_inputs);
 
-        if let (Some(active), Some(standby)) = (active_node, standby_node) {
+    let mut status_text = vec![];
+    status_text.push(
+        Line::from("Current State:").style(Style::default().add_modifier(Modifier::BOLD)),
+    );
+
+    let mut degraded = false;
+    let mut resolvable = false;
+    match &resolution {
+        crate::commands::switch::RoleResolution::Resolved {
+            source_idx,
+            target_idx,
+            reason,
+            ..
+        } => {
+            let source = &validator_status.nodes_with_status[*source_idx];
+            let target = &validator_status.nodes_with_status[*target_idx];
+            resolvable = true;
+            degraded = *reason
+                == crate::commands::switch::RoleResolutionReason::DegradedStandbyPromotion;
+
+            if degraded {
+                status_text.push(
+                    Line::from(format!(
+                        "  {} → UNREACHABLE (no identity reported)",
+                        source.node.label
+                    ))
+                    .style(Style::default().fg(Color::Red)),
+                );
+            } else {
+                status_text.push(
+                    Line::from(format!("  {} → ACTIVE", source.node.label))
+                        .style(Style::default().fg(Color::Green)),
+                );
+            }
             status_text.push(
-                Line::from(format!("  {} → ACTIVE", active.node.label))
-                    .style(Style::default().fg(Color::Green)),
-            );
-            status_text.push(
-                Line::from(format!("  {} → STANDBY", standby.node.label))
+                Line::from(format!("  {} → STANDBY", target.node.label))
                     .style(Style::default().fg(Color::Yellow)),
             );
             status_text.push(Line::from(""));
             status_text.push(
                 Line::from("After Switch:").style(Style::default().add_modifier(Modifier::BOLD)),
             );
+            if degraded {
+                status_text.push(
+                    Line::from(format!("  {} → UNCHANGED (unreachable)", source.node.label))
+                        .style(Style::default().fg(Color::Red)),
+                );
+            } else {
+                status_text.push(
+                    Line::from(format!("  {} → STANDBY (was active)", source.node.label))
+                        .style(Style::default().fg(Color::Yellow)),
+                );
+            }
             status_text.push(
-                Line::from(format!("  {} → STANDBY (was active)", active.node.label))
-                    .style(Style::default().fg(Color::Yellow)),
-            );
-            status_text.push(
-                Line::from(format!("  {} → ACTIVE (was standby)", standby.node.label))
+                Line::from(format!("  {} → ACTIVE (was standby)", target.node.label))
                     .style(Style::default().fg(Color::Green)),
             );
-        } else {
-            status_text.push(
-                Line::from("Unable to determine active/standby nodes")
-                    .style(Style::default().fg(Color::Red)),
-            );
         }
+        crate::commands::switch::RoleResolution::Ambiguous(message) => {
+            status_text
+                .push(Line::from(*message).style(Style::default().fg(Color::Red)));
+        }
+    }
 
         let status_widget = Paragraph::new(status_text).block(
             Block::default()
@@ -3800,16 +4064,48 @@ fn draw_switch_ui(f: &mut ratatui::Frame, app_state: &AppState, ui_state: &UiSta
         f.render_widget(status_widget, content_chunks[0]);
 
         // Actions that will be performed
-        let actions_text = vec![
-            Line::from("Actions that will be performed:")
-                .style(Style::default().add_modifier(Modifier::BOLD)),
-            Line::from("  1. Switch active node to unfunded identity"),
-            Line::from("  2. Delete tower file on standby node"),
-            Line::from("  3. Switch standby node to funded identity"),
-            Line::from(""),
-            Line::from("[!] Press 'y' to confirm switch or 'q' to cancel")
-                .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-        ];
+        let mut actions_text = vec![Line::from("Actions that will be performed:")
+            .style(Style::default().add_modifier(Modifier::BOLD))];
+        if !resolvable {
+            actions_text.push(
+                Line::from("  Switching is unavailable until node roles are known.")
+                    .style(Style::default().fg(Color::Red)),
+            );
+            actions_text.push(Line::from(""));
+            actions_text.push(
+                Line::from("[!] Press 'q' to cancel")
+                    .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            );
+        } else {
+            if degraded {
+                actions_text.push(
+                    Line::from("  1. Switch standby node to funded identity")
+                        .style(Style::default().fg(Color::Green)),
+                );
+                actions_text.push(Line::from(""));
+                actions_text.push(
+                    Line::from("Source demotion and tower transfer are skipped -")
+                        .style(Style::default().fg(Color::Yellow)),
+                );
+                actions_text.push(
+                    Line::from("the active node reports no identity. The standby will")
+                        .style(Style::default().fg(Color::Yellow)),
+                );
+                actions_text.push(
+                    Line::from("activate without the latest tower and may miss votes.")
+                        .style(Style::default().fg(Color::Yellow)),
+                );
+            } else {
+                actions_text.push(Line::from("  1. Switch active node to unfunded identity"));
+                actions_text.push(Line::from("  2. Transfer tower file to standby node"));
+                actions_text.push(Line::from("  3. Switch standby node to funded identity"));
+            }
+            actions_text.push(Line::from(""));
+            actions_text.push(
+                Line::from("[!] Press 'y' to confirm switch or 'q' to cancel")
+                    .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            );
+        }
 
         let actions_widget = Paragraph::new(actions_text).block(
             Block::default()
@@ -4813,6 +5109,21 @@ async fn refresh_node_version(
     }
 }
 
+/// Whether swap readiness should treat this node as a standby.
+///
+/// Standby nodes are exempt from the tower-file requirement: the tower is
+/// transferred from the active node during a graceful switch, so a standby is
+/// not expected to hold one. Getting this wrong is not cosmetic — a node
+/// demoted by failover keeps reporting "Not Ready: Tower file missing" until
+/// the process restarts.
+///
+/// `None` (role not yet known) deliberately maps to `None`, which
+/// `check_node_swap_readiness` treats as "not a standby" — the conservative
+/// choice, since enforcing an extra check is safer than skipping one.
+pub(crate) fn readiness_is_standby(status: Option<&crate::types::NodeStatus>) -> Option<bool> {
+    status.map(|s| *s == crate::types::NodeStatus::Standby)
+}
+
 /// Entry point for the enhanced UI
 async fn refresh_swap_readiness(
     app_state: Arc<AppState>,
@@ -4835,9 +5146,9 @@ async fn refresh_swap_readiness(
             .and_then(|vs| vs.nodes_with_status.get(node_idx))
             .map(|n| n.status.clone())
     };
-    if let Some(status) = primary_status {
+    if let Some(status) = primary_status.as_ref() {
         if should_throttle_primary_check(
-            &status,
+            status,
             validator_idx,
             node_idx,
             "swap_readiness",
@@ -4852,7 +5163,7 @@ async fn refresh_swap_readiness(
 
         // Heartbeat for the primary's 10-minute swap-readiness check. See
         // the matching comment in refresh_node_status_and_identity.
-        if status == crate::types::NodeStatus::Active {
+        if *status == crate::types::NodeStatus::Active {
             let host_label = app_state
                 .validator_statuses
                 .get(validator_idx)
@@ -4892,13 +5203,18 @@ async fn refresh_swap_readiness(
             let ssh_key = app_state.detected_ssh_keys.get(&node.node.host);
 
             if let Some(ssh_key) = ssh_key {
-                // Check swap readiness for the node
+                // Role must come from live UI state, not from `app_state`.
+                // `app_state` is a snapshot taken once per UI-loop iteration,
+                // so after a failover demotes a node it still records the old
+                // role. Checking a standby as if it were active enforces the
+                // tower requirement and reports a spurious "Tower file
+                // missing" that never clears.
                 let (ready, issues) = check_node_swap_readiness(
                     &app_state.ssh_pool,
                     &node.node,
                     ssh_key,
                     node.ledger_path.as_ref(),
-                    Some(node.status == crate::types::NodeStatus::Standby),
+                    readiness_is_standby(primary_status.as_ref()),
                 )
                 .await;
                 let (swap_ready, swap_issues) = (Some(ready), issues);
@@ -4939,6 +5255,21 @@ async fn refresh_swap_readiness(
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum SwitchAttemptOutcome {
+    Completed,
+    NotCompleted,
+    Failed(String),
+}
+
+fn classify_switch_attempt(result: Result<bool>) -> SwitchAttemptOutcome {
+    match result {
+        Ok(true) => SwitchAttemptOutcome::Completed,
+        Ok(false) => SwitchAttemptOutcome::NotCompleted,
+        Err(error) => SwitchAttemptOutcome::Failed(error.to_string()),
+    }
+}
+
 pub async fn show_enhanced_status_ui(app_state: &AppState) -> Result<()> {
     // Clear any startup output before starting the TUI
     print!("\x1B[2J\x1B[1;1H"); // Clear screen and move cursor to top
@@ -4955,6 +5286,9 @@ pub async fn show_enhanced_status_ui(app_state: &AppState) -> Result<()> {
         let app_state_arc = Arc::new(current_app_state.clone());
         let mut app = EnhancedStatusApp::new(app_state_arc.clone()).await?;
         let switch_confirmed = run_enhanced_ui(&mut app).await?;
+        // Stop and join monitor loops before changing identities. This keeps
+        // timer/SSH futures from being polled while an error unwinds the app.
+        app.shutdown_background_tasks().await;
 
         if !switch_confirmed {
             // User quit without requesting a switch - exit the loop
@@ -4972,33 +5306,261 @@ pub async fn show_enhanced_status_ui(app_state: &AppState) -> Result<()> {
         {
             let ui_state_guard = app.ui_state.read().await;
             current_app_state.selected_validator_index = ui_state_guard.selected_validator_index;
+
+            // Roles must be refreshed from live UI state too. `current_app_state`
+            // carries the roles detected at startup, and a node that was
+            // unreachable then stays recorded as Unknown even after it recovers
+            // and the UI shows it as Standby. The switch would then resolve
+            // against Active + Unknown and refuse as ambiguous, blocking a
+            // perfectly valid swap between two healthy nodes.
+            for (validator_idx, validator) in
+                current_app_state.validator_statuses.iter_mut().enumerate()
+            {
+                let Some(live) = ui_state_guard.validator_statuses.get(validator_idx) else {
+                    continue;
+                };
+                for (node_idx, node) in validator.nodes_with_status.iter_mut().enumerate() {
+                    if let Some(live_node) = live.nodes_with_status.get(node_idx) {
+                        node.status = live_node.status.clone();
+                    }
+                }
+            }
         }
 
-        let result = crate::commands::switch::switch_command_with_confirmation(
+        let outcome = classify_switch_attempt(
+            crate::commands::switch::switch_command_with_confirmation(
             false, // not a dry run
             &mut current_app_state,
             false, // don't require confirmation again
         )
-        .await?;
+            .await,
+        );
 
-        if result {
+        match outcome {
+            SwitchAttemptOutcome::Completed => {
             println!("\n✅ Switch completed successfully!");
             println!("📊 Returning to validator status view...\n");
-
-            // Wait a moment for the switch to take effect
             tokio::time::sleep(Duration::from_secs(2)).await;
-
-            // The loop will restart the UI with the updated current_app_state
-            // which now has the swapped Active/Standby statuses
-        } else {
+            }
+            SwitchAttemptOutcome::NotCompleted => {
             println!("\n❌ Switch was not completed");
-            // Still restart the UI to let user try again or quit
+            }
+            SwitchAttemptOutcome::Failed(error) => {
+                eprintln!("\n❌ Switch failed: {}", error);
+                println!("📊 Returning to validator status view...\n");
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
         }
     }
 
     Ok(())
 }
 
+
+#[cfg(test)]
+mod shutdown_tests {
+    use super::{classify_switch_attempt, shutdown_join_set, SwitchAttemptOutcome};
+    use anyhow::anyhow;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn shutdown_cancels_and_joins_sleeping_monitor_tasks() {
+        let completed = Arc::new(AtomicBool::new(false));
+        let tasks = Arc::new(Mutex::new(tokio::task::JoinSet::new()));
+        {
+            let mut guard = tasks.lock().unwrap();
+            let completed = Arc::clone(&completed);
+            guard.spawn(async move {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                completed.store(true, Ordering::Release);
+            });
+        }
+
+        tokio::time::timeout(Duration::from_secs(1), shutdown_join_set(&tasks))
+            .await
+            .expect("monitor shutdown should not hang");
+
+        assert!(!completed.load(Ordering::Acquire));
+        assert!(tasks.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn switch_error_is_classified_for_tui_recovery_instead_of_propagation() {
+        assert_eq!(
+            classify_switch_attempt(Err(anyhow!("tower missing"))),
+            SwitchAttemptOutcome::Failed("tower missing".to_string())
+        );
+        assert_eq!(
+            classify_switch_attempt(Ok(true)),
+            SwitchAttemptOutcome::Completed
+        );
+        assert_eq!(
+            classify_switch_attempt(Ok(false)),
+            SwitchAttemptOutcome::NotCompleted
+        );
+    }
+}
+
+#[cfg(test)]
+mod delinquency_disposition_tests {
+    //! Throttling a notification must never throttle recovery.
+
+    use super::delinquency_disposition;
+
+    #[test]
+    fn cooldown_silences_the_alert_but_not_the_failover_gate() {
+        let within_cooldown = delinquency_disposition(false);
+
+        assert!(!within_cooldown.send_alert, "alert should be suppressed");
+        assert!(
+            within_cooldown.evaluate_failover,
+            "recovery must still be considered while the alert is in cooldown"
+        );
+    }
+
+    #[test]
+    fn clear_cooldown_does_both() {
+        let clear = delinquency_disposition(true);
+
+        assert!(clear.send_alert);
+        assert!(clear.evaluate_failover);
+    }
+
+    #[test]
+    fn failover_evaluation_never_depends_on_the_cooldown() {
+        // The property that regressed: these two must not move together.
+        assert_eq!(
+            delinquency_disposition(true).evaluate_failover,
+            delinquency_disposition(false).evaluate_failover
+        );
+        assert_ne!(
+            delinquency_disposition(true).send_alert,
+            delinquency_disposition(false).send_alert
+        );
+    }
+}
+
+#[cfg(test)]
+mod live_role_tests {
+    //! Failover direction, alert attribution and alert priority are all keyed
+    //! off node role, and all three read from a snapshot that goes stale the
+    //! moment an automatic failover flips the roles.
+    //!
+    //! Observed in production: the snapshot still said Primary=Active after a
+    //! failover had made Backup active. Backup then stopped voting, and svs
+    //! resolved the recovery as `Primary -> Backup` in Graceful mode — the
+    //! exact inverse. It reported success, promoted the node that had already
+    //! failed, and the vote account stayed delinquent.
+
+    use super::resolve_live_roles;
+    use crate::types::NodeStatus;
+
+    #[test]
+    fn live_roles_override_a_stale_snapshot() {
+        // Snapshot predates the failover; live state reflects it.
+        let snapshot = vec![NodeStatus::Active, NodeStatus::Standby];
+        let live = vec![NodeStatus::Standby, NodeStatus::Active];
+
+        assert_eq!(
+            resolve_live_roles(&snapshot, &live),
+            vec![NodeStatus::Standby, NodeStatus::Active],
+            "must follow live state, not the snapshot"
+        );
+    }
+
+    #[test]
+    fn failover_direction_is_not_inverted_after_a_role_swap() {
+        // Regression for the observed incident. node[0]=Primary, node[1]=Backup.
+        let snapshot = vec![NodeStatus::Active, NodeStatus::Standby];
+        let live = vec![NodeStatus::Standby, NodeStatus::Unknown];
+
+        let roles = resolve_live_roles(&snapshot, &live);
+
+        let active = roles.iter().position(|r| *r == NodeStatus::Active);
+        let standby = roles.iter().position(|r| *r == NodeStatus::Standby);
+
+        assert_eq!(active, None, "the failed node must not still look active");
+        assert_eq!(
+            standby,
+            Some(0),
+            "the healthy node must be the promotion target, not the source"
+        );
+    }
+
+    #[test]
+    fn snapshot_is_used_only_where_live_state_is_missing() {
+        let snapshot = vec![NodeStatus::Active, NodeStatus::Standby];
+
+        // Live state not yet populated at all.
+        assert_eq!(
+            resolve_live_roles(&snapshot, &[]),
+            vec![NodeStatus::Active, NodeStatus::Standby]
+        );
+
+        // Live state only knows about the first node.
+        assert_eq!(
+            resolve_live_roles(&snapshot, &[NodeStatus::Standby]),
+            vec![NodeStatus::Standby, NodeStatus::Standby]
+        );
+    }
+
+    #[test]
+    fn extra_live_entries_do_not_grow_the_result() {
+        let snapshot = vec![NodeStatus::Active];
+        let live = vec![NodeStatus::Standby, NodeStatus::Active];
+
+        assert_eq!(resolve_live_roles(&snapshot, &live), vec![NodeStatus::Standby]);
+    }
+}
+
+#[cfg(test)]
+mod readiness_role_tests {
+    //! Swap readiness must be evaluated against the node's *current* role.
+    //!
+    //! `app_state` is a snapshot taken once per UI-loop iteration. After a
+    //! failover demotes a node, that snapshot still records it as Active, so
+    //! deriving the role from it enforced the tower-file requirement against a
+    //! standby and pinned the UI to "Not Ready: Tower file missing" until the
+    //! process restarted. Live UI state is the only correct source.
+
+    use super::readiness_is_standby;
+    use crate::types::NodeStatus;
+
+    #[test]
+    fn standby_is_exempt_from_the_tower_requirement() {
+        assert_eq!(readiness_is_standby(Some(&NodeStatus::Standby)), Some(true));
+    }
+
+    #[test]
+    fn active_still_requires_a_tower() {
+        assert_eq!(readiness_is_standby(Some(&NodeStatus::Active)), Some(false));
+    }
+
+    #[test]
+    fn unknown_role_does_not_skip_the_tower_check() {
+        // Unknown means we could not confirm the role; enforcing the extra
+        // check is the conservative direction to fail.
+        assert_eq!(
+            readiness_is_standby(Some(&NodeStatus::Unknown)),
+            Some(false)
+        );
+        assert_eq!(readiness_is_standby(None), None);
+    }
+
+    #[test]
+    fn demoted_node_stops_requiring_a_tower_once_role_is_live() {
+        // Regression: the pre-fix path read the role from the stale snapshot,
+        // so this transition never happened and the warning stuck.
+        let before_failover = readiness_is_standby(Some(&NodeStatus::Active));
+        let after_failover = readiness_is_standby(Some(&NodeStatus::Standby));
+
+        assert_eq!(before_failover, Some(false));
+        assert_eq!(after_failover, Some(true));
+        assert_ne!(before_failover, after_failover);
+    }
+}
 
 #[cfg(test)]
 mod throttle_tests {

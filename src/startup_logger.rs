@@ -146,3 +146,30 @@ impl StartupLogger {
         Ok(())
     }
 }
+
+/// Append a line to the active runtime log (`logs/latest.log`).
+///
+/// The status UI owns an mpsc log writer, but it is torn down and recreated
+/// around a switch and the switch path holds no handle to it, so switches left
+/// no trace in the log at all. This writes the same
+/// `[time] [LEVEL] context: message` shape so switch events interleave
+/// correctly with monitoring output.
+///
+/// Best-effort by design: logging must never fail a switch.
+pub fn append_runtime_log(level: &str, context: &str, message: &str) {
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+    let path = home
+        .join(".solana-validator-switch")
+        .join("logs")
+        .join("latest.log");
+
+    let timestamp = Local::now().format("%H:%M:%S%.3f");
+    let line = format!("[{}] [{}] {}: {}\n", timestamp, level, context, message);
+
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = file.write_all(line.as_bytes());
+        let _ = file.flush();
+    }
+}

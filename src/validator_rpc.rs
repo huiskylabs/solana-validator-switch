@@ -50,8 +50,10 @@ pub async fn execute_rpc_call(
         "params": params.unwrap_or(json!([]))
     });
 
+    // -m / --connect-timeout bound the call so a hung localhost RPC can't hold
+    // the SSH channel open (and pile up channels) while a node is unhealthy.
     let curl_command = format!(
-        r#"curl -s http://localhost:{} -X POST -H "Content-Type: application/json" -d '{}' 2>&1"#,
+        r#"curl -s -m 10 --connect-timeout 5 http://localhost:{} -X POST -H "Content-Type: application/json" -d '{}' 2>&1"#,
         rpc_port, request
     );
 

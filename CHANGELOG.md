@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-09-14
+
+### Added
+- **Promotion verification**: Emergency failover now confirms the target node actually switched to the funded identity before reporting success. `set-identity` returning success only proves SSH accepted the command; the new verification step prevents false "takeover completed" reports when the target never actually switched
+- **Failover modes**: Introduced `FailoverMode::Graceful` and `FailoverMode::DegradedSourceUnavailable` to handle scenarios where the source node is unreachable. Degraded mode skips source demotion and tower transfer, allowing promotion of a healthy standby even when the primary is completely down
+- **Type-safe role provenance**: New `AssertedNodeRoles` wrapper forces callers to state whether roles came from live UI state or current app state, preventing stale role reads at compile time. Eliminates the catastrophic backwards-failover scenario
+- **SSH session recovery**: Per-connection mutex locks prevent SSH connection stampedes when nodes are unhealthy. Session liveness now probes through the actual shell path (bash/PowerShell) rather than bare `true`, catching wedged multiplex masters that fail real commands
+- **Role resolution system**: `resolve_roles()` function derives switch direction from observed runtime state rather than config order or startup snapshots, handling ActiveAndStandby, DegradedStandbyPromotion, and TowerRecovery scenarios
+- **Runtime logging**: Switch attempts and outcomes are now logged to `~/.solana-validator-switch/logs/latest.log` with full context (dry-run vs live, source/target nodes, mode, reason)
+- **SSH pool tests**: New test suite for SSH connection management and recovery logic
+
+### Fixed
+- **Stale role bug**: Status UI and manual switches now derive node roles from live state refreshed on every poll tick instead of using the startup snapshot frozen in `AppState`. After an automatic failover, subsequent operations no longer use inverted roles
+- **SSH shell detection**: Prefer bash over PowerShell on all platforms. PowerShell misdetection was causing "remote process has terminated" errors on Linux validators with pwsh installed but misconfigured
+- **Alert cooldown blocking failover**: The 15-minute alert cooldown no longer prevents the auto-failover gate from firing. Alert sending and failover evaluation are now separate concerns
+- **Wedged SSH sessions**: Sessions that stay half-alive (trivial commands succeed, real commands fail with "remote process terminated") are now detected and reconnected instead of wedging for hours
+- **Tower unavailable handling**: Failover can now continue without tower transfer when the source was successfully demoted but tower retrieval fails, instead of rolling back a working demotion
+
+### Changed
+- **RPC timeout increased**: Cluster RPC calls now use 10s timeout (was 3s) to accommodate tail latency. Two calls still fit within the 60s vote poll interval
+- **Enrichment timeout**: Optional vote-account enrichment (VoteState decoding for UI decoration) uses a tight 2s timeout to prevent delaying delinquency detection
+- **Blocking RPC client**: Moved to `tokio::task::spawn_blocking()` to prevent starving Tokio worker threads during vote polls
+- **SSH pre-warming**: Manual switches now only pre-warm the standby connection in degraded mode, skipping the source when it's known to be unreachable
+- **Log attribution**: Validator-level log lines now use role-corrected statuses, attributing lines to the correct node after failovers instead of naming the demoted one
+- **Enrichment logging**: Only state transitions (degraded/recovered) are logged instead of every failure, reducing log noise from transient RPC hiccups
+
 ## [2.1.1] - 2026-06-11
 
 ### Fixed

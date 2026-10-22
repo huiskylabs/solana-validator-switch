@@ -138,7 +138,7 @@ mod switch_validation_tests {
         // Check source (active) node - this is preferred but not critical
         if active_node.status == NodeStatus::Unknown {
             validation_warnings.push(format!(
-                "Source node {} is unreachable - will skip optional steps (tower copy, graceful shutdown)",
+                "Source node {} is unreachable - will skip optional steps (vote history copy, graceful shutdown)",
                 active_node.node.label
             ));
         }
@@ -171,7 +171,7 @@ mod switch_validation_tests {
         // Check source (active) node
         if active_node.status == NodeStatus::Unknown {
             validation_warnings.push(format!(
-                "Source node {} is unreachable - will skip optional steps (tower copy, graceful shutdown)",
+                "Source node {} is unreachable - will skip optional steps (vote history copy, graceful shutdown)",
                 active_node.node.label
             ));
         }

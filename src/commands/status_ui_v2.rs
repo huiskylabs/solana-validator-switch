@@ -3851,14 +3851,14 @@ async fn execute_emergency_failover(
     //
     // When role resolution already concluded the source is not reporting an
     // identity, SSH reachability is irrelevant: there is no funded identity to
-    // demote and no tower to copy, so force the degraded plan. Probing SSH here
+    // demote and no vote history to copy, so force the degraded plan. Probing SSH here
     // would wrongly select Graceful for a host that answers SSH but has no
     // running validator.
     let failover_mode = if resolved_reason
         == crate::commands::switch::RoleResolutionReason::DegradedStandbyPromotion
     {
         eprintln!(
-            "⚠️  {} is not reporting an identity. Continuing degraded takeover without source demotion or tower copy.",
+            "⚠️  {} is not reporting an identity. Continuing degraded takeover without source demotion or vote history copy.",
             active_node.node.label
         );
         crate::commands::switch::FailoverMode::DegradedSourceUnavailable
@@ -3868,7 +3868,7 @@ async fn execute_emergency_failover(
                 Ok(_) => true,
                 Err(error) => {
                     eprintln!(
-                        "⚠️  Primary pre-warm failed for {}: {}. Continuing degraded takeover without source demotion or tower copy.",
+                        "⚠️  Primary pre-warm failed for {}: {}. Continuing degraded takeover without source demotion or vote history copy.",
                         active_node.node.host, error
                     );
                     false
@@ -3876,7 +3876,7 @@ async fn execute_emergency_failover(
             },
             None => {
                 eprintln!(
-                    "⚠️  No SSH key detected for primary host {}. Continuing degraded takeover without source demotion or tower copy.",
+                    "⚠️  No SSH key detected for primary host {}. Continuing degraded takeover without source demotion or vote history copy.",
                     active_node.node.host
                 );
                 false
@@ -4084,7 +4084,7 @@ fn draw_switch_ui(f: &mut ratatui::Frame, app_state: &AppState, ui_state: &UiSta
                 );
                 actions_text.push(Line::from(""));
                 actions_text.push(
-                    Line::from("Source demotion and tower transfer are skipped -")
+                    Line::from("Source demotion and vote history transfer are skipped -")
                         .style(Style::default().fg(Color::Yellow)),
                 );
                 actions_text.push(
@@ -4092,12 +4092,12 @@ fn draw_switch_ui(f: &mut ratatui::Frame, app_state: &AppState, ui_state: &UiSta
                         .style(Style::default().fg(Color::Yellow)),
                 );
                 actions_text.push(
-                    Line::from("activate without the latest tower and may miss votes.")
+                    Line::from("activate without the latest vote history and may miss votes.")
                         .style(Style::default().fg(Color::Yellow)),
                 );
             } else {
                 actions_text.push(Line::from("  1. Switch active node to unfunded identity"));
-                actions_text.push(Line::from("  2. Transfer tower file to standby node"));
+                actions_text.push(Line::from("  2. Transfer vote history file to standby node"));
                 actions_text.push(Line::from("  3. Switch standby node to funded identity"));
             }
             actions_text.push(Line::from(""));
@@ -5111,11 +5111,11 @@ async fn refresh_node_version(
 
 /// Whether swap readiness should treat this node as a standby.
 ///
-/// Standby nodes are exempt from the tower-file requirement: the tower is
+/// Standby nodes are exempt from the vote-history requirement: the file is
 /// transferred from the active node during a graceful switch, so a standby is
 /// not expected to hold one. Getting this wrong is not cosmetic — a node
-/// demoted by failover keeps reporting "Not Ready: Tower file missing" until
-/// the process restarts.
+/// demoted by failover keeps reporting "Not Ready: Vote history file missing"
+/// until the process restarts.
 ///
 /// `None` (role not yet known) deliberately maps to `None`, which
 /// `check_node_swap_readiness` treats as "not a standby" — the conservative
@@ -5207,8 +5207,8 @@ async fn refresh_swap_readiness(
                 // `app_state` is a snapshot taken once per UI-loop iteration,
                 // so after a failover demotes a node it still records the old
                 // role. Checking a standby as if it were active enforces the
-                // tower requirement and reports a spurious "Tower file
-                // missing" that never clears.
+                // vote history requirement and reports a spurious "Vote history
+                // file missing" that never clears.
                 let (ready, issues) = check_node_swap_readiness(
                     &app_state.ssh_pool,
                     &node.node,
@@ -5521,9 +5521,9 @@ mod readiness_role_tests {
     //!
     //! `app_state` is a snapshot taken once per UI-loop iteration. After a
     //! failover demotes a node, that snapshot still records it as Active, so
-    //! deriving the role from it enforced the tower-file requirement against a
-    //! standby and pinned the UI to "Not Ready: Tower file missing" until the
-    //! process restarted. Live UI state is the only correct source.
+    //! deriving the role from it enforced the vote-history requirement against a
+    //! standby and pinned the UI to "Not Ready: Vote history file missing" until
+    //! the process restarted. Live UI state is the only correct source.
 
     use super::readiness_is_standby;
     use crate::types::NodeStatus;

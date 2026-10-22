@@ -637,7 +637,7 @@ impl AlertManager {
                     *Attempted New Active:* {} ❌\n\n\
                     *Optional Steps:*\n\
                     • Primary → Unfunded: {}\n\
-                    • Tower Copy: {}\n\
+                    • Vote History Copy: {}\n\
                     • Standby → Funded: ❌\n\n\
                     *Error:* {}\n\
                     *Duration:* {}ms\n\n\
@@ -659,7 +659,7 @@ impl AlertManager {
                     *New Active:* {} ✅\n\n\
                     *Optional Steps:*\n\
                     • Primary → Unfunded: {} {}\n\
-                    • Tower Copy: {} {}\n\n\
+                    • Vote History Copy: {} {}\n\n\
                     *Required Step:*\n\
                     • Standby → Funded: ✅ Success\n\n\
                     *Takeover completed in:* {}ms\n\n\

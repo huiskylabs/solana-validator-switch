@@ -127,29 +127,29 @@ impl EmergencyFailover {
         }
 
         if plan.transfer_tower {
-        eprintln!("📤 Copying tower file...");
+        eprintln!("📤 Copying vote history...");
         let tower_result = match timeout(
-                Duration::from_secs(10),
+                Duration::from_secs(120),
             switch_manager.transfer_tower_file(false),
         )
         .await
         {
             Ok(Ok(_)) => {
-                eprintln!("   ✅ Tower file copied successfully");
+                eprintln!("   ✅ Vote history copied successfully");
                 Ok(())
             }
             Ok(Err(e)) => {
-                eprintln!("   ⚠️  Failed to copy tower: {}", e);
+                eprintln!("   ⚠️  Failed to copy vote history: {}", e);
                 Err(e)
             }
             Err(_) => {
-                eprintln!("   ⚠️  Tower copy timed out");
+                eprintln!("   ⚠️  Vote history copy timed out");
                 Err(anyhow!("Operation timed out"))
             }
         };
         self.tower_copy_success = tower_result.is_ok();
         } else {
-            eprintln!("   ⚠️  Tower copy skipped because the primary is unreachable");
+            eprintln!("   ⚠️  Vote history copy skipped because the primary is unreachable");
         }
 
         // Standby promotion is required in every mode.
@@ -254,7 +254,7 @@ impl EmergencyFailover {
             }
         );
         eprintln!(
-            "   Tower Copy: {}",
+            "   Vote History Copy: {}",
             if self.tower_copy_success {
                 "✅"
             } else {

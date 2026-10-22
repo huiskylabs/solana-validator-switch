@@ -719,7 +719,7 @@ async fn check_swap_readiness(
     let ledger = ledger_path
         .map(|s| s.as_str())
         .unwrap_or("/mnt/solana_ledger");
-    let tower_pattern = format!("{}/tower-1_9-*.bin", ledger);
+    let tower_pattern = format!("{}/vote_history-*.bin", ledger);
 
     // Batch file checks into single command
     let file_check_cmd = format!(
@@ -727,7 +727,7 @@ async fn check_swap_readiness(
          test -r {} && echo 'funded_ok' || echo 'funded_fail'; \
          test -r {} && echo 'unfunded_ok' || echo 'unfunded_fail'; \
          test -r {} && echo 'vote_ok' || echo 'vote_fail'; \
-         ls {} >/dev/null 2>&1 && echo 'tower_ok' || echo 'tower_fail'; \
+         ls {} >/dev/null 2>&1 && echo 'vote_history_ok' || echo 'vote_history_fail'; \
          echo '=== DIRS ===' && \
          test -d {} && test -w {} && echo 'ledger_ok' || echo 'ledger_fail'; \
          echo '=== DISK ===' && \
@@ -786,10 +786,10 @@ fn parse_swap_readiness_output(
                 issues.push("Vote keypair missing or not readable".to_string());
                 *all_ready = false;
             }
-            "tower_ok" => checklist.push(("Tower File".to_string(), true)),
-            "tower_fail" => {
-                checklist.push(("Tower File".to_string(), false));
-                issues.push("Tower file missing".to_string());
+            "vote_history_ok" => checklist.push(("Vote History".to_string(), true)),
+            "vote_history_fail" => {
+                checklist.push(("Vote History".to_string(), false));
+                issues.push("Vote history file missing".to_string());
                 *all_ready = false;
             }
             "ledger_ok" => checklist.push(("Ledger Directory".to_string(), true)),

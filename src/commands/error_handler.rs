@@ -55,7 +55,7 @@ impl SwitchError {
             SwitchError::TowerFileNotFound { path } => {
                 format!(
                     "{}\n{}\n{}\n{}",
-                    "❌ Cannot find tower file for transfer".red().bold(),
+                    "❌ Cannot find vote history file for transfer".red().bold(),
                     format!("   Looking in: {}", path).dimmed(),
                     "💡 Troubleshooting suggestions:".yellow(),
                     "   • Verify the validator has been running and producing blocks\n   • Check the ledger path is correct\n   • Ensure the validator has write permissions to the ledger directory"
@@ -184,7 +184,9 @@ pub fn enhance_error_context(error: anyhow::Error) -> anyhow::Error {
         .to_user_message());
     }
 
-    if error_string.contains("No tower file found") {
+    if error_string.contains("No tower file found")
+        || error_string.contains("Vote history file not found")
+    {
         return anyhow!(SwitchError::TowerFileNotFound {
             path: "/mnt/solana_ledger".to_string(),
         }

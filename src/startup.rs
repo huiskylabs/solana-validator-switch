@@ -1224,12 +1224,9 @@ pub async fn detect_node_statuses(
                 swap_ready,
                 swap_issues,
             ) = detect_node_status_and_executable(node, validator_pair, ssh_pool).await?;
-            // Derive tower path from ledger path and validator pair identity
+            // Alpenglow vote history lives in the ledger next to where the tower used to.
             let tower_path = ledger_path.as_ref().map(|ledger| {
-                format!(
-                    "{}/tower-1_9-{}.bin",
-                    ledger, validator_pair.identity_pubkey
-                )
+                crate::types::vote_history_file_path(ledger, &validator_pair.identity_pubkey)
             });
 
             nodes_with_status.push(crate::types::NodeWithStatus {
@@ -1324,12 +1321,9 @@ async fn detect_node_statuses_with_progress(
             )
             .await?;
 
-            // Derive tower path from ledger path and validator pair identity
+            // Alpenglow vote history lives in the ledger next to where the tower used to.
             let tower_path = ledger_path.as_ref().map(|ledger| {
-                format!(
-                    "{}/tower-1_9-{}.bin",
-                    ledger, validator_pair.identity_pubkey
-                )
+                crate::types::vote_history_file_path(ledger, &validator_pair.identity_pubkey)
             });
 
             // Get the detected SSH key for this node
@@ -1962,11 +1956,11 @@ async fn detect_node_status_and_executable(
 /// - Unfunded identity keypair (readable)
 /// - Vote keypair (readable)
 /// - Ledger directory (exists and writable)
-/// - Tower file (only for active nodes when is_standby = Some(false))
+/// - Vote history file (only for active nodes when is_standby = Some(false))
 ///
 /// Note: To avoid redundancy, this is called once initially with is_standby = Some(true)
-/// to skip tower checks. If the node is later determined to be active, only the tower
-/// check is performed separately instead of re-running all checks.
+/// to skip vote history checks. If the node is later determined to be active, only the
+/// vote history check is performed separately instead of re-running all checks.
 pub async fn check_node_swap_readiness(
     ssh_pool: &AsyncSshPool,
     node: &crate::types::NodeConfig,
@@ -1983,7 +1977,7 @@ pub async fn check_node_swap_readiness(
         .unwrap_or("/mnt/solana_ledger");
 
     // Batch file checks into single command
-    // For standby nodes, we don't check tower files
+    // Standby nodes receive the vote history file during the switch.
     let file_check_cmd = if is_standby == Some(true) {
         format!(
             "test -r {} && echo 'funded_ok' || echo 'funded_fail'; \
@@ -2001,7 +1995,7 @@ pub async fn check_node_swap_readiness(
             "test -r {} && echo 'funded_ok' || echo 'funded_fail'; \
              test -r {} && echo 'unfunded_ok' || echo 'unfunded_fail'; \
              test -r {} && echo 'vote_ok' || echo 'vote_fail'; \
-             ls {}/tower-1_9-*.bin >/dev/null 2>&1 && echo 'tower_ok' || echo 'tower_fail'; \
+             ls {}/vote_history-*.bin >/dev/null 2>&1 && echo 'vote_history_ok' || echo 'vote_history_fail'; \
              test -d {} && test -w {} && echo 'ledger_ok' || echo 'ledger_fail'",
             node.paths.funded_identity,
             node.paths.unfunded_identity,
@@ -2032,10 +2026,10 @@ pub async fn check_node_swap_readiness(
                         issues.push("Vote keypair missing or not readable".to_string());
                         all_ready = false;
                     }
-                    "tower_fail" => {
-                        // Only report tower issues for non-standby nodes
+                    "vote_history_fail" => {
+                        // Only the voting node is expected to already have this file.
                         if is_standby != Some(true) {
-                            issues.push("Tower file missing".to_string());
+                            issues.push("Vote history file missing".to_string());
                             all_ready = false;
                         }
                     }

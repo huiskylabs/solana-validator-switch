@@ -127,6 +127,14 @@ pub enum RemoteShellType {
     PowerShellCore, // pwsh on Linux/macOS
 }
 
+/// Ledger file copied during failover after Alpenglow.
+///
+/// Agave writes `{ledger}/vote_history-{identity}.bin` and the failover guide
+/// copies that file instead of `tower-1_9-{identity}.bin`.
+pub fn vote_history_file_path(ledger: &str, identity_pubkey: &str) -> String {
+    format!("{ledger}/vote_history-{identity_pubkey}.bin")
+}
+
 #[derive(Debug, Clone)]
 pub struct NodeWithStatus {
     pub node: NodeConfig,
@@ -135,15 +143,15 @@ pub struct NodeWithStatus {
     pub agave_validator_executable: Option<String>, // Path to agave-validator executable (for catchup check)
     pub fdctl_executable: Option<String>, // Path to fdctl executable (for firedancer identity set)
     pub firedancer_config_path: Option<String>, // Cached Firedancer config path from startup detection
-    pub solana_cli_executable: Option<String>, // Path to solana CLI executable
-    pub version: Option<String>,          // Version information (e.g., "Firedancer 0.505.20216")
-    pub sync_status: Option<String>,      // Sync status (e.g., "Caught up (slot: 344297365)")
+    pub solana_cli_executable: Option<String>,  // Path to solana CLI executable
+    pub version: Option<String>, // Version information (e.g., "Firedancer 0.505.20216")
+    pub sync_status: Option<String>, // Sync status (e.g., "Caught up (slot: 344297365)")
     pub current_identity: Option<String>, // Current validator identity (from catchup command)
-    pub ledger_path: Option<String>,      // Ledger path extracted from running process or config
-    pub tower_path: Option<String>,       // Tower file path derived from ledger path and identity
-    pub swap_ready: Option<bool>,         // Whether the node is ready for validator switching
-    pub swap_issues: Vec<String>,         // Issues preventing swap readiness
-    pub ssh_key_path: Option<String>,     // Detected SSH key path for this node
+    pub ledger_path: Option<String>, // Ledger path extracted from running process or config
+    pub tower_path: Option<String>, // Alpenglow vote history file: {ledger}/vote_history-{identity}.bin
+    pub swap_ready: Option<bool>,   // Whether the node is ready for validator switching
+    pub swap_issues: Vec<String>,   // Issues preventing swap readiness
+    pub ssh_key_path: Option<String>, // Detected SSH key path for this node
 }
 
 #[derive(Debug)]
@@ -221,4 +229,17 @@ pub struct NodeHealthStatus {
     pub last_vote_slot: Option<u64>,
     #[allow(dead_code)]
     pub last_vote_time: Option<Instant>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::vote_history_file_path;
+
+    #[test]
+    fn vote_history_file_uses_ledger_and_staked_identity() {
+        assert_eq!(
+            vote_history_file_path("/mnt/ledger", "Identity111"),
+            "/mnt/ledger/vote_history-Identity111.bin"
+        );
+    }
 }

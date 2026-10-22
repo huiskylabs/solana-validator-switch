@@ -54,7 +54,45 @@ fn decode_base64_payload(payload: &str) -> Result<Vec<u8>> {
     let normalized: String = payload.chars().filter(|c| !c.is_whitespace()).collect();
     general_purpose::STANDARD
         .decode(normalized)
-        .map_err(|e| anyhow!("Failed to decode transferred tower data: {}", e))
+        .map_err(|e| anyhow!("Failed to decode transferred vote history: {}", e))
+}
+
+/// `agave-validator set-identity` args for promoting a standby after Alpenglow.
+///
+/// The vote history file is required by default. `--do-not-require-vote-history`
+/// is only for the documented case where that ledger file could not be copied.
+pub(crate) fn agave_promote_identity_args<'a>(
+    ledger_path: &'a str,
+    identity_path: &'a str,
+    vote_history_transferred: bool,
+) -> Vec<&'a str> {
+    let mut args = vec!["-l", ledger_path, "set-identity"];
+    if !vote_history_transferred {
+        args.push("--do-not-require-vote-history");
+    }
+    args.push(identity_path);
+    args
+}
+
+fn format_agave_promote_command(
+    agave_path: &str,
+    ledger_path: &str,
+    identity_path: &str,
+    vote_history_transferred: bool,
+) -> String {
+    let rendered =
+        agave_promote_identity_args(ledger_path, identity_path, vote_history_transferred)
+            .into_iter()
+            .map(|arg| {
+                if arg.starts_with('-') || !arg.contains('/') {
+                    arg.to_string()
+                } else {
+                    format!("\"{arg}\"")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+    format!("{agave_path} {rendered}")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -338,7 +376,10 @@ pub async fn switch_command_with_confirmation(
             reason,
         } => (source_idx, target_idx, mode, reason),
         RoleResolution::Ambiguous(message) => {
-            println_if_not_silent!("\n{}", "⚠️  Cannot determine switch direction".yellow().bold());
+            println_if_not_silent!(
+                "\n{}",
+                "⚠️  Cannot determine switch direction".yellow().bold()
+            );
             println_if_not_silent!("{}", format!("   {}", message).bright_red());
             return Err(anyhow!("{}", message));
         }
@@ -370,13 +411,13 @@ pub async fn switch_command_with_confirmation(
                     .bold()
             );
             println_if_not_silent!(
-                "   {} is not reporting an identity; promoting {} without source demotion or tower transfer.",
+                "   {} is not reporting an identity; promoting {} without source demotion or vote history transfer.",
                 active_node_with_status.node.label,
                 standby_node_with_status.node.label
             );
             println_if_not_silent!(
                 "{}",
-                "   The standby will activate without the latest tower and may miss recent vote history."
+                "   The standby will activate without the latest vote history and may miss recent votes."
                     .yellow()
             );
         }
@@ -389,16 +430,16 @@ pub async fn switch_command_with_confirmation(
             );
             if active_node_with_status.tower_path.is_some() {
                 println_if_not_silent!(
-                    "   Tower file found on {} - using as source",
+                    "   Vote history file found on {} - using as source",
                     active_node_with_status.node.label
                 );
             } else {
                 println_if_not_silent!(
                     "{}",
-                    "   ⚠️  WARNING: No tower file detected on either node!".bright_red()
+                    "   ⚠️  WARNING: No vote history file detected on either node!".bright_red()
                 );
                 println_if_not_silent!(
-                    "   Using {} as source (may fail if tower doesn't exist)",
+                    "   Using {} as source (may fail if vote history doesn't exist)",
                     active_node_with_status.node.label
                 );
             }
@@ -428,7 +469,7 @@ pub async fn switch_command_with_confirmation(
         );
         println_if_not_silent!(
             "{}",
-            "ℹ️  Tower file transfer will be performed to measure timing".yellow()
+            "ℹ️  Vote history transfer will be performed to measure timing".yellow()
         );
         println_if_not_silent!();
     }
@@ -485,7 +526,7 @@ pub async fn switch_command_with_confirmation(
     // Check source (active) node - this is preferred but not critical (emergency scenarios)
     if active_node_with_status.status == crate::types::NodeStatus::Unknown {
         validation_warnings.push(format!(
-            "Source node {} is unreachable - will skip optional steps (tower copy, graceful shutdown)",
+            "Source node {} is unreachable - will skip optional steps (vote history copy, graceful shutdown)",
             active_node_with_status.node.label
         ));
     }
@@ -688,7 +729,7 @@ pub async fn switch_command_with_confirmation(
             }
             if let Some(tower_time) = switch_manager.tower_transfer_time {
                 println_if_not_silent!(
-                    "   Step 2 - Tower transfer:     {}",
+                    "   Step 2 - Vote history copy: {}",
                     format!("{}ms", tower_time.as_millis()).bright_yellow()
                 );
             }
@@ -766,6 +807,8 @@ pub(crate) struct SwitchManager {
     detected_ssh_keys: std::collections::HashMap<String, String>,
     tower_file_name: Option<String>,
     tower_transfer_time: Option<Duration>,
+    /// True after `vote_history-<identity>.bin` was copied to the standby ledger.
+    vote_history_transferred: bool,
     identity_switch_time: Option<Duration>,
     active_switch_time: Option<Duration>,
     standby_switch_time: Option<Duration>,
@@ -788,6 +831,7 @@ impl SwitchManager {
             detected_ssh_keys,
             tower_file_name: None,
             tower_transfer_time: None,
+            vote_history_transferred: false,
             identity_switch_time: None,
             active_switch_time: None,
             standby_switch_time: None,
@@ -901,47 +945,47 @@ impl SwitchManager {
         let primary_offline_start = Instant::now();
 
         if mode.attempts_source_steps() {
-        println_if_not_silent!(
-            "\n{}",
-            "🔄 Step 1: Switch Active Node to Unfunded Identity"
-                .bright_blue()
-                .bold()
-        );
-        let active_switch_start = Instant::now();
+            println_if_not_silent!(
+                "\n{}",
+                "🔄 Step 1: Switch Active Node to Unfunded Identity"
+                    .bright_blue()
+                    .bold()
+            );
+            let active_switch_start = Instant::now();
             match self.switch_primary_to_unfunded(dry_run).await {
                 Ok(()) => {
                     source_demoted = true;
-        self.active_switch_time = Some(active_switch_start.elapsed());
-        if !dry_run {
-            println_if_not_silent!(
-                "   ✓ Completed in {}",
-                format!("{}ms", self.active_switch_time.unwrap().as_millis())
-                    .bright_yellow()
-                    .bold()
-            );
-        }
+                    self.active_switch_time = Some(active_switch_start.elapsed());
+                    if !dry_run {
+                        println_if_not_silent!(
+                            "   ✓ Completed in {}",
+                            format!("{}ms", self.active_switch_time.unwrap().as_millis())
+                                .bright_yellow()
+                                .bold()
+                        );
+                    }
                 }
                 Err(error) => return Err(error),
             }
 
             if source_demoted {
-        println_if_not_silent!(
-            "\n{}",
-            "📤 Step 2: Transfer Tower File".bright_blue().bold()
-        );
+                println_if_not_silent!(
+                    "\n{}",
+                    "📤 Step 2: Transfer Vote History".bright_blue().bold()
+                );
                 if let Err(error) = self.transfer_tower_file(dry_run).await {
                     let action = tower_failure_action(source_demoted, &error);
                     match action {
                         TowerFailureAction::ContinueWithoutTower => {
-                println_if_not_silent!(
+                            println_if_not_silent!(
                     "\n{}",
-                                "⚠️  Tower transfer unavailable; continuing degraded failover because the active identity is already unfunded."
+                                "⚠️  Vote history transfer unavailable; continuing degraded failover because the active identity is already unfunded."
                                     .bright_yellow()
                         .bold()
                 );
                             println_if_not_silent!("   Reason: {}", error);
                             println_if_not_silent!(
-                                "   The standby will activate without the latest tower and may miss recent vote history."
+                                "   The standby will activate without the latest vote history and may miss recent votes."
                             );
                         }
                         TowerFailureAction::Abort => {
@@ -950,24 +994,24 @@ impl SwitchManager {
                             {
                                 println_if_not_silent!(
                         "\n{}",
-                                    "⚠️  Tower transfer failed integrity/safety checks; attempting rollback..."
+                                    "⚠️  Vote history transfer failed integrity/safety checks; attempting rollback..."
                             .bright_red()
                             .bold()
                     );
                                 if let Err(rollback_error) = self.rollback_primary_to_funded().await
                                 {
-                    return Err(anyhow!(
-                                        "Tower transfer failed and rollback failed. Original: {}. Rollback: {}",
+                                    return Err(anyhow!(
+                                        "Vote history transfer failed and rollback failed. Original: {}. Rollback: {}",
                                         error,
                                         rollback_error
                     ));
-                }
-                println_if_not_silent!(
+                                }
+                                println_if_not_silent!(
                     "{}",
                     "   ✓ Rollback successful - active node restored to funded identity"
                         .bright_green()
                 );
-            }
+                            }
                             return Err(error);
                         }
                     }
@@ -976,7 +1020,7 @@ impl SwitchManager {
         } else {
             println_if_not_silent!(
                 "\n{}",
-                "⚠️  Degraded takeover: source is unreachable and confirmed delinquent; skipping source demotion and tower transfer."
+                "⚠️  Degraded takeover: source is unreachable and confirmed delinquent; skipping source demotion and vote history transfer."
                     .bright_yellow()
                     .bold()
             );
@@ -1184,7 +1228,8 @@ impl SwitchManager {
                             .agave_validator_executable
                             .as_ref()
                             .unwrap();
-                        let ledger_path = self.active_node_with_status.ledger_path.as_ref().unwrap();
+                        let ledger_path =
+                            self.active_node_with_status.ledger_path.as_ref().unwrap();
 
                         let args = vec![
                             "-l",
@@ -1216,9 +1261,7 @@ impl SwitchManager {
     /// Rollback method: Switch the active node back to funded identity
     /// Called when Step 2 or Step 3 fails to restore the original state
     async fn rollback_primary_to_funded(&mut self) -> Result<()> {
-        println_if_not_silent!(
-            "  ⚠️  Attempting rollback with fresh SSH connection..."
-        );
+        println_if_not_silent!("  ⚠️  Attempting rollback with fresh SSH connection...");
 
         // Get fresh SSH connection for rollback (don't reuse potentially failed connection)
         let ssh_key = self.get_ssh_key_for_node(&self.active_node_with_status.node.host)?;
@@ -1312,13 +1355,11 @@ impl SwitchManager {
     }
 
     async fn warmup_backup_connection(&self, purpose: &str) -> Result<()> {
-        let standby_ssh_key = self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
+        let standby_ssh_key =
+            self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
         let pool = self.ssh_pool.clone();
 
-        println_if_not_silent!(
-            "  🔥 Pre-warming backup SSH connection for {}...",
-            purpose
-        );
+        println_if_not_silent!("  🔥 Pre-warming backup SSH connection for {}...", purpose);
 
         let _ = pool
             .get_session(&self.standby_node_with_status.node, &standby_ssh_key)
@@ -1328,21 +1369,23 @@ impl SwitchManager {
     }
 
     pub(crate) async fn transfer_tower_file(&mut self, dry_run: bool) -> Result<()> {
-        // Use the derived tower path from active node
+        // Alpenglow ledger file: {ledger}/vote_history-{identity}.bin
         let tower_path = self
             .active_node_with_status
             .tower_path
             .as_ref()
-            .ok_or_else(|| tower_unavailable_error("Tower path not available for active node"))?;
+            .ok_or_else(|| {
+                tower_unavailable_error("Vote history path not available for active node")
+            })?;
 
-        // Verify the tower file exists
+        // Verify the vote history file exists
         let check_tower_cmd = format!("test -f {} && echo 'exists' || echo 'missing'", tower_path);
         let tower_exists = {
             let ssh_key = self
                 .get_ssh_key_for_node(&self.active_node_with_status.node.host)
                 .map_err(|error| {
                     tower_unavailable_error(format!(
-                        "Cannot access tower on active node: {}",
+                        "Cannot access vote history on active node: {}",
                         error
                     ))
                 })?;
@@ -1355,7 +1398,7 @@ impl SwitchManager {
             .await
             .map_err(|error| {
                 tower_unavailable_error(format!(
-                    "Failed to check tower on active node: {}",
+                    "Failed to check vote history on active node: {}",
                     error
                 ))
             })?
@@ -1363,12 +1406,15 @@ impl SwitchManager {
 
         if tower_exists.trim() != "exists" {
             return Err(tower_unavailable_error(format!(
-                "Tower file not found on active node: {}",
+                "Vote history file not found on active node: {}",
                 tower_path
             )));
         }
 
-        let tower_filename = tower_path.split('/').last().unwrap_or("tower.bin");
+        let tower_filename = tower_path
+            .split('/')
+            .next_back()
+            .unwrap_or("vote_history.bin");
         self.tower_file_name = Some(tower_filename.to_string());
 
         // Use detected ledger path if available, otherwise error
@@ -1391,59 +1437,64 @@ impl SwitchManager {
         let start_time = Instant::now();
 
         // Execute the streaming transfer using base64 encoding
-            // Read base64 from source and transfer separately, measuring each phase
-            let (encoded_data, read_ms, transfer_ms, decoded_bytes) = if !dry_run {
-                // Read base64 from active
-                let read_start = Instant::now();
-                let ssh_key_active =
-                    self.get_ssh_key_for_node(&self.active_node_with_status.node.host)?;
-                let data = {
-                    let pool = self.ssh_pool.clone();
-                    let base64_args = vec![tower_path.as_str()];
-                    match pool
-                        .execute_command_with_args(
-                            &self.active_node_with_status.node,
-                            &ssh_key_active,
-                            "base64",
-                            &base64_args,
-                        )
-                        .await
-                    {
-                        Ok(data) => data,
-                        Err(e) => {
-                            return Err(tower_unavailable_error(format!(
-                                "Failed to read tower file from active node: {}",
-                                e
-                            )));
-                        }
-                    }
-                };
-                let read_duration = read_start.elapsed();
-
-                // Transfer to standby and measure
-                let transfer_start = Instant::now();
-                let ssh_key_standby =
-                    self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
-                {
-                    let pool = self.ssh_pool.clone();
-                    pool.transfer_base64_to_file(
-                        &self.standby_node_with_status.node,
-                        &ssh_key_standby,
-                        &dest_path,
-                        &data,
+        // Read base64 from source and transfer separately, measuring each phase
+        let (encoded_data, read_ms, transfer_ms, decoded_bytes) = if !dry_run {
+            // Read base64 from active
+            let read_start = Instant::now();
+            let ssh_key_active =
+                self.get_ssh_key_for_node(&self.active_node_with_status.node.host)?;
+            let data = {
+                let pool = self.ssh_pool.clone();
+                let base64_args = vec![tower_path.as_str()];
+                match pool
+                    .execute_command_with_args(
+                        &self.active_node_with_status.node,
+                        &ssh_key_active,
+                        "base64",
+                        &base64_args,
                     )
                     .await
-                    .map_err(|e| anyhow!("Failed to write tower file: {}", e))?;
+                {
+                    Ok(data) => data,
+                    Err(e) => {
+                        return Err(tower_unavailable_error(format!(
+                            "Failed to read vote history from active node: {}",
+                            e
+                        )));
+                    }
                 }
-                let transfer_duration = transfer_start.elapsed();
-
-                // Estimation of decoded bytes (base64 -> bytes)
-                let decoded_bytes = data.len() as u64 * 3 / 4;
-
-                (data, read_duration.as_secs_f64() * 1000.0, transfer_duration.as_secs_f64() * 1000.0, decoded_bytes)
-            } else {
-                (String::from("dummy"), 0.0, 0.0, 0)
             };
+            let read_duration = read_start.elapsed();
+
+            // Transfer to standby and measure
+            let transfer_start = Instant::now();
+            let ssh_key_standby =
+                self.get_ssh_key_for_node(&self.standby_node_with_status.node.host)?;
+            {
+                let pool = self.ssh_pool.clone();
+                pool.transfer_base64_to_file(
+                    &self.standby_node_with_status.node,
+                    &ssh_key_standby,
+                    &dest_path,
+                    &data,
+                )
+                .await
+                .map_err(|e| anyhow!("Failed to write vote history file: {}", e))?;
+            }
+            let transfer_duration = transfer_start.elapsed();
+
+            // Estimation of decoded bytes (base64 -> bytes)
+            let decoded_bytes = data.len() as u64 * 3 / 4;
+
+            (
+                data,
+                read_duration.as_secs_f64() * 1000.0,
+                transfer_duration.as_secs_f64() * 1000.0,
+                decoded_bytes,
+            )
+        } else {
+            (String::from("dummy"), 0.0, 0.0, 0)
+        };
 
         let transfer_duration = start_time.elapsed();
         self.tower_transfer_time = Some(transfer_duration);
@@ -1453,7 +1504,7 @@ impl SwitchManager {
         let speed_mbps = (file_size as f64 / 1024.0 / 1024.0) / transfer_duration.as_secs_f64();
 
         if !dry_run {
-            let spinner = ConditionalSpinner::new("Verifying tower file integrity...");
+            let spinner = ConditionalSpinner::new("Verifying vote history integrity...");
             // Calculate SHA256 checksum from the exact bytes that were transferred.
             let source_checksum = sha256_hex(&decode_base64_payload(&encoded_data)?);
 
@@ -1475,7 +1526,7 @@ impl SwitchManager {
             if source_hash.is_empty() || dest_hash.is_empty() {
                 spinner.stop_with_message("");
                 return Err(anyhow!(
-                    "Failed to compute tower file checksums (source: '{}', dest: '{}')",
+                    "Failed to compute vote history checksums (source: '{}', dest: '{}')",
                     source_hash,
                     dest_hash
                 ));
@@ -1484,7 +1535,7 @@ impl SwitchManager {
             if source_hash != dest_hash {
                 spinner.stop_with_message("");
                 return Err(anyhow!(
-                    "Tower file checksum mismatch! Source: {}..., Dest: {}... Transfer may be corrupted.",
+                    "Vote history checksum mismatch! Source: {}..., Dest: {}... Transfer may be corrupted.",
                     &source_hash[..16],
                     &dest_hash[..16]
                 ));
@@ -1510,6 +1561,7 @@ impl SwitchManager {
             decoded_bytes
         );
 
+        self.vote_history_transferred = true;
         Ok(())
     }
 
@@ -1551,11 +1603,11 @@ impl SwitchManager {
 
                 (
                     "Using Agave validator set-identity",
-                    format!(
-                        "{} -l \"{}\" set-identity \"{}\"",
+                    format_agave_promote_command(
                         agave_path,
                         ledger_path,
-                        self.standby_node_with_status.node.paths.funded_identity
+                        &self.standby_node_with_status.node.paths.funded_identity,
+                        self.vote_history_transferred,
                     ),
                 )
             }
@@ -1598,8 +1650,9 @@ impl SwitchManager {
                 match self.standby_node_with_status.validator_type {
                     crate::types::ValidatorType::Firedancer => {
                         // Firedancer: fdctl set-identity --config <config> <identity>
-                        let fdctl_path =
-                            crate::executable_utils::get_fdctl_path(&self.standby_node_with_status)?;
+                        let fdctl_path = crate::executable_utils::get_fdctl_path(
+                            &self.standby_node_with_status,
+                        )?;
                         let config_path = self
                             .get_firedancer_config_path(&self.standby_node_with_status)
                             .await?;
@@ -1626,20 +1679,19 @@ impl SwitchManager {
                         );
                     }
                     crate::types::ValidatorType::Agave | crate::types::ValidatorType::Jito => {
-                        // Agave: agave-validator -l <ledger> set-identity --require-tower <identity>
+                        // Alpenglow requires vote_history-<identity>.bin unless the copy was skipped.
                         let agave_path = self
                             .standby_node_with_status
                             .agave_validator_executable
                             .as_ref()
                             .unwrap();
-                        let ledger_path = self.standby_node_with_status.ledger_path.as_ref().unwrap();
-
-                        let args = vec![
-                            "-l",
+                        let ledger_path =
+                            self.standby_node_with_status.ledger_path.as_ref().unwrap();
+                        let args = agave_promote_identity_args(
                             ledger_path,
-                            "set-identity",
                             &self.standby_node_with_status.node.paths.funded_identity,
-                        ];
+                            self.vote_history_transferred,
+                        );
 
                         let cmd_start = Instant::now();
                         pool.execute_command_with_args(
@@ -1742,8 +1794,8 @@ impl SwitchManager {
 #[cfg(test)]
 mod failover_policy_tests {
     use super::{
-        should_rollback_source_after_tower_failure, tower_failure_action,
-        tower_unavailable_error, FailoverMode, TowerFailureAction,
+        agave_promote_identity_args, should_rollback_source_after_tower_failure,
+        tower_failure_action, tower_unavailable_error, FailoverMode, TowerFailureAction,
     };
 
     #[test]
@@ -1803,6 +1855,31 @@ mod failover_policy_tests {
             false,
             TowerFailureAction::Abort
         ));
+    }
+
+    #[test]
+    fn promotion_requires_vote_history_after_it_was_copied() {
+        let args = agave_promote_identity_args("/mnt/ledger", "/home/sol/staked.json", true);
+        assert_eq!(
+            args,
+            vec!["-l", "/mnt/ledger", "set-identity", "/home/sol/staked.json"]
+        );
+        assert!(!args.contains(&"--do-not-require-vote-history"));
+    }
+
+    #[test]
+    fn promotion_opts_out_of_vote_history_when_the_file_was_not_copied() {
+        let args = agave_promote_identity_args("/mnt/ledger", "/home/sol/staked.json", false);
+        assert_eq!(
+            args,
+            vec![
+                "-l",
+                "/mnt/ledger",
+                "set-identity",
+                "--do-not-require-vote-history",
+                "/home/sol/staked.json"
+            ]
+        );
     }
 }
 
@@ -1898,7 +1975,10 @@ mod role_resolution_tests {
                 panic!("expected a resolved direction");
             };
 
-            assert_eq!(target_idx, expected_target, "must promote the healthy standby");
+            assert_eq!(
+                target_idx, expected_target,
+                "must promote the healthy standby"
+            );
             assert_ne!(source_idx, expected_target);
             assert_eq!(nodes[target_idx].status, NodeStatus::Standby);
             assert_eq!(nodes[source_idx].status, NodeStatus::Unknown);
@@ -1952,7 +2032,9 @@ mod role_resolution_tests {
             node(NodeStatus::Unknown, false),
         ];
 
-        let RoleResolution::Ambiguous(message) = resolve_roles(&AssertedNodeRoles::from_live_ui_state(nodes.clone())) else {
+        let RoleResolution::Ambiguous(message) =
+            resolve_roles(&AssertedNodeRoles::from_live_ui_state(nodes.clone()))
+        else {
             panic!("promoting an unverifiable node must be refused");
         };
         assert!(
@@ -2003,7 +2085,10 @@ mod role_resolution_tests {
             active_without_standby,
         ] {
             assert!(
-                matches!(resolve_roles(&AssertedNodeRoles::from_live_ui_state(nodes.clone())), RoleResolution::Ambiguous(_)),
+                matches!(
+                    resolve_roles(&AssertedNodeRoles::from_live_ui_state(nodes.clone())),
+                    RoleResolution::Ambiguous(_)
+                ),
                 "expected refusal for {:?}",
                 nodes
             );
@@ -2077,7 +2162,7 @@ mod helper_tests {
         let err = decode_base64_payload("not valid base64 @@@").unwrap_err();
         let msg = format!("{err}");
         assert!(
-            msg.contains("Failed to decode transferred tower data"),
+            msg.contains("Failed to decode transferred vote history"),
             "expected helpful error context, got: {msg}",
         );
     }

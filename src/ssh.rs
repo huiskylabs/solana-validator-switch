@@ -742,7 +742,7 @@ impl AsyncSshPool {
     ) -> Result<()> {
         let session = self.get_session(node, ssh_key_path).await?;
 
-        // Wrap the entire transfer operation in a timeout (2 minutes for large tower files)
+        // Vote history files are larger than the old tower files.
         timeout(Duration::from_secs(120), async {
             // Start base64 -d on remote, writing to stdout
             let mut base64_child = session
@@ -805,7 +805,7 @@ impl AsyncSshPool {
             Ok(())
         })
         .await
-        .map_err(|_| anyhow!("Tower file transfer timed out after 120s"))??;
+        .map_err(|_| anyhow!("Vote history transfer timed out after 120s"))??;
 
         Ok(())
     }

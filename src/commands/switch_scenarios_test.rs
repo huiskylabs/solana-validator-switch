@@ -22,7 +22,7 @@ mod scenario_tests {
             path: "/mnt/ledger".to_string(),
         };
         let message = error.to_user_message();
-        assert!(message.contains("Cannot find tower file"));
+        assert!(message.contains("Cannot find vote history file"));
         assert!(message.contains("Verify the validator has been running"));
 
         // Test executable not found

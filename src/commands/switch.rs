@@ -1086,7 +1086,7 @@ impl SwitchManager {
                 (
                     "Using Firedancer fdctl set-identity",
                     format!(
-                        "{} set-identity --config \"{}\" \"{}\"",
+                        "{} set-identity --config \"{}\" \"{}\" --do-not-require-vote-history",
                         fdctl_path,
                         config_path,
                         self.active_node_with_status.node.paths.unfunded_identity
@@ -1111,7 +1111,7 @@ impl SwitchManager {
                 (
                     "Using Agave validator set-identity",
                     format!(
-                        "{} -l \"{}\" set-identity \"{}\"",
+                        "{} -l \"{}\" set-identity \"{}\" --do-not-require-vote-history",
                         agave_path,
                         ledger_path,
                         self.active_node_with_status.node.paths.unfunded_identity
@@ -1167,6 +1167,7 @@ impl SwitchManager {
                             "--config",
                             &config_path,
                             &self.active_node_with_status.node.paths.unfunded_identity,
+                            "--do-not-require-vote-history",
                         ];
 
                         pool.execute_command_with_args(
@@ -1191,6 +1192,7 @@ impl SwitchManager {
                             ledger_path,
                             "set-identity",
                             &self.active_node_with_status.node.paths.unfunded_identity,
+                            "--do-not-require-vote-history",
                         ];
 
                         pool.execute_command_with_args(
@@ -1247,6 +1249,7 @@ impl SwitchManager {
                     "--config",
                     &config_path,
                     &self.active_node_with_status.node.paths.funded_identity,
+                    "--do-not-require-vote-history",
                 ];
 
                 pool.execute_command_with_args(
@@ -1277,6 +1280,7 @@ impl SwitchManager {
                     ledger_path,
                     "set-identity",
                     &self.active_node_with_status.node.paths.funded_identity,
+                    "--do-not-require-vote-history",
                 ];
 
                 pool.execute_command_with_args(
@@ -1527,7 +1531,7 @@ impl SwitchManager {
                 (
                     "Using Firedancer fdctl set-identity",
                     format!(
-                        "{} set-identity --config \"{}\" \"{}\"",
+                        "{} set-identity --config \"{}\" \"{}\" --do-not-require-vote-history",
                         fdctl_path,
                         config_path,
                         self.standby_node_with_status.node.paths.funded_identity
@@ -1552,7 +1556,7 @@ impl SwitchManager {
                 (
                     "Using Agave validator set-identity",
                     format!(
-                        "{} -l \"{}\" set-identity \"{}\"",
+                        "{} -l \"{}\" set-identity \"{}\" --do-not-require-vote-history",
                         agave_path,
                         ledger_path,
                         self.standby_node_with_status.node.paths.funded_identity
@@ -1609,6 +1613,7 @@ impl SwitchManager {
                             "--config",
                             &config_path,
                             &self.standby_node_with_status.node.paths.funded_identity,
+                            "--do-not-require-vote-history",
                         ];
 
                         let cmd_start = Instant::now();
@@ -1626,7 +1631,7 @@ impl SwitchManager {
                         );
                     }
                     crate::types::ValidatorType::Agave | crate::types::ValidatorType::Jito => {
-                        // Agave: agave-validator -l <ledger> set-identity --require-tower <identity>
+                        // Agave: agave-validator -l <ledger> set-identity <identity> --do-not-require-vote-history
                         let agave_path = self
                             .standby_node_with_status
                             .agave_validator_executable
@@ -1639,6 +1644,7 @@ impl SwitchManager {
                             ledger_path,
                             "set-identity",
                             &self.standby_node_with_status.node.paths.funded_identity,
+                            "--do-not-require-vote-history",
                         ];
 
                         let cmd_start = Instant::now();

@@ -719,7 +719,7 @@ async fn check_swap_readiness(
     let ledger = ledger_path
         .map(|s| s.as_str())
         .unwrap_or("/mnt/solana_ledger");
-    let tower_pattern = format!("{}/tower-1_9-*.bin", ledger);
+    let tower_pattern = format!("{}/vote_history-*.bin", ledger);
 
     // Batch file checks into single command
     let file_check_cmd = format!(

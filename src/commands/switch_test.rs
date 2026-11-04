@@ -53,7 +53,7 @@ mod tests {
             if command.contains("ps aux") {
                 Ok("solana    1234  0.0  0.0   1234  5678 ?        Sl   Jan01   0:00 agave-validator".to_string())
             } else if command.contains("ls -t") && command.contains("tower") {
-                Ok("/mnt/solana_ledger/tower-1_9-12345.bin".to_string())
+                Ok("/mnt/solana_ledger/vote_history-12345.bin".to_string())
             } else if command.contains("base64") && !command.contains("-d") {
                 Ok("SGVsbG8gV29ybGQK".to_string()) // "Hello World\n" in base64
             } else {
@@ -167,7 +167,9 @@ mod tests {
         // Check command history
         let history = ssh_pool_arc.lock().unwrap().command_history.lock().unwrap().clone();
         assert!(history.iter().any(|(_, cmd)| cmd.contains("agave-validator") && cmd.contains("set-identity")));
-        assert!(history.iter().any(|(_, cmd)| cmd.contains("--require-tower")));
+        assert!(history
+            .iter()
+            .any(|(_, cmd)| cmd.contains("--do-not-require-vote-history")));
         assert!(history.iter().any(|(_, cmd)| cmd.contains("/unfunded1.json")));
     }
     
@@ -257,7 +259,7 @@ mod tests {
         };
         
         let ssh_pool = MockSshPool::new()
-            .with_response("ls -t", "/mnt/solana_ledger/tower-1_9-12345.bin")
+            .with_response("ls -t", "/mnt/solana_ledger/vote_history-12345.bin")
             .with_response("base64", "SGVsbG8gV29ybGQK"); // Mock tower file content
         
         let ssh_pool_arc = Arc::new(Mutex::new(ssh_pool));
@@ -271,11 +273,11 @@ mod tests {
         
         let result = manager.transfer_tower_file(false).await;
         assert!(result.is_ok());
-        assert_eq!(manager.tower_file_name, Some("tower-1_9-12345.bin".to_string()));
+        assert_eq!(manager.tower_file_name, Some("vote_history-12345.bin".to_string()));
         assert!(manager.tower_transfer_time.is_some());
         
         let history = ssh_pool_arc.lock().unwrap().command_history.lock().unwrap().clone();
-        assert!(history.iter().any(|(_, cmd)| cmd.contains("base64 /mnt/solana_ledger/tower-1_9-12345.bin")));
+        assert!(history.iter().any(|(_, cmd)| cmd.contains("base64 /mnt/solana_ledger/vote_history-12345.bin")));
         // Note: The new optimized approach uses transfer_base64_to_file which doesn't use shell redirection
     }
     
@@ -419,7 +421,7 @@ mod tests {
         
         let ssh_pool = MockSshPool::new()
             .with_response("ps aux", "solana 1234 agave-validator")
-            .with_response("ls -t", "/mnt/solana_ledger/tower-1_9-12345.bin")
+            .with_response("ls -t", "/mnt/solana_ledger/vote_history-12345.bin")
             .with_response("base64", "SGVsbG8gV29ybGQK")
             .with_response("catchup", "has caught up");
         

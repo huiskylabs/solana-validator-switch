@@ -1227,7 +1227,7 @@ pub async fn detect_node_statuses(
             // Derive tower path from ledger path and validator pair identity
             let tower_path = ledger_path.as_ref().map(|ledger| {
                 format!(
-                    "{}/tower-1_9-{}.bin",
+                    "{}/vote_history-{}.bin",
                     ledger, validator_pair.identity_pubkey
                 )
             });
@@ -1327,7 +1327,7 @@ async fn detect_node_statuses_with_progress(
             // Derive tower path from ledger path and validator pair identity
             let tower_path = ledger_path.as_ref().map(|ledger| {
                 format!(
-                    "{}/tower-1_9-{}.bin",
+                    "{}/vote_history-{}.bin",
                     ledger, validator_pair.identity_pubkey
                 )
             });
@@ -2001,7 +2001,7 @@ pub async fn check_node_swap_readiness(
             "test -r {} && echo 'funded_ok' || echo 'funded_fail'; \
              test -r {} && echo 'unfunded_ok' || echo 'unfunded_fail'; \
              test -r {} && echo 'vote_ok' || echo 'vote_fail'; \
-             ls {}/tower-1_9-*.bin >/dev/null 2>&1 && echo 'tower_ok' || echo 'tower_fail'; \
+             ls {}/vote_history-*.bin >/dev/null 2>&1 && echo 'tower_ok' || echo 'tower_fail'; \
              test -d {} && test -w {} && echo 'ledger_ok' || echo 'ledger_fail'",
             node.paths.funded_identity,
             node.paths.unfunded_identity,
